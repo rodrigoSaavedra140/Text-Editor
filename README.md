@@ -1,1 +1,1 @@
-Text Editor with data structure rope
+Text Editor with rope (data structure)
