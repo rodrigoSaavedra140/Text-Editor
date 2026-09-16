@@ -1,4 +1,4 @@
-
+'''mermaid
 classDiagram
     %% ============================================================
     %%  ESTRUCTURAS DE DATOS (Núcleo Rope) — diseño persistente (Rc)
@@ -262,3 +262,4 @@ classDiagram
 
     UndoStack *-- Edit
     Edit --> EditKind
+    '''
