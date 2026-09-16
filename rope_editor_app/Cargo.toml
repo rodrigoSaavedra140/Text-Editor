@@ -1,0 +1,15 @@
+[package]
+name = "rope_editor"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "rope_editor"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rope_editor"
+path = "src/main.rs"
+
+[dependencies]
+crossterm = "0.27"
