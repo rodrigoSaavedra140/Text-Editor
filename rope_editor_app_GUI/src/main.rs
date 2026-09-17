@@ -109,11 +109,12 @@ impl EditorApp {
 impl eframe::App for EditorApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Atajos de teclado globales
-        let (want_save, want_undo, want_redo) = ctx.input(|i| {
+        let (want_save, want_undo, want_redo, want_quit) = ctx.input(|i| {
             (
                 i.modifiers.ctrl && i.key_pressed(egui::Key::S),
                 i.modifiers.ctrl && i.key_pressed(egui::Key::Z),
                 i.modifiers.ctrl && i.key_pressed(egui::Key::Y),
+                i.modifiers.ctrl && i.key_pressed(egui::Key::Q),
             )
         });
         if want_save {
@@ -124,6 +125,12 @@ impl eframe::App for EditorApp {
         }
         if want_redo {
             self.redo();
+        }
+        if want_quit {
+            // Salida forzada: no depende de que el botón "cerrar" de la
+            // ventana le llegue bien al proceso (falla a veces en WSLg,
+            // dejando el proceso vivo en segundo plano sin ventana).
+            std::process::exit(0);
         }
 
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
@@ -142,6 +149,10 @@ impl eframe::App for EditorApp {
                 }
                 if ui.button("Rehacer (Ctrl+Y)").clicked() {
                     self.redo();
+                }
+                ui.separator();
+                if ui.button("Salir (Ctrl+Q)").clicked() {
+                    std::process::exit(0);
                 }
             });
         });
