@@ -40,9 +40,13 @@ fn to_ct_color(c: Color) -> CtColor {
 
 impl Backend for TerminalBackend {
     fn draw_text(&mut self, x: u16, y: u16, text: &str, style: Style) {
+        // Limpiamos solo ESTA línea antes de escribirla (en vez de
+        // limpiar toda la pantalla cada frame) — evita el parpadeo y
+        // de paso borra restos de texto viejo más largo que el nuevo.
         let _ = queue!(
             self.stdout,
             MoveTo(x, y),
+            Clear(ClearType::UntilNewLine),
             SetForegroundColor(to_ct_color(style.fg)),
             SetBackgroundColor(to_ct_color(style.bg)),
             SetAttribute(if style.bold { Attribute::Bold } else { Attribute::NoBold }),

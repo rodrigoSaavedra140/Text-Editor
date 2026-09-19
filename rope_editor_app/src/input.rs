@@ -48,6 +48,11 @@ pub enum Command {
     Copy,
     Paste,
     SwitchMode(EditorMode),
+    // Comandos del modo ":" (estilo vim) para escribir un nombre de
+    // archivo y ejecutar la orden, ej: ":w archivo.txt"
+    CommandChar(char),
+    CommandBackspace,
+    CommandExecute,
     None,
 }
 
@@ -102,6 +107,7 @@ impl InputHandler {
         match mode {
             EditorMode::Normal => match event.code {
                 KeyCode::Char('i') => Command::SwitchMode(EditorMode::Insert),
+                KeyCode::Char(':') => Command::SwitchMode(EditorMode::Command),
                 KeyCode::Char('u') => Command::Undo,
                 KeyCode::Char('x') => Command::DeleteCharForward,
                 KeyCode::Char('y') => Command::Copy,
@@ -118,8 +124,15 @@ impl InputHandler {
                 KeyCode::Arrow(d) => Command::MoveCursor(d, 1),
                 _ => Command::None,
             },
-            // Visual/Command quedan como trabajo futuro (ver nota en el diagrama).
-            _ => Command::None,
+            EditorMode::Command => match event.code {
+                KeyCode::Esc => Command::SwitchMode(EditorMode::Normal),
+                KeyCode::Enter => Command::CommandExecute,
+                KeyCode::Backspace => Command::CommandBackspace,
+                KeyCode::Char(c) => Command::CommandChar(c),
+                _ => Command::None,
+            },
+            // Visual queda como trabajo futuro (ver nota en el diagrama).
+            EditorMode::Visual => Command::None,
         }
     }
 }

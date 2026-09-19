@@ -26,6 +26,7 @@ pub struct Theme {
     pub normal: Style,
     pub cursor: Style,
     pub status_bar: Style,
+    pub help_bar: Style,
 }
 
 impl Theme {
@@ -34,6 +35,7 @@ impl Theme {
             normal: Style::default(),
             cursor: Style { fg: Color::Black, bg: Color::White, bold: false },
             status_bar: Style { fg: Color::White, bg: Color::Blue, bold: true },
+            help_bar: Style { fg: Color::Black, bg: Color::White, bold: false },
         }
     }
 }
