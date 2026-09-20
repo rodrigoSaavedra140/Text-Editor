@@ -294,9 +294,10 @@ impl Editor {
     }
 
     pub fn run(&mut self) {
-        // Limpiamos la pantalla UNA sola vez al arrancar (ya no en
-        // cada frame, para no titilar).
-        self.renderer.clear_screen();
+        // Limpiamos la pantalla UNA sola vez al arrancar, ya con el
+        // gris del tema (ver el ajuste de colores) en vez de con el
+        // color que tuviera la terminal (ej. violeta de Ubuntu).
+        self.renderer.clear_screen(self.config.theme.normal.bg);
 
         // Primer dibujado, antes de esperar ninguna tecla.
         self.redraw();
