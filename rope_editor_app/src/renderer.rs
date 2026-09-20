@@ -19,11 +19,10 @@ impl Renderer {
         self.backend.flush();
     }
 
-    pub fn render(&mut self, buffer: &Buffer, viewport: &Viewport) {
+    pub fn render(&mut self, buffer: &Buffer, viewport: &Viewport, style: Style) {
         // Ya NO limpiamos toda la pantalla acá (eso causaba el
         // parpadeo). Cada línea se limpia sola, individualmente,
         // dentro de Backend::draw_text justo antes de escribirse.
-        let style = Style::default();
         for (row, line_num) in viewport.visible_lines().enumerate() {
             let line = if line_num < buffer.line_count() {
                 buffer.line(line_num)

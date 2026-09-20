@@ -35,6 +35,7 @@ fn to_ct_color(c: Color) -> CtColor {
         Color::Yellow => CtColor::Yellow,
         Color::Blue => CtColor::Blue,
         Color::White => CtColor::White,
+        Color::Rgb(r, g, b) => CtColor::Rgb { r, g, b },
     }
 }
 

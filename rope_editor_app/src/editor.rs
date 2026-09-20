@@ -298,20 +298,34 @@ impl Editor {
         // cada frame, para no titilar).
         self.renderer.clear_screen();
 
+        // Primer dibujado, antes de esperar ninguna tecla.
+        self.redraw();
+
         while self.running {
-            self.renderer.render(&self.buffer, &self.viewport);
-
-            let hints = self.keybind_hints();
-            let help_style = self.config.theme.help_bar;
-            self.renderer.draw_help_bar(&hints, help_style);
-
-            let status = self.status_line();
-            let status_style = self.config.theme.status_bar;
-            self.renderer.draw_status_bar(&status, status_style);
-
+            // A diferencia de antes, ya NO redibujamos en cada vuelta
+            // del loop — read_key() vuelve cada ~100ms igual (por el
+            // timeout del poll), pero si no hubo tecla no tocamos la
+            // pantalla para nada. Redibujar sin que haya cambiado
+            // nada es exactamente lo que causaba el parpadeo restante
+            // (vim tampoco redibuja si no pasó nada).
             if let Some(event) = self.input_handler.read_key() {
                 self.handle_input(event);
+                if self.running {
+                    self.redraw();
+                }
             }
         }
+    }
+
+    fn redraw(&mut self) {
+        self.renderer.render(&self.buffer, &self.viewport, self.config.theme.normal);
+
+        let hints = self.keybind_hints();
+        let help_style = self.config.theme.help_bar;
+        self.renderer.draw_help_bar(&hints, help_style);
+
+        let status = self.status_line();
+        let status_style = self.config.theme.status_bar;
+        self.renderer.draw_status_bar(&status, status_style);
     }
 }
