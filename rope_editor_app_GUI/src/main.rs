@@ -3,6 +3,7 @@ mod undo;
 
 use std::fs;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use eframe::egui;
 use rope::Rope;
@@ -16,6 +17,10 @@ struct EditorApp {
     current_file: Option<PathBuf>,
     dirty: bool,
     status: String,
+    // Momento en que se pidió el cierre prolijo — si pasa mucho
+    // tiempo sin que la ventana realmente se cierre (WSLg no
+    // responde bien a veces), forzamos la salida igual.
+    closing_since: Option<Instant>,
 }
 
 impl Default for EditorApp {
@@ -28,6 +33,7 @@ impl Default for EditorApp {
             current_file: None,
             dirty: false,
             status: "Listo".to_string(),
+            closing_since: None,
         }
     }
 }
@@ -127,10 +133,33 @@ impl eframe::App for EditorApp {
             self.redo();
         }
         if want_quit {
-            // Salida forzada: no depende de que el botón "cerrar" de la
-            // ventana le llegue bien al proceso (falla a veces en WSLg,
-            // dejando el proceso vivo en segundo plano sin ventana).
-            std::process::exit(0);
+            // Antes usábamos std::process::exit(0), que mata el
+            // proceso de golpe sin avisarle a WSLg que la ventana se
+            // está cerrando — eso es lo que dejaba la ventana
+            // "congelada". send_viewport_cmd(Close) hace el cierre
+            // prolijo (protocolo real de cierre de ventana), así el
+            // compositor gráfico se entera y la saca de pantalla.
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            self.closing_since = Some(Instant::now());
+        }
+
+        // Lo mismo si el cierre vino del botón X de la ventana (no
+        // solo de nuestros botones/atajos) — así la salvaguarda de
+        // arriba también cubre ese caso.
+        let x_close_requested = ctx.input(|i| i.viewport().close_requested());
+        if x_close_requested && self.closing_since.is_none() {
+            self.closing_since = Some(Instant::now());
+        }
+
+        // Salvaguarda: si pedimos el cierre prolijo y pasaron más de
+        // 2 segundos sin que el proceso realmente haya terminado
+        // (WSLg a veces no procesa bien el cierre), forzamos la
+        // salida igual — mejor eso que quedar colgado para siempre.
+        if let Some(since) = self.closing_since {
+            if since.elapsed() > Duration::from_secs(2) {
+                std::process::exit(0);
+            }
+            ctx.request_repaint(); // aseguramos que el chequeo de arriba siga corriendo
         }
 
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
@@ -152,7 +181,8 @@ impl eframe::App for EditorApp {
                 }
                 ui.separator();
                 if ui.button("Salir (Ctrl+Q)").clicked() {
-                    std::process::exit(0);
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    self.closing_since = Some(Instant::now());
                 }
             });
         });
