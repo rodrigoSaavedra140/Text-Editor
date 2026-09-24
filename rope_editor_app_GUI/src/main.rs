@@ -112,6 +112,24 @@ impl EditorApp {
     }
 }
 
+/// Pide el cierre prolijo de la ventana Y, en paralelo, lanza un hilo
+/// del sistema operativo que va a matar el proceso a la fuerza al
+/// segundo — sin importar si egui sigue llamando a update() o no
+/// después de pedir el cierre (WSLg a veces deja de mandar frames en
+/// cuanto la ventana empieza a cerrarse, lo que dejaba nuestra
+/// salvaguarda anterior sin poder ejecutarse nunca).
+fn request_close(ctx: &egui::Context, closing_since: &mut Option<Instant>) {
+    if closing_since.is_some() {
+        return; // ya se pidió el cierre, no lancemos un hilo por cada frame
+    }
+    *closing_since = Some(Instant::now());
+    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    std::thread::spawn(|| {
+        std::thread::sleep(Duration::from_secs(1));
+        std::process::exit(0);
+    });
+}
+
 impl eframe::App for EditorApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Atajos de teclado globales
@@ -133,33 +151,14 @@ impl eframe::App for EditorApp {
             self.redo();
         }
         if want_quit {
-            // Antes usábamos std::process::exit(0), que mata el
-            // proceso de golpe sin avisarle a WSLg que la ventana se
-            // está cerrando — eso es lo que dejaba la ventana
-            // "congelada". send_viewport_cmd(Close) hace el cierre
-            // prolijo (protocolo real de cierre de ventana), así el
-            // compositor gráfico se entera y la saca de pantalla.
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            self.closing_since = Some(Instant::now());
+            request_close(ctx, &mut self.closing_since);
         }
 
         // Lo mismo si el cierre vino del botón X de la ventana (no
-        // solo de nuestros botones/atajos) — así la salvaguarda de
-        // arriba también cubre ese caso.
+        // solo de nuestros botones/atajos).
         let x_close_requested = ctx.input(|i| i.viewport().close_requested());
-        if x_close_requested && self.closing_since.is_none() {
-            self.closing_since = Some(Instant::now());
-        }
-
-        // Salvaguarda: si pedimos el cierre prolijo y pasaron más de
-        // 2 segundos sin que el proceso realmente haya terminado
-        // (WSLg a veces no procesa bien el cierre), forzamos la
-        // salida igual — mejor eso que quedar colgado para siempre.
-        if let Some(since) = self.closing_since {
-            if since.elapsed() > Duration::from_secs(2) {
-                std::process::exit(0);
-            }
-            ctx.request_repaint(); // aseguramos que el chequeo de arriba siga corriendo
+        if x_close_requested {
+            request_close(ctx, &mut self.closing_since);
         }
 
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
@@ -181,8 +180,7 @@ impl eframe::App for EditorApp {
                 }
                 ui.separator();
                 if ui.button("Salir (Ctrl+Q)").clicked() {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                    self.closing_since = Some(Instant::now());
+                    request_close(ctx, &mut self.closing_since);
                 }
             });
         });
@@ -218,7 +216,41 @@ impl eframe::App for EditorApp {
     }
 }
 
+/// Detecta si estamos corriendo dentro de WSL (y no en Linux nativo).
+/// WSL define variables de entorno propias, y su kernel se identifica
+/// a sí mismo con "microsoft" en /proc/version — revisamos las dos
+/// señales por si alguna versión de WSL no define la otra.
+#[cfg(target_os = "linux")]
+fn is_wsl() -> bool {
+    if std::env::var("WSL_DISTRO_NAME").is_ok() || std::env::var("WSL_INTEROP").is_ok() {
+        return true;
+    }
+    if let Ok(version) = std::fs::read_to_string("/proc/version") {
+        let v = version.to_lowercase();
+        if v.contains("microsoft") || v.contains("wsl") {
+            return true;
+        }
+    }
+    false
+}
+
+// En Windows nativo o macOS esto no aplica — LIBGL_ALWAYS_SOFTWARE es
+// específico de Mesa/Linux, así que directamente no hace nada ahí.
+#[cfg(not(target_os = "linux"))]
+fn is_wsl() -> bool {
+    false
+}
+
 fn main() -> eframe::Result<()> {
+    // WSLg usa una GPU virtual cuyo contexto OpenGL a veces falla en
+    // silencio (la ventana nunca llega a abrirse, sin ningún error).
+    // Forzamos renderizado por software SOLO si detectamos WSL — en
+    // Linux nativo con una GPU de verdad, esto solo haría que ande
+    // más lento sin necesidad.
+    if is_wsl() {
+        std::env::set_var("LIBGL_ALWAYS_SOFTWARE", "1");
+    }
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([900.0, 650.0]),
         ..Default::default()
