@@ -266,10 +266,6 @@ impl eframe::App for EditorApp {
                 if ui.button("Rehacer (Ctrl+Y)").clicked() {
                     self.redo();
                 }
-                ui.separator();
-                if ui.button("Salir (Ctrl+Q)").clicked() {
-                    request_close(ctx, &mut self.closing_since);
-                }
             });
         });
 
