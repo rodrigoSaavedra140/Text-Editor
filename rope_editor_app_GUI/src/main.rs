@@ -17,6 +17,10 @@ struct EditorApp {
     current_file: Option<PathBuf>,
     dirty: bool,
     status: String,
+    // Carpeta que está mostrando el desplegable de archivos ahora
+    // mismo — no tiene por qué ser la misma que la carpeta desde
+    // donde se lanzó el programa, porque se puede navegar.
+    browse_dir: PathBuf,
     // Momento en que se pidió el cierre prolijo — si pasa mucho
     // tiempo sin que la ventana realmente se cierre (WSLg no
     // responde bien a veces), forzamos la salida igual.
@@ -33,6 +37,7 @@ impl Default for EditorApp {
             current_file: None,
             dirty: false,
             status: "Listo".to_string(),
+            browse_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             closing_since: None,
         }
     }
@@ -86,6 +91,47 @@ impl EditorApp {
                 self.status = format!("Error al abrir: {}", e);
             }
         }
+    }
+
+    /// Heurística simple para distinguir texto de binario (la misma
+    /// que usa Git): si los primeros bytes del archivo no tienen
+    /// ningún byte nulo, lo tratamos como texto. No depende de la
+    /// extensión — agarra .md, .rs, .log, archivos sin extensión,
+    /// etc., y deja afuera binarios de verdad (imágenes, ejecutables).
+    fn is_probably_text(path: &std::path::Path) -> bool {
+        use std::io::Read;
+        if let Ok(mut file) = std::fs::File::open(path) {
+            let mut buf = [0u8; 8192];
+            if let Ok(n) = file.read(&mut buf) {
+                return !buf[..n].contains(&0u8);
+            }
+        }
+        false
+    }
+
+    /// Lista el contenido de `dir`: subcarpetas y archivos de texto,
+    /// cada lista ordenada alfabéticamente por separado (subcarpetas
+    /// primero al mostrarlas, como cualquier explorador de archivos).
+    fn list_dir(dir: &std::path::Path) -> (Vec<String>, Vec<String>) {
+        let mut dirs = Vec::new();
+        let mut files = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let name = match path.file_name().and_then(|n| n.to_str()) {
+                    Some(n) => n.to_string(),
+                    None => continue,
+                };
+                if path.is_dir() {
+                    dirs.push(name);
+                } else if path.is_file() && Self::is_probably_text(&path) {
+                    files.push(name);
+                }
+            }
+        }
+        dirs.sort();
+        files.sort();
+        (dirs, files)
     }
 
     fn save(&mut self) {
@@ -165,6 +211,48 @@ impl eframe::App for EditorApp {
             ui.horizontal(|ui| {
                 ui.label("Archivo:");
                 ui.text_edit_singleline(&mut self.file_path_input);
+
+                // Desplegable con navegación de carpetas: subcarpetas
+                // para entrar (📁), "⬆ subir" para volver al padre, y
+                // archivos de texto que se abren con un click.
+                let mut navigate_to: Option<PathBuf> = None;
+                let mut open_file: Option<PathBuf> = None;
+                egui::ComboBox::from_id_source("file_picker")
+                    .selected_text("Elegir…")
+                    .show_ui(ui, |ui| {
+                        ui.label(format!("📂 {}", self.browse_dir.display()));
+                        ui.separator();
+
+                        if let Some(parent) = self.browse_dir.parent() {
+                            if ui.selectable_label(false, "⬆ ..").clicked() {
+                                navigate_to = Some(parent.to_path_buf());
+                            }
+                        }
+
+                        let (dirs, files) = Self::list_dir(&self.browse_dir);
+
+                        for name in &dirs {
+                            if ui.selectable_label(false, format!("📁 {}", name)).clicked() {
+                                navigate_to = Some(self.browse_dir.join(name));
+                            }
+                        }
+                        for name in &files {
+                            if ui.selectable_label(false, name).clicked() {
+                                open_file = Some(self.browse_dir.join(name));
+                            }
+                        }
+                        if dirs.is_empty() && files.is_empty() {
+                            ui.label("(carpeta vacía)");
+                        }
+                    });
+                if let Some(dir) = navigate_to {
+                    self.browse_dir = dir;
+                }
+                if let Some(path) = open_file {
+                    self.file_path_input = path.display().to_string();
+                    self.open();
+                }
+
                 if ui.button("Abrir").clicked() {
                     self.open();
                 }
