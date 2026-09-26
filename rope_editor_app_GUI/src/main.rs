@@ -77,12 +77,17 @@ impl EditorApp {
         }
     }
 
-    fn open(&mut self) {
-        let path = PathBuf::from(&self.file_path_input);
+    /// Abre `path` directamente (usado por el explorador de
+    /// carpetas). Después de abrir, el campo "Archivo" solo muestra
+    /// el nombre — la ruta completa se ve en la barra de abajo.
+    fn open_path(&mut self, path: PathBuf) {
         match fs::read_to_string(&path) {
             Ok(content) => {
                 self.text = content.clone();
                 self.last_snapshot = content;
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    self.file_path_input = name.to_string();
+                }
                 self.current_file = Some(path);
                 self.dirty = false;
                 self.status = "Archivo abierto".to_string();
@@ -91,6 +96,13 @@ impl EditorApp {
                 self.status = format!("Error al abrir: {}", e);
             }
         }
+    }
+
+    /// Abre lo que haya escrito en el campo "Archivo" (botón "Abrir"
+    /// o Enter). Interpreta ese texto como ruta relativa a la carpeta
+    /// desde donde se lanzó el programa.
+    fn open(&mut self) {
+        self.open_path(PathBuf::from(&self.file_path_input));
     }
 
     /// Heurística simple para distinguir texto de binario (la misma
@@ -155,6 +167,19 @@ impl EditorApp {
                 self.status = format!("Error al guardar: {}", e);
             }
         }
+    }
+}
+
+/// Tamaño legible del texto actual en el buffer (bytes UTF-8) — es el
+/// tamaño "en vivo", incluye cambios sin guardar todavía, no el
+/// tamaño del archivo en disco.
+fn format_size(bytes: usize) -> String {
+    if bytes < 1024 {
+        format!("{} bytes", bytes)
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
     }
 }
 
@@ -249,8 +274,7 @@ impl eframe::App for EditorApp {
                     self.browse_dir = dir;
                 }
                 if let Some(path) = open_file {
-                    self.file_path_input = path.display().to_string();
-                    self.open();
+                    self.open_path(path);
                 }
 
                 if ui.button("Abrir").clicked() {
@@ -270,13 +294,21 @@ impl eframe::App for EditorApp {
         });
 
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
-            let modified = if self.dirty { " [+]" } else { "" };
-            let name = self
-                .current_file
-                .as_ref()
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|| "[sin nombre]".to_string());
-            ui.label(format!("{}{}  —  {}", name, modified, self.status));
+            ui.horizontal(|ui| {
+                let modified = if self.dirty { " [+]" } else { "" };
+                let path_str = self
+                    .current_file
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "(sin guardar todavía)".to_string());
+                ui.label(format!("{}{}", path_str, modified));
+                ui.separator();
+                ui.label(format_size(self.text.len()));
+                if !self.status.is_empty() {
+                    ui.separator();
+                    ui.label(&self.status);
+                }
+            });
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
