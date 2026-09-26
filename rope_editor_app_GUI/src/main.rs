@@ -3,6 +3,8 @@ mod undo;
 
 use std::fs;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use eframe::egui;
@@ -14,6 +16,15 @@ use undo::{Edit, EditKind, UndoStack};
 /// fondo minimalista funcionan siempre, sin depender de que el
 /// archivo esté presente donde sea que se ejecute el programa).
 const LOGO_BYTES: &[u8] = include_bytes!("../assets/logo.png");
+
+/// Estado compartido entre el hilo que escribe el archivo y la UI,
+/// que solo lee esto para dibujar la barra de progreso.
+struct SaveProgress {
+    written: usize,
+    total: usize,
+    done: bool,
+    error: Option<String>,
+}
 
 struct EditorApp {
     text: String,          // buffer "vivo" que edita el widget de egui
@@ -32,6 +43,8 @@ struct EditorApp {
     // Textura del logo, cargada una sola vez en el primer frame
     // (None hasta ese momento).
     logo_texture: Option<egui::TextureHandle>,
+    // Some() mientras hay un guardado en curso en otro hilo.
+    save_progress: Option<Arc<Mutex<SaveProgress>>>,
     // Momento en que se pidió el cierre prolijo — si pasa mucho
     // tiempo sin que la ventana realmente se cierre (WSLg no
     // responde bien a veces), forzamos la salida igual.
@@ -51,6 +64,7 @@ impl Default for EditorApp {
             browse_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             text_area_bg: egui::Color32::from_rgb(10, 10, 10),
             logo_texture: None,
+            save_progress: None,
             closing_since: None,
         }
     }
@@ -159,6 +173,46 @@ impl EditorApp {
         (dirs, files)
     }
 
+    /// Dibuja la ventana emergente de progreso mientras haya un
+    /// guardado en curso, y la cierra sola cuando termina.
+    fn show_save_progress(&mut self, ctx: &egui::Context) {
+        let Some(progress) = &self.save_progress else {
+            return;
+        };
+        let (written, total, done, error) = {
+            let p = progress.lock().unwrap();
+            (p.written, p.total, p.done, p.error.clone())
+        };
+
+        let fraction = if total == 0 { 1.0 } else { written as f32 / total as f32 };
+
+        egui::Window::new("Guardando…")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.set_min_width(280.0);
+                ui.add(egui::ProgressBar::new(fraction.clamp(0.0, 1.0)).show_percentage());
+                ui.label(format!("{} / {}", format_size(written), format_size(total)));
+            });
+
+        // Mientras esté guardando, seguimos pidiendo repintar cada
+        // frame — si no, la barra de progreso quedaría congelada
+        // hasta que el usuario mueva el mouse o toque algo.
+        ctx.request_repaint();
+
+        if done {
+            match error {
+                Some(e) => self.status = format!("Error al guardar: {}", e),
+                None => {
+                    self.dirty = false;
+                    self.status = "Guardado".to_string();
+                }
+            }
+            self.save_progress = None;
+        }
+    }
+
     /// Carga el logo como textura de egui, una sola vez (la primera
     /// vez que hace falta dibujarlo).
     fn ensure_logo_texture(&mut self, ctx: &egui::Context) {
@@ -196,6 +250,10 @@ impl EditorApp {
     }
 
     fn save(&mut self) {
+        if self.save_progress.is_some() {
+            return; // ya hay un guardado en curso, no arranquemos otro encima
+        }
+
         self.snapshot_if_changed();
         let path = if let Some(p) = &self.current_file {
             p.clone()
@@ -206,16 +264,46 @@ impl EditorApp {
             self.status = "Escribí una ruta de archivo antes de guardar".to_string();
             return;
         }
-        match fs::write(&path, &self.text) {
-            Ok(()) => {
-                self.current_file = Some(path);
-                self.dirty = false;
-                self.status = "Guardado".to_string();
+
+        let data = self.text.clone().into_bytes();
+        let total = data.len();
+        let progress = Arc::new(Mutex::new(SaveProgress { written: 0, total, done: false, error: None }));
+        self.save_progress = Some(Arc::clone(&progress));
+        self.current_file = Some(path.clone());
+
+        // Escribimos en un hilo aparte, en pedacitos, reportando
+        // cuánto se lleva escrito — así la ventana de progreso tiene
+        // algo real que mostrar (y no bloqueamos la interfaz
+        // mientras se guarda un archivo grande o un disco lento).
+        thread::spawn(move || {
+            let result = (|| -> std::io::Result<()> {
+                use std::io::Write;
+                let mut file = std::fs::File::create(&path)?;
+                // Repartimos en ~20 pasos parejos (mínimo 1 byte por
+                // paso) para que la barra se vea animarse incluso en
+                // archivos chicos, en vez de completarse de golpe.
+                let steps = 20usize;
+                let chunk_size = (total / steps).max(1);
+                let mut written = 0usize;
+                while written < total {
+                    let end = (written + chunk_size).min(total);
+                    file.write_all(&data[written..end])?;
+                    written = end;
+                    if let Ok(mut p) = progress.lock() {
+                        p.written = written;
+                    }
+                    thread::sleep(Duration::from_millis(15));
+                }
+                file.flush()
+            })();
+
+            if let Ok(mut p) = progress.lock() {
+                p.done = true;
+                if let Err(e) = result {
+                    p.error = Some(e.to_string());
+                }
             }
-            Err(e) => {
-                self.status = format!("Error al guardar: {}", e);
-            }
-        }
+        });
     }
 }
 
@@ -252,6 +340,8 @@ fn request_close(ctx: &egui::Context, closing_since: &mut Option<Instant>) {
 
 impl eframe::App for EditorApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.show_save_progress(ctx);
+
         // Atajos de teclado globales
         let (want_save, want_undo, want_redo, want_quit) = ctx.input(|i| {
             (
@@ -311,25 +401,19 @@ impl eframe::App for EditorApp {
                     ui.label(egui::RichText::new("Karkinos").strong());
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.scope(|ui| {
-                            ui.spacing_mut().item_spacing.x = 4.0;
-                            ui.visuals_mut().button_frame = false;
-                            ui.add_space(8.0);
+                        if title_bar_icon_button(ui, TitleBarIcon::Close).clicked() {
+                            request_close(ctx, &mut self.closing_since);
+                        }
 
-                            if ui.button(egui::RichText::new("✕").size(14.0)).clicked() {
-                                request_close(ctx, &mut self.closing_since);
-                            }
+                        let is_maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+                        let icon = if is_maximized { TitleBarIcon::Restore } else { TitleBarIcon::Maximize };
+                        if title_bar_icon_button(ui, icon).clicked() {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!is_maximized));
+                        }
 
-                            let is_maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
-                            let restore_or_max = if is_maximized { "🗗" } else { "🗖" };
-                            if ui.button(egui::RichText::new(restore_or_max).size(13.0)).clicked() {
-                                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!is_maximized));
-                            }
-
-                            if ui.button(egui::RichText::new("—").size(14.0)).clicked() {
-                                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
-                            }
-                        });
+                        if title_bar_icon_button(ui, TitleBarIcon::Minimize).clicked() {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                        }
                     });
                 });
             });
@@ -454,6 +538,66 @@ impl eframe::App for EditorApp {
                 });
             });
     }
+}
+
+enum TitleBarIcon {
+    Close,
+    Minimize,
+    Maximize,
+    Restore,
+}
+
+/// Dibuja un botón de la barra de título con un ícono hecho a mano
+/// (líneas/rectángulos), en vez de un emoji — los emojis dependen de
+/// qué fuente tenga el sistema, y bajo WSLg a veces se ven mal o
+/// distinto a como se ven en Windows de verdad.
+fn title_bar_icon_button(ui: &mut egui::Ui, icon: TitleBarIcon) -> egui::Response {
+    let size = egui::vec2(32.0, 32.0);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+
+    if response.hovered() {
+        let bg = if matches!(icon, TitleBarIcon::Close) {
+            egui::Color32::from_rgb(196, 43, 28) // hover rojo, como en Windows
+        } else {
+            egui::Color32::from_white_alpha(25)
+        };
+        ui.painter().rect_filled(rect, 0.0, bg);
+    }
+
+    let stroke = egui::Stroke::new(1.2, egui::Color32::from_gray(225));
+    let center = rect.center();
+    let painter = ui.painter();
+
+    match icon {
+        TitleBarIcon::Close => {
+            let h = 4.5;
+            painter.line_segment([center + egui::vec2(-h, -h), center + egui::vec2(h, h)], stroke);
+            painter.line_segment([center + egui::vec2(-h, h), center + egui::vec2(h, -h)], stroke);
+        }
+        TitleBarIcon::Minimize => {
+            painter.line_segment(
+                [center + egui::vec2(-5.0, 5.0), center + egui::vec2(5.0, 5.0)],
+                stroke,
+            );
+        }
+        TitleBarIcon::Maximize => {
+            let square = egui::Rect::from_center_size(center, egui::vec2(9.0, 9.0));
+            painter.rect_stroke(square, 0.0, stroke);
+        }
+        TitleBarIcon::Restore => {
+            // El ícono clásico de "restaurar": dos ventanas superpuestas.
+            let back = egui::Rect::from_center_size(center + egui::vec2(2.0, -2.0), egui::vec2(8.0, 8.0));
+            let front = egui::Rect::from_center_size(center + egui::vec2(-1.5, 1.5), egui::vec2(8.0, 8.0));
+            painter.rect_stroke(back, 0.0, stroke);
+            // Tapamos la parte de atrás que "taparía" la ventana de
+            // adelante, para que se vea como dos ventanas de verdad
+            // superpuestas y no como dos cuadrados cruzados.
+            painter.rect_filled(front, 0.0, egui::Color32::from_rgb(18, 18, 18));
+            painter.rect_stroke(front, 0.0, stroke);
+        }
+    }
+
+    response
 }
 
 /// Bordes invisibles en los 4 lados + 4 esquinas de la ventana, para
