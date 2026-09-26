@@ -283,26 +283,58 @@ impl eframe::App for EditorApp {
 
         self.ensure_logo_texture(ctx);
 
-        // Barra de marca propia (logo + "Karkinos"), debajo de la
-        // barra nativa del sistema operativo — bajo WSLg esa barra
-        // nativa a veces queda vacía, sin ícono ni texto (aunque los
-        // botones de minimizar/maximizar/cerrar sí funcionan), así
-        // que el logo y el nombre quedan acá en vez de ahí. No le
-        // saco la decoración nativa a la ventana: así no perdemos el
-        // arrastre del borde para cambiar el tamaño.
-        egui::TopBottomPanel::top("brand_bar")
-            .exact_height(30.0)
+        // Le sacamos la decoración nativa a la ventana (ver main()),
+        // así que esta barra ocupa exactamente el lugar donde antes
+        // estaba la barra nativa del sistema operativo — con nuestro
+        // logo, "Karkinos", y los mismos botones de siempre.
+        egui::TopBottomPanel::top("custom_title_bar")
+            .exact_height(32.0)
             .frame(egui::Frame::none().fill(egui::Color32::from_rgb(18, 18, 18)))
             .show(ctx, |ui| {
+                let bar_rect = ui.max_rect();
+                let drag_response =
+                    ui.interact(bar_rect, ui.id().with("title_bar_drag"), egui::Sense::click_and_drag());
+                if drag_response.double_clicked() {
+                    let is_maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!is_maximized));
+                }
+                if drag_response.drag_started() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                }
+
                 ui.horizontal_centered(|ui| {
-                    ui.add_space(8.0);
+                    ui.add_space(10.0);
                     if let Some(tex) = &self.logo_texture {
                         ui.add(egui::Image::new((tex.id(), egui::vec2(18.0, 18.0))));
                     }
                     ui.add_space(6.0);
                     ui.label(egui::RichText::new("Karkinos").strong());
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.scope(|ui| {
+                            ui.spacing_mut().item_spacing.x = 4.0;
+                            ui.visuals_mut().button_frame = false;
+                            ui.add_space(8.0);
+
+                            if ui.button(egui::RichText::new("✕").size(14.0)).clicked() {
+                                request_close(ctx, &mut self.closing_since);
+                            }
+
+                            let is_maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+                            let restore_or_max = if is_maximized { "🗗" } else { "🗖" };
+                            if ui.button(egui::RichText::new(restore_or_max).size(13.0)).clicked() {
+                                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!is_maximized));
+                            }
+
+                            if ui.button(egui::RichText::new("—").size(14.0)).clicked() {
+                                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                            }
+                        });
+                    });
                 });
             });
+
+        draw_resize_handles(ctx);
 
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
             ui.horizontal(|ui| {
@@ -424,6 +456,99 @@ impl eframe::App for EditorApp {
     }
 }
 
+/// Bordes invisibles en los 4 lados + 4 esquinas de la ventana, para
+/// poder seguir redimensionando arrastrando el borde con el mouse
+/// ahora que le sacamos la decoración nativa (que era la que hacía
+/// esto automáticamente antes).
+fn draw_resize_handles(ctx: &egui::Context) {
+    const BORDER: f32 = 6.0;
+    const CORNER: f32 = 12.0;
+
+    let rect = ctx.input(|i| i.screen_rect());
+
+    let handles: [(&str, egui::Rect, egui::CursorIcon, egui::ResizeDirection); 8] = [
+        (
+            "resize_n",
+            egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), BORDER)),
+            egui::CursorIcon::ResizeNorth,
+            egui::ResizeDirection::North,
+        ),
+        (
+            "resize_s",
+            egui::Rect::from_min_size(
+                egui::pos2(rect.min.x, rect.max.y - BORDER),
+                egui::vec2(rect.width(), BORDER),
+            ),
+            egui::CursorIcon::ResizeSouth,
+            egui::ResizeDirection::South,
+        ),
+        (
+            "resize_w",
+            egui::Rect::from_min_size(rect.min, egui::vec2(BORDER, rect.height())),
+            egui::CursorIcon::ResizeWest,
+            egui::ResizeDirection::West,
+        ),
+        (
+            "resize_e",
+            egui::Rect::from_min_size(
+                egui::pos2(rect.max.x - BORDER, rect.min.y),
+                egui::vec2(BORDER, rect.height()),
+            ),
+            egui::CursorIcon::ResizeEast,
+            egui::ResizeDirection::East,
+        ),
+        (
+            "resize_nw",
+            egui::Rect::from_min_size(rect.min, egui::vec2(CORNER, CORNER)),
+            egui::CursorIcon::ResizeNorthWest,
+            egui::ResizeDirection::NorthWest,
+        ),
+        (
+            "resize_ne",
+            egui::Rect::from_min_size(
+                egui::pos2(rect.max.x - CORNER, rect.min.y),
+                egui::vec2(CORNER, CORNER),
+            ),
+            egui::CursorIcon::ResizeNorthEast,
+            egui::ResizeDirection::NorthEast,
+        ),
+        (
+            "resize_sw",
+            egui::Rect::from_min_size(
+                egui::pos2(rect.min.x, rect.max.y - CORNER),
+                egui::vec2(CORNER, CORNER),
+            ),
+            egui::CursorIcon::ResizeSouthWest,
+            egui::ResizeDirection::SouthWest,
+        ),
+        (
+            "resize_se",
+            egui::Rect::from_min_size(
+                egui::pos2(rect.max.x - CORNER, rect.max.y - CORNER),
+                egui::vec2(CORNER, CORNER),
+            ),
+            egui::CursorIcon::ResizeSouthEast,
+            egui::ResizeDirection::SouthEast,
+        ),
+    ];
+
+    for (id, handle_rect, cursor, direction) in handles {
+        egui::Area::new(egui::Id::new(id))
+            .fixed_pos(handle_rect.min)
+            .order(egui::Order::Foreground)
+            .interactable(true)
+            .show(ctx, |ui| {
+                let response = ui.allocate_rect(handle_rect, egui::Sense::drag());
+                if response.hovered() {
+                    ctx.set_cursor_icon(cursor);
+                }
+                if response.drag_started() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::BeginResize(direction));
+                }
+            });
+    }
+}
+
 /// Detecta si estamos corriendo dentro de WSL (y no en Linux nativo).
 /// WSL define variables de entorno propias, y su kernel se identifica
 /// a sí mismo con "microsoft" en /proc/version — revisamos las dos
@@ -462,7 +587,8 @@ fn main() -> eframe::Result<()> {
     let mut viewport = egui::ViewportBuilder::default()
         .with_inner_size([900.0, 650.0]) // tamaño de referencia antes de maximizar
         .with_maximized(true)
-        .with_resizable(true);
+        .with_resizable(true)
+        .with_decorations(false); // barra de título propia, ver custom_title_bar en update()
 
     // Ícono de la barra de título / taskbar, a partir del mismo logo
     // embebido. Si por algún motivo el PNG no decodifica bien, seguimos
