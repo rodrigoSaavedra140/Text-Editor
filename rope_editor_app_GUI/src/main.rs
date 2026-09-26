@@ -21,6 +21,8 @@ struct EditorApp {
     // mismo — no tiene por qué ser la misma que la carpeta desde
     // donde se lanzó el programa, porque se puede navegar.
     browse_dir: PathBuf,
+    // Color de fondo del área de texto (el mismo negro que ya tenías).
+    text_area_bg: egui::Color32,
     // Momento en que se pidió el cierre prolijo — si pasa mucho
     // tiempo sin que la ventana realmente se cierre (WSLg no
     // responde bien a veces), forzamos la salida igual.
@@ -38,6 +40,7 @@ impl Default for EditorApp {
             dirty: false,
             status: "Listo".to_string(),
             browse_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            text_area_bg: egui::Color32::from_rgb(10, 10, 10),
             closing_since: None,
         }
     }
@@ -234,8 +237,15 @@ impl eframe::App for EditorApp {
 
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.label("Archivo:");
-                ui.text_edit_singleline(&mut self.file_path_input);
+                let file_input_response = ui.add(
+                    egui::TextEdit::singleline(&mut self.file_path_input)
+                        .hint_text("Ingrese nombre de archivo o nombre de nuevo archivo"),
+                );
+                // Sin botón "Abrir": escribir el nombre y apretar
+                // Enter abre ese archivo directamente.
+                if file_input_response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    self.open();
+                }
 
                 // Desplegable con navegación de carpetas: subcarpetas
                 // para entrar (📁), "⬆ subir" para volver al padre, y
@@ -243,7 +253,7 @@ impl eframe::App for EditorApp {
                 let mut navigate_to: Option<PathBuf> = None;
                 let mut open_file: Option<PathBuf> = None;
                 egui::ComboBox::from_id_source("file_picker")
-                    .selected_text("Elegir…")
+                    .selected_text("Abrir…")
                     .show_ui(ui, |ui| {
                         ui.label(format!("📂 {}", self.browse_dir.display()));
                         ui.separator();
@@ -277,9 +287,6 @@ impl eframe::App for EditorApp {
                     self.open_path(path);
                 }
 
-                if ui.button("Abrir").clicked() {
-                    self.open();
-                }
                 if ui.button("Guardar (Ctrl+S)").clicked() {
                     self.save();
                 }
@@ -311,24 +318,32 @@ impl eframe::App for EditorApp {
             });
         });
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                let response = ui.add(
-                    egui::TextEdit::multiline(&mut self.text)
-                        .font(egui::TextStyle::Monospace)
-                        .desired_width(f32::INFINITY)
-                        .desired_rows(40),
-                );
-                if response.changed() {
-                    self.dirty = true;
-                }
-                // Al perder el foco (click afuera, Tab, etc.) tomamos
-                // un snapshot para el historial de undo/redo.
-                if response.lost_focus() {
-                    self.snapshot_if_changed();
-                }
+        // Sin márgenes propios: así el área de texto puede ocupar
+        // el panel central entero, sin ese borde gris alrededor que
+        // dejaba antes (por el margen por defecto de CentralPanel +
+        // el TextEdit dimensionado solo por su contenido/desired_rows
+        // en vez de por el espacio disponible real).
+        egui::CentralPanel::default()
+            .frame(egui::Frame::none().fill(self.text_area_bg))
+            .show(ctx, |ui| {
+                let available = ui.available_size();
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    let response = ui.add_sized(
+                        available,
+                        egui::TextEdit::multiline(&mut self.text)
+                            .font(egui::TextStyle::Monospace)
+                            .frame(false), // sin el borde/fondo propio del widget
+                    );
+                    if response.changed() {
+                        self.dirty = true;
+                    }
+                    // Al perder el foco (click afuera, Tab, etc.)
+                    // tomamos un snapshot para el historial de undo/redo.
+                    if response.lost_focus() {
+                        self.snapshot_if_changed();
+                    }
+                });
             });
-        });
     }
 }
 
@@ -368,7 +383,10 @@ fn main() -> eframe::Result<()> {
     }
 
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([900.0, 650.0]),
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([900.0, 650.0]) // tamaño de referencia antes de maximizar
+            .with_maximized(true)
+            .with_resizable(true),
         ..Default::default()
     };
     eframe::run_native("Rope Editor", options, Box::new(|_cc| Box::new(EditorApp::default())))
