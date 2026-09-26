@@ -9,6 +9,12 @@ use eframe::egui;
 use rope::Rope;
 use undo::{Edit, EditKind, UndoStack};
 
+/// Logo de Karkinos, embebido en el binario en tiempo de compilación
+/// (no se lee de disco en tiempo de ejecución — así el ícono y el
+/// fondo minimalista funcionan siempre, sin depender de que el
+/// archivo esté presente donde sea que se ejecute el programa).
+const LOGO_BYTES: &[u8] = include_bytes!("../assets/logo.png");
+
 struct EditorApp {
     text: String,          // buffer "vivo" que edita el widget de egui
     last_snapshot: String, // texto en el último snapshot guardado (para detectar cambios)
@@ -23,6 +29,9 @@ struct EditorApp {
     browse_dir: PathBuf,
     // Color de fondo del área de texto (el mismo negro que ya tenías).
     text_area_bg: egui::Color32,
+    // Textura del logo, cargada una sola vez en el primer frame
+    // (None hasta ese momento).
+    logo_texture: Option<egui::TextureHandle>,
     // Momento en que se pidió el cierre prolijo — si pasa mucho
     // tiempo sin que la ventana realmente se cierre (WSLg no
     // responde bien a veces), forzamos la salida igual.
@@ -41,6 +50,7 @@ impl Default for EditorApp {
             status: "Listo".to_string(),
             browse_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             text_area_bg: egui::Color32::from_rgb(10, 10, 10),
+            logo_texture: None,
             closing_since: None,
         }
     }
@@ -149,6 +159,42 @@ impl EditorApp {
         (dirs, files)
     }
 
+    /// Carga el logo como textura de egui, una sola vez (la primera
+    /// vez que hace falta dibujarlo).
+    fn ensure_logo_texture(&mut self, ctx: &egui::Context) {
+        if self.logo_texture.is_some() {
+            return;
+        }
+        if let Ok(img) = image::load_from_memory(LOGO_BYTES) {
+            let img = img.to_rgba8();
+            let size = [img.width() as usize, img.height() as usize];
+            let color_image = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
+            self.logo_texture =
+                Some(ctx.load_texture("karkinos_logo", color_image, egui::TextureOptions::default()));
+        }
+    }
+
+    /// Fondo minimalista: SOLO el logo, bien tenue, centrado — se
+    /// dibuja mientras el buffer está vacío, y queda "detrás" de
+    /// donde vas a empezar a escribir. El nombre "Karkinos" ya se
+    /// muestra en la barra de título propia, así que acá no hace
+    /// falta repetirlo.
+    fn draw_watermark(&self, ui: &egui::Ui, rect: egui::Rect) {
+        let painter = ui.painter();
+        let center = rect.center();
+
+        if let Some(tex) = &self.logo_texture {
+            let logo_side = (rect.height() * 0.32).min(260.0);
+            let logo_rect = egui::Rect::from_center_size(center, egui::vec2(logo_side, logo_side));
+            painter.image(
+                tex.id(),
+                logo_rect,
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                egui::Color32::from_white_alpha(45), // bien tenue, no compite con el texto que escribas
+            );
+        }
+    }
+
     fn save(&mut self) {
         self.snapshot_if_changed();
         let path = if let Some(p) = &self.current_file {
@@ -234,6 +280,29 @@ impl eframe::App for EditorApp {
         if x_close_requested {
             request_close(ctx, &mut self.closing_since);
         }
+
+        self.ensure_logo_texture(ctx);
+
+        // Barra de marca propia (logo + "Karkinos"), debajo de la
+        // barra nativa del sistema operativo — bajo WSLg esa barra
+        // nativa a veces queda vacía, sin ícono ni texto (aunque los
+        // botones de minimizar/maximizar/cerrar sí funcionan), así
+        // que el logo y el nombre quedan acá en vez de ahí. No le
+        // saco la decoración nativa a la ventana: así no perdemos el
+        // arrastre del borde para cambiar el tamaño.
+        egui::TopBottomPanel::top("brand_bar")
+            .exact_height(30.0)
+            .frame(egui::Frame::none().fill(egui::Color32::from_rgb(18, 18, 18)))
+            .show(ctx, |ui| {
+                ui.horizontal_centered(|ui| {
+                    ui.add_space(8.0);
+                    if let Some(tex) = &self.logo_texture {
+                        ui.add(egui::Image::new((tex.id(), egui::vec2(18.0, 18.0))));
+                    }
+                    ui.add_space(6.0);
+                    ui.label(egui::RichText::new("Karkinos").strong());
+                });
+            });
 
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
             ui.horizontal(|ui| {
@@ -327,6 +396,14 @@ impl eframe::App for EditorApp {
             .frame(egui::Frame::none().fill(self.text_area_bg))
             .show(ctx, |ui| {
                 let available = ui.available_size();
+
+                // Fondo minimalista con el logo y el nombre, SOLO
+                // mientras el buffer está vacío — apenas empezás a
+                // escribir, desaparece (queda "detrás" del cursor).
+                if self.text.is_empty() {
+                    self.draw_watermark(ui, ui.max_rect());
+                }
+
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     let response = ui.add_sized(
                         available,
@@ -382,12 +459,20 @@ fn main() -> eframe::Result<()> {
         std::env::set_var("LIBGL_ALWAYS_SOFTWARE", "1");
     }
 
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([900.0, 650.0]) // tamaño de referencia antes de maximizar
-            .with_maximized(true)
-            .with_resizable(true),
-        ..Default::default()
-    };
-    eframe::run_native("Rope Editor", options, Box::new(|_cc| Box::new(EditorApp::default())))
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([900.0, 650.0]) // tamaño de referencia antes de maximizar
+        .with_maximized(true)
+        .with_resizable(true);
+
+    // Ícono de la barra de título / taskbar, a partir del mismo logo
+    // embebido. Si por algún motivo el PNG no decodifica bien, seguimos
+    // sin ícono en vez de no abrir la app.
+    if let Ok(img) = image::load_from_memory(LOGO_BYTES) {
+        let img = img.to_rgba8();
+        let (width, height) = (img.width(), img.height());
+        viewport = viewport.with_icon(egui::IconData { rgba: img.into_raw(), width, height });
+    }
+
+    let options = eframe::NativeOptions { viewport, ..Default::default() };
+    eframe::run_native("Karkinos", options, Box::new(|_cc| Box::new(EditorApp::default())))
 }

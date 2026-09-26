@@ -1872,10 +1872,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "rope_editor_app_GUI"
+name = "rope_editor_gui"
 version = "0.1.0"
 dependencies = [
  "eframe",
+ "image",
 ]
 
 [[package]]
