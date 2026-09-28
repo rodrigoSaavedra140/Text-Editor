@@ -34,10 +34,16 @@ Es la versión con interfaz gráfica de usuario (GUI). Reutiliza la lógica cent
 ```text
 rope_editor_gui/
 ├── Cargo.toml
+├── assets/
+│   └── logo.png       # Logo de Karkinos (mascota), embebido en el binario
 └── src/
-    ├── main.rs   # Lógica principal de la app (ventana, edición, abrir/guardar)
-    ├── rope.rs   # Estructura Rope persistente
-    └── undo.rs   # Sistema de UndoStack/Edit
+    ├── main.rs        # Punto de entrada: detecta WSL, configura y abre la ventana
+    ├── app.rs         # EditorApp y su lógica: abrir, guardar, deshacer/rehacer, listar carpetas
+    ├── ui.rs          # Interfaz con egui: layout, fondo con logo, ventana de progreso al guardar
+    ├── title_bar.rs   # Barra de título propia: botones dibujados a mano y bordes para redimensionar
+    ├── util.rs        # Helpers: formato de tamaño, cierre de ventana, detección de WSL
+    ├── rope.rs        # Estructura Rope persistente
+    └── undo.rs        # Sistema de UndoStack/Edit
 ```
 
 ## ⚙️ Requisitos Previos
