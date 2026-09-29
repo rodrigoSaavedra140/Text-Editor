@@ -246,7 +246,9 @@ impl eframe::App for EditorApp {
                     .unwrap_or_else(|| "(sin guardar todavía)".to_string());
                 ui.label(format!("{}{}", path_str, modified));
                 ui.separator();
-                ui.label(format_size(self.text.len()));
+                let byte_len =
+                    self.lines.iter().map(|l| l.len()).sum::<usize>() + self.lines.len().saturating_sub(1);
+                ui.label(format_size(byte_len));
                 if !self.status.is_empty() {
                     ui.separator();
                     ui.label(&self.status);
@@ -255,38 +257,36 @@ impl eframe::App for EditorApp {
         });
 
         // Sin márgenes propios: así el área de texto puede ocupar
-        // el panel central entero, sin ese borde gris alrededor que
-        // dejaba antes (por el margen por defecto de CentralPanel +
-        // el TextEdit dimensionado solo por su contenido/desired_rows
-        // en vez de por el espacio disponible real).
+        // el panel central entero, sin ese borde gris alrededor.
         egui::CentralPanel::default()
             .frame(egui::Frame::none().fill(self.text_area_bg))
             .show(ctx, |ui| {
-                let available = ui.available_size();
-
-                // Fondo minimalista con el logo y el nombre, SOLO
-                // mientras el buffer está vacío — apenas empezás a
-                // escribir, desaparece (queda "detrás" del cursor).
-                if self.text.is_empty() {
+                // Fondo minimalista con el logo, SOLO mientras el
+                // buffer está vacío — apenas empezás a escribir,
+                // desaparece (queda "detrás" del cursor).
+                if self.is_empty_buffer() {
                     self.draw_watermark(ui, ui.max_rect());
                 }
 
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    let response = ui.add_sized(
-                        available,
-                        egui::TextEdit::multiline(&mut self.text)
-                            .font(egui::TextStyle::Monospace)
-                            .frame(false), // sin el borde/fondo propio del widget
-                    );
-                    if response.changed() {
-                        self.dirty = true;
-                    }
-                    // Al perder el foco (click afuera, Tab, etc.)
-                    // tomamos un snapshot para el historial de undo/redo.
-                    if response.lost_focus() {
-                        self.snapshot_if_changed();
-                    }
-                });
+                // Editor propio (ver editor_widget.rs): dibuja SOLO
+                // las líneas visibles en vez de relayoutear el texto
+                // entero en cada tecla como hacía egui::TextEdit —
+                // eso era lo que volvía lento al editor con archivos
+                // grandes (1MB+).
+                let response = crate::editor_widget::show(
+                    ui,
+                    &mut self.lines,
+                    &mut self.editor_state,
+                    self.text_area_bg,
+                );
+                if response.changed {
+                    self.dirty = true;
+                }
+                // Al perder el foco (click afuera, etc.) tomamos un
+                // snapshot para el historial de undo/redo.
+                if response.lost_focus {
+                    self.snapshot_if_changed();
+                }
             });
     }
 }

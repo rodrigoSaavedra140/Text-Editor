@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use eframe::egui;
 
+use crate::editor_widget::EditorState;
 use crate::rope::Rope;
 use crate::undo::{Edit, EditKind, UndoStack};
 
@@ -19,7 +20,12 @@ pub struct SaveProgress {
 }
 
 pub struct EditorApp {
-    pub text: String,          // buffer "vivo" que edita el widget de egui
+    // Buffer "vivo", partido en líneas — así el widget de edición
+    // solo tiene que tocar la línea que cambió, no reconstruir todo
+    // el texto en cada tecla (eso era lo que volvía lento a
+    // egui::TextEdit con archivos grandes).
+    pub lines: Vec<String>,
+    pub editor_state: EditorState,
     pub last_snapshot: String, // texto en el último snapshot guardado (para detectar cambios)
     pub undo_stack: UndoStack,
     pub file_path_input: String,
@@ -46,7 +52,8 @@ pub struct EditorApp {
 impl Default for EditorApp {
     fn default() -> Self {
         EditorApp {
-            text: String::new(),
+            lines: vec![String::new()],
+            editor_state: EditorState::default(),
             last_snapshot: String::new(),
             undo_stack: UndoStack::new(),
             file_path_input: String::new(),
@@ -63,14 +70,41 @@ impl Default for EditorApp {
 }
 
 impl EditorApp {
+    /// Reconstruye el texto completo a partir de `lines` — es O(n),
+    /// así que solo se llama en momentos puntuales (snapshot, guardar),
+    /// nunca en cada tecla.
+    pub fn current_text(&self) -> String {
+        self.lines.join("\n")
+    }
+
+    /// Reemplaza el contenido completo del buffer a partir de un
+    /// String (abrir archivo, deshacer, rehacer). También se usa
+    /// solo en momentos puntuales, no por cada tecla.
+    pub fn set_text(&mut self, text: &str) {
+        self.lines = if text.is_empty() {
+            vec![String::new()]
+        } else {
+            text.split('\n').map(|l| l.to_string()).collect()
+        };
+        self.editor_state.cursor_line = 0;
+        self.editor_state.cursor_col = 0;
+        self.editor_state.sel_anchor = None;
+        self.editor_state.scroll = 0.0;
+    }
+
+    pub fn is_empty_buffer(&self) -> bool {
+        self.lines.len() <= 1 && self.lines.first().map(|l| l.is_empty()).unwrap_or(true)
+    }
+
     /// Si el texto cambió desde el último snapshot, guarda un Edit
     /// (Rope antes / Rope después) en el UndoStack.
     pub fn snapshot_if_changed(&mut self) {
-        if self.text != self.last_snapshot {
+        let current = self.current_text();
+        if current != self.last_snapshot {
             let before = Rope::new(&self.last_snapshot);
-            let after = Rope::new(&self.text);
+            let after = Rope::new(&current);
             self.undo_stack.push(Edit { kind: EditKind::Replace, position: 0, before, after });
-            self.last_snapshot = self.text.clone();
+            self.last_snapshot = current;
             self.dirty = true;
         }
     }
@@ -78,8 +112,9 @@ impl EditorApp {
     pub fn undo(&mut self) {
         self.snapshot_if_changed();
         if let Some(edit) = self.undo_stack.undo() {
-            self.text = edit.before.to_string();
-            self.last_snapshot = self.text.clone();
+            let text = edit.before.to_string();
+            self.set_text(&text);
+            self.last_snapshot = text;
             self.status = "Deshecho".to_string();
         } else {
             self.status = "Nada para deshacer".to_string();
@@ -88,8 +123,9 @@ impl EditorApp {
 
     pub fn redo(&mut self) {
         if let Some(edit) = self.undo_stack.redo() {
-            self.text = edit.after.to_string();
-            self.last_snapshot = self.text.clone();
+            let text = edit.after.to_string();
+            self.set_text(&text);
+            self.last_snapshot = text;
             self.status = "Rehecho".to_string();
         } else {
             self.status = "Nada para rehacer".to_string();
@@ -102,7 +138,7 @@ impl EditorApp {
     pub fn open_path(&mut self, path: PathBuf) {
         match fs::read_to_string(&path) {
             Ok(content) => {
-                self.text = content.clone();
+                self.set_text(&content);
                 self.last_snapshot = content;
                 if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
                     self.file_path_input = name.to_string();
@@ -181,7 +217,7 @@ impl EditorApp {
             return;
         }
 
-        let data = self.text.clone().into_bytes();
+        let data = self.current_text().into_bytes();
         let total = data.len();
         let progress = Arc::new(Mutex::new(SaveProgress { written: 0, total, done: false, error: None }));
         self.save_progress = Some(Arc::clone(&progress));
