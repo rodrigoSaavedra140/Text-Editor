@@ -10,6 +10,13 @@ path = "src/main.rs"
 [dependencies]
 eframe = { version = "0.27", default-features = false, features = ["default_fonts", "glow", "persistence", "x11"] }
 image = { version = "0.24", default-features = false, features = ["png"] }
+# egui-winit 0.27 tira arboard 3.6.1 SIN la feature wayland (solo X11):
+# en sesiones Wayland nativas (Hyprland) leer/escribir el portapapeles
+# falla en silencio y ni Ctrl+V ni Ctrl+C cruzan al sistema. Al
+# declararla aca con la feature, cargo unifica las features del MISMO
+# crate en el grafo y la de egui-winit tambien pasa a hablar el
+# protocolo wayland-data-control, con fallback X11 automatico.
+arboard = { version = "3.6", features = ["wayland-data-control"] }
 
 # Binario más liviano y rápido sin cambiar el código: LTO entre crates,
 # una sola unidad de codegen y símbolos de debug fuera.

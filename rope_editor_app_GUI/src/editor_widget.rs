@@ -108,6 +108,22 @@ fn normalize_pasted(text: &str) -> String {
     text.replace("\r\n", "\n")
 }
 
+/// Texto que Ctrl+C/Ctrl+X copiarian: la selección si hay, y si no
+/// la línea LÓGICA completa bajo el cursor (convención de editores
+/// tipo VS Code). egui-winit consume Ctrl+C/X y solo emite
+/// Event::Copy / Event::Cut sin payload, así que la decisión vive
+/// en este helper puro.
+fn copy_text(
+    lines: &[String],
+    sel: Option<((usize, usize), (usize, usize))>,
+    cursor_line: usize,
+) -> String {
+    match sel {
+        Some((s, e)) => selected_text(lines, s, e),
+        None => lines[cursor_line.min(lines.len().saturating_sub(1))].clone(),
+    }
+}
+
 /// Inserta `text` (puede tener saltos de línea, ej. al pegar) en
 /// `at`, y devuelve la posición del cursor después de insertar.
 fn insert_text(lines: &mut Vec<String>, at: (usize, usize), text: &str) -> (usize, usize) {
@@ -497,36 +513,40 @@ pub fn show(
                             state.sel_anchor = Some((state.cursor_line, state.cursor_col));
                         }
                     }
-                    egui::Key::A if modifiers.ctrl => {
+                    egui::Key::A if modifiers.command => {
                         state.sel_anchor = Some((0, 0));
                         state.cursor_line = lines.len() - 1;
                         state.cursor_col = line_char_count(&lines[state.cursor_line]);
                     }
-                    egui::Key::C if modifiers.ctrl => {
-                        // Con selección copia la selección; sin selección
-                        // copia la línea LÓGICA bajo el cursor (la
-                        // convención de editores tipo VS Code) — antes
-                        // este caso era un no-op y "no copiaba nada".
-                        let text = match selection_range(state) {
-                            Some((s, e)) => selected_text(lines, s, e),
-                            None => lines[state.cursor_line].clone(),
-                        };
-                        ui.output_mut(|o| o.copied_text = text);
-                    }
-                    egui::Key::X if modifiers.ctrl => {
-                        if let Some((s, e)) = selection_range(state) {
-                            let text = selected_text(lines, s, e);
-                            ui.output_mut(|o| o.copied_text = text);
-                            delete_range(lines, s, e);
-                            state.cursor_line = s.0;
-                            state.cursor_col = s.1;
-                            state.sel_anchor = Some((s.0, s.1));
-                            changed = true;
-                            resync_rows!();
-                        }
-                    }
+                    // NOTA: Ctrl+C y Ctrl+X NO llegan como Key::C/Key::X
+                    // (egui-winit los consume y los reenvia como
+                    // Event::Copy / Event::Cut, ver los brazos de abajo).
                     _ => {}
                 },
+                // egui-winit consume Ctrl+C y Ctrl+X (modifiers.command:
+                // tambien Cmd en macOS) y los reenvia aca SIN payload,
+                // así que la decisión de qué copiar la toma este widget
+                // con su propio estado: selección, o la línea bajo el
+                // cursor (convención VS Code).
+                egui::Event::Copy => {
+                    let sel = selection_range(state);
+                    ui.output_mut(|o| o.copied_text = copy_text(lines, sel, state.cursor_line));
+                }
+                // Cortar = copiar y borrar la selección; sin selección
+                // corta la línea entera bajo el cursor.
+                egui::Event::Cut => {
+                    let sel = selection_range(state);
+                    let text = copy_text(lines, sel, state.cursor_line);
+                    ui.output_mut(|o| o.copied_text = text);
+                    if let Some((s, e)) = sel {
+                        delete_range(lines, s, e);
+                        state.cursor_line = s.0;
+                        state.cursor_col = s.1;
+                        state.sel_anchor = Some((s.0, s.1));
+                        changed = true;
+                        resync_rows!();
+                    }
+                }
                 _ => {}
             }
         }
@@ -648,6 +668,26 @@ pub fn show(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // egui-winit consume Ctrl+C/X y las re-envia como Event::Copy/Cut
+    // (sin payload): el widget decide que copiar con su estado propio.
+    // copy_text centraliza esa decision: seleccion o, sin ella, la
+    // linea logica entera bajo el cursor.
+    #[test]
+    fn copy_text_con_seleccion() {
+        let lines = vec!["uno".to_string(), "dos".to_string(), "tres".to_string()];
+        // Selección cruzando dos líneas: el salto de línea forma parte
+        // del texto copiado (igual que en cualquier editor estándar).
+        assert_eq!(copy_text(&lines, Some(((0, 1), (1, 2))), 0), "no\ndo");
+        assert_eq!(copy_text(&lines, Some(((2, 0), (2, 4))), 0), "tres");
+    }
+
+    #[test]
+    fn copy_text_sin_seleccion_copia_linea_del_cursor() {
+        let lines = vec!["uno".to_string(), "dos tres".to_string()];
+        assert_eq!(copy_text(&lines, None, 1), "dos tres");
+        assert_eq!(copy_text(&lines, None, 0), "uno");
+    }
 
     #[test]
     fn normalize_pasted_convierte_crlf() {
