@@ -1,6 +1,5 @@
 mod app;
 mod editor_widget;
-mod rope;
 mod title_bar;
 mod ui;
 mod undo;

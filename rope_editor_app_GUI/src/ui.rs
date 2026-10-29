@@ -200,7 +200,10 @@ impl eframe::App for EditorApp {
                             }
                         }
 
-                        let (dirs, files) = Self::list_dir(&self.browse_dir);
+                        // Caché del listado (ver cached_list_dir en
+                        // app.rs): sin read_dir ni peek de archivos
+                        // por frame con el desplegable abierto.
+                        let (dirs, files) = self.cached_list_dir();
 
                         for name in &dirs {
                             if ui.selectable_label(false, format!("📁 {}", name)).clicked() {
@@ -246,9 +249,7 @@ impl eframe::App for EditorApp {
                     .unwrap_or_else(|| "(sin guardar todavía)".to_string());
                 ui.label(format!("{}{}", path_str, modified));
                 ui.separator();
-                let byte_len =
-                    self.lines.iter().map(|l| l.len()).sum::<usize>() + self.lines.len().saturating_sub(1);
-                ui.label(format_size(byte_len));
+                ui.label(format_size(self.view_bytes));
                 if !self.status.is_empty() {
                     ui.separator();
                     ui.label(&self.status);
@@ -281,6 +282,9 @@ impl eframe::App for EditorApp {
                 );
                 if response.changed {
                     self.dirty = true;
+                    // Una vez por edición real (no por frame): refresca
+                    // el tamaño de la barra de estado.
+                    self.recalc_view_bytes();
                 }
                 // Al perder el foco (click afuera, etc.) tomamos un
                 // snapshot para el historial de undo/redo.

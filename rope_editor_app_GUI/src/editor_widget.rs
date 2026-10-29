@@ -17,6 +17,16 @@ pub struct EditorState {
     // sin tocar el resto (por eso sigue siendo rápido con archivos
     // grandes).
     row_counts: Vec<usize>,
+    // Cantidad de CARACTERES por línea lógica, misma vida útil que
+    // row_counts: se refrescan juntas (a pares) para no recontar los
+    // chars de cada línea visible en cada frame — con una línea de
+    // 1MB eso era O(tamaño) por frame.
+    char_lens: Vec<usize>,
+    // Sumatorias acumuladas: cum_rows[i] = filas visuales que ocupan
+    // las líneas [0..i). Con esto el total de filas es O(1) y ubicar
+    // la línea que arranca en una fila dada es O(log n) por búsqueda
+    // binaria, en vez de O(n) sumando línea por línea cada frame.
+    cum_rows: Vec<usize>,
     last_wrap_chars: usize,
 }
 
@@ -150,26 +160,57 @@ fn rebuild_row_counts(lines: &[String], wrap_chars: usize) -> Vec<usize> {
     lines.iter().map(|l| row_count_for(l, wrap_chars)).collect()
 }
 
+fn rebuild_char_lens(lines: &[String]) -> Vec<usize> {
+    lines.iter().map(|l| l.chars().count()).collect()
+}
+
+/// cum_rows[0] = 0 y cum_rows[i] = suma de row_counts[0..i).
+fn build_cum_rows(row_counts: &[usize]) -> Vec<usize> {
+    let mut cum = Vec::with_capacity(row_counts.len() + 1);
+    let mut acc = 0usize;
+    cum.push(0);
+    for &rc in row_counts {
+        acc += rc;
+        cum.push(acc);
+    }
+    cum
+}
+
+/// El tamaño del documento (en filas visuales) cambió en `delta`: aplica
+/// ese shift a todas las sumatorias posteriores a la línea editada.
+fn adjust_cum_rows(cum_rows: &mut [usize], line: usize, delta: isize) {
+    if delta == 0 {
+        return;
+    }
+    let from = (line + 1).min(cum_rows.len());
+    for c in &mut cum_rows[from..] {
+        *c = (*c as isize + delta).max(0) as usize;
+    }
+}
+
+/// Índice de la línea lógica que contiene (o de donde arrancaría) la
+/// fila visual absoluta `row`, por búsqueda binaria sobre cum_rows.
+/// Requiere cum_rows.len() >= 2 (siempre hay al menos 1 línea).
+fn line_at_visual_row(cum_rows: &[usize], row: usize) -> usize {
+    let idx = cum_rows.partition_point(|&c| c <= row).saturating_sub(1);
+    idx.min(cum_rows.len().saturating_sub(2))
+}
+
 /// Dado un Y en "espacio de documento" (ya sumado el scroll), devuelve
 /// (línea lógica, sub-fila dentro de esa línea).
-fn line_and_subrow_at_doc_y(row_counts: &[usize], doc_y: f32, row_height: f32) -> (usize, usize) {
+fn line_and_subrow_at_doc_y(cum_rows: &[usize], doc_y: f32, row_height: f32) -> (usize, usize) {
     let target_row = (doc_y / row_height).floor().max(0.0) as usize;
-    let mut acc = 0usize;
-    for (i, &rc) in row_counts.iter().enumerate() {
-        if target_row < acc + rc {
-            return (i, target_row - acc);
-        }
-        acc += rc;
-    }
-    let last = row_counts.len().saturating_sub(1);
-    (last, row_counts.last().copied().unwrap_or(1).saturating_sub(1))
+    let line = line_at_visual_row(cum_rows, target_row);
+    // Un click muy por debajo del final del documento cae acá con un
+    // sub_row fuera de rango: el llamador acota la columna contra la
+    // longitud de la línea, igual que antes.
+    (line, target_row - cum_rows[line])
 }
 
 /// Fila visual absoluta (contando desde el principio del documento)
 /// en la que cae (line, col).
-fn visual_row_of(row_counts: &[usize], line: usize, col: usize, wrap_chars: usize) -> usize {
-    let base: usize = row_counts[..line].iter().sum();
-    base + col / wrap_chars
+fn visual_row_of(cum_rows: &[usize], line: usize, col: usize, wrap_chars: usize) -> usize {
+    cum_rows[line.min(cum_rows.len().saturating_sub(1))] + col / wrap_chars
 }
 
 /// Dibuja y maneja el editor de texto, mostrando SOLO las filas que
@@ -213,10 +254,12 @@ pub fn show(
     // solo la línea que cambió.
     if state.row_counts.len() != lines.len() || state.last_wrap_chars != wrap_chars {
         state.row_counts = rebuild_row_counts(lines, wrap_chars);
+        state.char_lens = rebuild_char_lens(lines);
+        state.cum_rows = build_cum_rows(&state.row_counts);
         state.last_wrap_chars = wrap_chars;
     }
 
-    let total_rows: usize = state.row_counts.iter().sum();
+    let total_rows: usize = *state.cum_rows.last().unwrap_or(&0);
     let total_height = total_rows as f32 * row_height;
     let max_scroll = (total_height - rect.height()).max(0.0);
     let show_scrollbar = max_scroll > 0.0;
@@ -260,7 +303,7 @@ pub fn show(
                 }
                 let doc_y = pos.y - rect.top() - PAD_Y + state.scroll;
                 let (clicked_line, sub_row) =
-                    line_and_subrow_at_doc_y(&state.row_counts, doc_y.max(0.0), row_height);
+                    line_and_subrow_at_doc_y(&state.cum_rows, doc_y.max(0.0), row_height);
                 let rel_x = (pos.x - rect.left() - PAD_X).max(0.0);
                 let col_in_row = (rel_x / char_width).round() as usize;
                 let clicked_col =
@@ -288,9 +331,22 @@ pub fn show(
         () => {
             if state.row_counts.len() != lines.len() {
                 state.row_counts = rebuild_row_counts(lines, wrap_chars);
+                state.char_lens = rebuild_char_lens(lines);
+                state.cum_rows = build_cum_rows(&state.row_counts);
             } else {
-                state.row_counts[state.cursor_line] =
-                    row_count_for(&lines[state.cursor_line], wrap_chars);
+                // La línea editada es cursor_line (todas las mutaciones
+                // dejan el cursor sobre la línea que cambió): parcheamos
+                // SOLO su entrada de las tres cachés, en O(n) solo si
+                // cambió su cantidad de filas (ajuste del sumatorio).
+                let old_rows = state.row_counts[state.cursor_line];
+                let new_rows = row_count_for(&lines[state.cursor_line], wrap_chars);
+                state.row_counts[state.cursor_line] = new_rows;
+                state.char_lens[state.cursor_line] = line_char_count(&lines[state.cursor_line]);
+                adjust_cum_rows(
+                    &mut state.cum_rows,
+                    state.cursor_line,
+                    new_rows as isize - old_rows as isize,
+                );
             }
         };
     }
@@ -467,7 +523,7 @@ pub fn show(
     // --- autoscroll vertical: que el cursor nunca quede fuera de
     // vista, SOLO cuando se acaba de mover ---
     if cursor_moved {
-        let cursor_row = visual_row_of(&state.row_counts, state.cursor_line, state.cursor_col, wrap_chars);
+        let cursor_row = visual_row_of(&state.cum_rows, state.cursor_line, state.cursor_col, wrap_chars);
         let cursor_y = cursor_row as f32 * row_height;
         if cursor_y < state.scroll {
             state.scroll = cursor_y;
@@ -492,18 +548,27 @@ pub fn show(
     let painter = ui.painter_at(clip_rect);
     let sel = selection_range(state);
 
-    let mut visual_row = 0usize; // fila visual acumulada, línea por línea
-    for (i, line) in lines.iter().enumerate() {
+    // La primera línea visible sale O(log n) de la búsqueda binaria
+    // sobre cum_rows: el loop de abajo solo recorre las filas que
+    // entran en pantalla (más la primera, que puede verse partida),
+    // no el documento entero como antes.
+    let first_row = ((state.scroll / row_height).floor().max(0.0)) as usize;
+    let start_line = line_at_visual_row(&state.cum_rows, first_row).min(lines.len().saturating_sub(1));
+    let mut visual_row = state.cum_rows[start_line];
+    for i in start_line..lines.len() {
+        let line = &lines[i];
         let rows_here = state.row_counts.get(i).copied().unwrap_or(1);
         let line_top_y = rect.top() + PAD_Y + visual_row as f32 * row_height - state.scroll;
-        let line_bottom_y = line_top_y + rows_here as f32 * row_height;
 
-        if line_bottom_y < rect.top() || line_top_y > rect.bottom() {
-            visual_row += rows_here;
-            continue;
+        if line_top_y > rect.bottom() {
+            break;
         }
 
-        let char_len = line_char_count(line);
+        let char_len = state
+            .char_lens
+            .get(i)
+            .copied()
+            .unwrap_or_else(|| line_char_count(line));
         for sub in 0..rows_here {
             let y = line_top_y + sub as f32 * row_height;
             if y + row_height < rect.top() || y > rect.bottom() {
@@ -543,7 +608,7 @@ pub fn show(
                 let caret_x = rect.left() + PAD_X + (state.cursor_col - start) as f32 * char_width;
                 painter.line_segment(
                     [egui::pos2(caret_x, y), egui::pos2(caret_x, y + row_height)],
-                    egui::Stroke::new(1.5, egui::Color32::WHITE),
+                    egui::Stroke::new(1.5_f32, egui::Color32::WHITE),
                 );
             }
         }
@@ -566,4 +631,71 @@ pub fn show(
     }
 
     EditorResponse { changed, lost_focus }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_cum_rows_suma_prefix() {
+        let cum = build_cum_rows(&[2, 1, 3]);
+        assert_eq!(cum, vec![0, 2, 3, 6]);
+    }
+
+    #[test]
+    fn build_cum_rows_vacio() {
+        assert_eq!(build_cum_rows(&[]), vec![0]);
+    }
+
+    #[test]
+    fn adjust_cum_rows_desplaza_solo_tail() {
+        let mut cum = vec![0, 2, 3, 6];
+        // La línea 1 pasa de 1 fila a 2 (+1)
+        adjust_cum_rows(&mut cum, 1, 1);
+        assert_eq!(cum, vec![0, 2, 4, 7]);
+        // Y hacia abajo (unión de líneas, -2)
+        adjust_cum_rows(&mut cum, 0, -2);
+        assert_eq!(cum, vec![0, 0, 2, 5]);
+    }
+
+    #[test]
+    fn adjust_cum_rows_sin_delta_no_hace_nada() {
+        let mut cum = vec![0, 2, 3];
+        adjust_cum_rows(&mut cum, 0, 0);
+        assert_eq!(cum, vec![0, 2, 3]);
+    }
+
+    #[test]
+    fn line_at_visual_row_busca_binaria() {
+        let cum = build_cum_rows(&[1, 3, 2]);
+        // filas: línea0 en fila 0; línea1 en filas 1..4; línea2 en 4..6
+        assert_eq!(line_at_visual_row(&cum, 0), 0);
+        assert_eq!(line_at_visual_row(&cum, 1), 1);
+        assert_eq!(line_at_visual_row(&cum, 3), 1);
+        assert_eq!(line_at_visual_row(&cum, 4), 2);
+        assert_eq!(line_at_visual_row(&cum, 5), 2);
+        // Más allá del final: cae en la última línea (el llamador
+        // acota la columna).
+        assert_eq!(line_at_visual_row(&cum, 999), 2);
+    }
+
+    #[test]
+    fn line_and_subrow_at_doc_y_con_covacia() {
+        let cum = build_cum_rows(&[1, 2, 1]);
+        // Líneas de 2 filas cada una para simplificar
+        let (line, sub) = line_and_subrow_at_doc_y(&cum, 2.5 * 10.0, 10.0);
+        assert_eq!(line, 1); // fila 2 => cae en línea 1
+        assert_eq!(sub, 1);
+    }
+
+    #[test]
+    fn visual_row_of_usa_prefix() {
+        let cum = build_cum_rows(&[1, 3, 2]);
+        assert_eq!(visual_row_of(&cum, 0, 0, 80), 0);
+        assert_eq!(visual_row_of(&cum, 1, 0, 80), 1);
+        assert_eq!(visual_row_of(&cum, 2, 10, 80), 4);
+        // col avanza en sub-filas enteras dentro de su línea
+        assert_eq!(visual_row_of(&cum, 1, 160, 80), 3);
+    }
 }

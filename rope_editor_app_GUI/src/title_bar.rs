@@ -24,7 +24,7 @@ pub fn title_bar_icon_button(ui: &mut egui::Ui, icon: TitleBarIcon) -> egui::Res
         ui.painter().rect_filled(rect, 0.0, bg);
     }
 
-    let stroke = egui::Stroke::new(1.2, egui::Color32::from_gray(225));
+    let stroke = egui::Stroke::new(1.2_f32, egui::Color32::from_gray(225));
     let center = rect.center();
     let painter = ui.painter();
 

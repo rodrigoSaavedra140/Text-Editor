@@ -2,13 +2,12 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use eframe::egui;
 
 use crate::editor_widget::EditorState;
-use crate::rope::Rope;
-use crate::undo::{Edit, EditKind, UndoStack};
+use crate::undo::{Edit, UndoStack};
 
 /// Estado compartido entre el hilo que escribe el archivo y la UI,
 /// que solo lee esto para dibujar la barra de progreso.
@@ -47,6 +46,16 @@ pub struct EditorApp {
     // tiempo sin que la ventana realmente se cierre (WSLg no
     // responde bien a veces), forzamos la salida igual.
     pub closing_since: Option<Instant>,
+    // Bytes del texto actual, cacheado. Recalcular era O(total) en
+    // CADA frame (sumaba el largo de todas las líneas para la barra
+    // de estado); ahora solo se refresca cuando el texto cambia.
+    pub view_bytes: usize,
+    // Listado de la carpeta que se muestra en el desplegable,
+    // cacheado: read_dir + abrir los primeros 8 KiB de cada archivo
+    // era I/O de disco EN CADA FRAME con el desplegable abierto.
+    // Se invalida al navegar a otra carpeta o cuando cambia el
+    // mtime de la carpeta (archivos creados/borrados dentro).
+    dir_cache: Option<(PathBuf, Option<SystemTime>, Vec<String>, Vec<String>)>,
 }
 
 impl Default for EditorApp {
@@ -65,6 +74,8 @@ impl Default for EditorApp {
             logo_texture: None,
             save_progress: None,
             closing_since: None,
+            view_bytes: 0,
+            dir_cache: None,
         }
     }
 }
@@ -90,6 +101,37 @@ impl EditorApp {
         self.editor_state.cursor_col = 0;
         self.editor_state.sel_anchor = None;
         self.editor_state.scroll = 0.0;
+        self.recalc_view_bytes();
+    }
+
+    /// Recalcula el tamaño "en vivo" que muestra la barra de estado.
+    /// O(n) en memoria leída (sin alocar el texto entero), y solo se
+    /// corre cuando el buffer cambia de verdad: al editar (una vez por
+    /// tecla, no por frame), abrir, deshacer o rehacer.
+    pub fn recalc_view_bytes(&mut self) {
+        self.view_bytes = self.lines.iter().map(|l| l.len()).sum::<usize>()
+            + self.lines.len().saturating_sub(1);
+    }
+
+    /// Listado de `self.browse_dir` con caché (ver el campo
+    /// `dir_cache`): mismo estado que antes, salvo que en frames
+    /// repetidos con el desplegable abierto no hay I/O de disco.
+    pub fn cached_list_dir(&mut self) -> (Vec<String>, Vec<String>) {
+        let mtime = std::fs::metadata(&self.browse_dir)
+            .ok()
+            .and_then(|m| m.modified().ok());
+        let hit = match &self.dir_cache {
+            Some((dir, mt, dirs, files)) if *dir == self.browse_dir && *mt == mtime => {
+                Some((dirs.clone(), files.clone()))
+            }
+            _ => None,
+        };
+        if let Some(hit) = hit {
+            return hit;
+        }
+        let listing = Self::list_dir(&self.browse_dir);
+        self.dir_cache = Some((self.browse_dir.clone(), mtime, listing.0.clone(), listing.1.clone()));
+        listing
     }
 
     pub fn is_empty_buffer(&self) -> bool {
@@ -97,13 +139,14 @@ impl EditorApp {
     }
 
     /// Si el texto cambió desde el último snapshot, guarda un Edit
-    /// (Rope antes / Rope después) en el UndoStack.
+    /// (texto antes / texto después) en el UndoStack.
     pub fn snapshot_if_changed(&mut self) {
         let current = self.current_text();
         if current != self.last_snapshot {
-            let before = Rope::new(&self.last_snapshot);
-            let after = Rope::new(&current);
-            self.undo_stack.push(Edit { kind: EditKind::Replace, position: 0, before, after });
+            self.undo_stack.push(Edit {
+                before: self.last_snapshot.clone(),
+                after: current.clone(),
+            });
             self.last_snapshot = current;
             self.dirty = true;
         }
@@ -112,7 +155,7 @@ impl EditorApp {
     pub fn undo(&mut self) {
         self.snapshot_if_changed();
         if let Some(edit) = self.undo_stack.undo() {
-            let text = edit.before.to_string();
+            let text = edit.before.clone();
             self.set_text(&text);
             self.last_snapshot = text;
             self.status = "Deshecho".to_string();
@@ -123,7 +166,7 @@ impl EditorApp {
 
     pub fn redo(&mut self) {
         if let Some(edit) = self.undo_stack.redo() {
-            let text = edit.after.to_string();
+            let text = edit.after.clone();
             self.set_text(&text);
             self.last_snapshot = text;
             self.status = "Rehecho".to_string();
