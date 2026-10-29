@@ -2,6 +2,39 @@ use std::time::{Duration, Instant};
 
 use eframe::egui;
 
+/// S4: parsea la entrada de "Ir a línea N" (Ctrl+G). Devuelve el
+/// índice 0-based de destino o None si la entrada no es un número:
+/// el llamador no mueve el cursor en ese caso, solo avisa.
+pub fn parse_goto_line(input: &str, total_lines: usize) -> Option<usize> {
+    let n: usize = input.trim().parse().ok()?;
+    if n == 0 {
+        return Some(0); // "0" y "1" son la misma primera línea
+    }
+    Some((n - 1).min(total_lines.max(1) - 1))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_goto_line_numera_desde_1_y_clampea() {
+        assert_eq!(parse_goto_line("3", 10), Some(2));
+        assert_eq!(parse_goto_line("  7  ", 10), Some(6));
+        assert_eq!(parse_goto_line("1", 10), Some(0));
+        // 0 = primera línea también (más simple que rechazar).
+        assert_eq!(parse_goto_line("0", 10), Some(0));
+        // Fuera de rango: se acota a la última línea.
+        assert_eq!(parse_goto_line("999", 10), Some(9));
+        // Documento con una sola línea: todo cae adentro.
+        assert_eq!(parse_goto_line("5", 1), Some(0));
+        // Basura: sin movimiento.
+        assert_eq!(parse_goto_line("abc", 10), None);
+        assert_eq!(parse_goto_line("-4", 10), None);
+        assert_eq!(parse_goto_line("", 10), None);
+    }
+}
+
 /// Tamaño legible del texto actual en el buffer (bytes UTF-8) — es el
 /// tamaño "en vivo", incluye cambios sin guardar todavía, no el
 /// tamaño del archivo en disco.

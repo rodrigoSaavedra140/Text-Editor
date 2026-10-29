@@ -123,6 +123,63 @@ impl EditorApp {
         }
     }
 
+    /// S4: ventana pequeña "Ir a línea" de Ctrl+G. Enter aplica,
+    /// Esc cierra; la X del propio diálogo cuenta como cerrar.
+    /// Números inválidos no mueven el cursor: solo avisan.
+    fn show_goto_line(&mut self, ctx: &egui::Context) {
+        if !self.goto_pending {
+            return;
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.goto_pending = false;
+            return;
+        }
+        let mut apply = false;
+        let mut enter_pressed = false;
+        egui::Window::new("Ir a línea")
+            // La X del diálogo escribe false directamente en el flag.
+            .open(&mut self.goto_pending)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 64.0))
+            .show(ctx, |ui| {
+                ui.set_min_width(240.0);
+                ui.horizontal(|ui| {
+                    ui.label("Línea:");
+                    let field =
+                        ui.add(egui::TextEdit::singleline(&mut self.goto_input).char_limit(12));
+                    // El campo pide el foco cada frame del diálogo:
+                    // escribir y Enter salen solos.
+                    field.request_focus();
+                    if ui.button("Ir").clicked() {
+                        apply = true;
+                    }
+                    // Enter del campo (con foco) = Ir. Se lleva a una
+                    // flag local: no hay valores que "escapen" del
+                    // closure.
+                    if field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        enter_pressed = true;
+                    }
+                });
+            });
+        if enter_pressed {
+            apply = true;
+        }
+        if apply {
+            self.goto_pending = false;
+            match crate::util::parse_goto_line(&self.goto_input, self.lines.len()) {
+                Some(idx) => {
+                    self.editor_state.cursor_line = idx;
+                    self.editor_state.cursor_col = 0;
+                    self.editor_state.sel_anchor = Some((idx, 0));
+                    self.editor_state.request_autoscroll();
+                    self.status = format!("Línea {}", idx + 1);
+                }
+                None => self.status = "Escribí un número de línea para saltar".to_string(),
+            }
+        }
+    }
+
     /// Carga el logo como textura de egui, una sola vez (la primera
     /// vez que hace falta dibujarlo).
     fn ensure_logo_texture(&mut self, ctx: &egui::Context) {
@@ -168,12 +225,13 @@ impl eframe::App for EditorApp {
         self.check_external_changes();
 
         // Atajos de teclado globales
-        let (want_save, want_undo, want_redo, want_quit) = ctx.input(|i| {
+        let (want_save, want_undo, want_redo, want_quit, want_goto) = ctx.input(|i| {
             (
                 i.modifiers.ctrl && i.key_pressed(egui::Key::S),
                 i.modifiers.ctrl && i.key_pressed(egui::Key::Z),
                 i.modifiers.ctrl && i.key_pressed(egui::Key::Y),
                 i.modifiers.ctrl && i.key_pressed(egui::Key::Q),
+                i.modifiers.ctrl && i.key_pressed(egui::Key::G),
             )
         });
         if want_save {
@@ -187,6 +245,12 @@ impl eframe::App for EditorApp {
         }
         if want_quit {
             self.try_close(ctx);
+        }
+        // S4: Ctrl+G abre "Ir a línea" — precargado con la línea
+        // actual para editar el número en vez de escribirlo de cero.
+        if want_goto && !self.close_pending {
+            self.goto_input = format!("{}", self.editor_state.cursor_line + 1);
+            self.goto_pending = true;
         }
 
         // Lo mismo si el cierre vino del botón X de la ventana o de
@@ -390,5 +454,8 @@ impl eframe::App for EditorApp {
         // S1: al final, para que el diálogo SIEMPRE pinte por encima
         // de todos los paneles ya dibujados este frame.
         self.show_close_confirm(ctx);
+        // S4: igual que el confirm, arriba de todo (los paneles
+        // dibujados antes no le pisan al campo de entrada).
+        self.show_goto_line(ctx);
     }
 }

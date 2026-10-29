@@ -28,6 +28,20 @@ pub struct EditorState {
     // binaria, en vez de O(n) sumando línea por línea cada frame.
     cum_rows: Vec<usize>,
     last_wrap_chars: usize,
+    // S4: ancho del gutter con el que se construyó la caché (con
+    // dígitos distintos el wrap cambia igual que al redimensionar).
+    last_gutter: f32,
+    // S4: aviso de "llevá el cursor a la vista" (Ctrl+G /
+    // buscar y reemplazar): el autoscroll de teclado solo corre
+    // cuando HAY eventos; saltos externos necesitan un flag propio.
+    pub needs_autoscroll: bool,
+}
+
+impl EditorState {
+    /// Pide desplazar la vista hasta el cursor en el próximo frame.
+    pub fn request_autoscroll(&mut self) {
+        self.needs_autoscroll = true;
+    }
 }
 
 pub struct EditorResponse {
@@ -42,6 +56,15 @@ fn char_to_byte(s: &str, char_idx: usize) -> usize {
 fn line_char_count(s: &str) -> usize {
     s.chars().count()
 }
+
+/// S4: ancho de la banda de números: dígitos del total de líneas +
+/// padding fijo. Crecer del documento = ancho estable en frames.
+fn gutter_width_for(total_lines: usize, char_width: f32) -> f32 {
+    let digits = total_lines.max(1).to_string().len();
+    digits as f32 * char_width + GUTTER_PAD * 2.0
+}
+
+const GUTTER_PAD: f32 = 4.0;
 
 // Margen para que el texto no arranque pegado al borde del panel.
 const PAD_X: f32 = 8.0;
@@ -272,22 +295,32 @@ pub fn show(
     let lost_focus = state.was_focused && !has_focus_before;
     state.was_focused = has_focus_before;
 
-    // Reservamos SIEMPRE el ancho de la scrollbar para calcular el
-    // wrap (no solo cuando está visible) — así el punto de corte de
-    // las líneas no "salta" apenas aparece o desaparece la barra.
-    let usable_width = (rect.width() - PAD_X - SCROLLBAR_W).max(10.0);
+    // S4: banda de números a la izquierda del texto — ancho según
+    // los dígitos del total de líneas (crece con el documento).
+    let gutter_w = gutter_width_for(lines.len(), char_width);
+    // Origen del texto: después de la banda (y del PAD_X de siempre).
+    let text_left = rect.left() + gutter_w + PAD_X;
+
+    // Reservamos SIEMPRE el ancho de la scrollbar y del gutter para
+    // calcular el wrap — así el punto de corte de las líneas no
+    // "salta" cuando la banda gana un dígito o aparece la barra.
+    let usable_width = (rect.width() - gutter_w - PAD_X - SCROLLBAR_W).max(10.0);
     let wrap_chars = wrap_chars_for(usable_width, char_width);
 
     // Reconstruir la caché de filas por línea SOLO si cambió la
     // cantidad de líneas o el ancho disponible (abrir archivo,
-    // deshacer/rehacer, redimensionar ventana) — en el caso común
-    // (tipear un carácter) esto se saltea, y más abajo parcheamos
-    // solo la línea que cambió.
-    if state.row_counts.len() != lines.len() || state.last_wrap_chars != wrap_chars {
+    // deshacer/rehacer, redimensionar ventana, gutter que crece) —
+    // en el caso común (tipear un carácter) esto se saltea, y más
+    // abajo parcheamos solo la línea que cambió.
+    if state.row_counts.len() != lines.len()
+        || state.last_wrap_chars != wrap_chars
+        || state.last_gutter != gutter_w
+    {
         state.row_counts = rebuild_row_counts(lines, wrap_chars);
         state.char_lens = rebuild_char_lens(lines);
         state.cum_rows = build_cum_rows(&state.row_counts);
         state.last_wrap_chars = wrap_chars;
+        state.last_gutter = gutter_w;
     }
 
     let total_rows: usize = *state.cum_rows.last().unwrap_or(&0);
@@ -335,7 +368,7 @@ pub fn show(
                 let doc_y = pos.y - rect.top() - PAD_Y + state.scroll;
                 let (clicked_line, sub_row) =
                     line_and_subrow_at_doc_y(&state.cum_rows, doc_y.max(0.0), row_height);
-                let rel_x = (pos.x - rect.left() - PAD_X).max(0.0);
+                let rel_x = (pos.x - text_left).max(0.0);
                 let col_in_row = (rel_x / char_width).round() as usize;
                 let clicked_col =
                     (sub_row * wrap_chars + col_in_row).min(line_char_count(&lines[clicked_line]));
@@ -350,6 +383,13 @@ pub fn show(
                 cursor_moved = true;
             }
         }
+    }
+    // S4: saltos EXTERNOS al widget (Ctrl+G, y luego buscar):
+    // colocan el cursor por código, sin teclado, así que piden
+    // su propio autoscroll (el de teclado corre solo con eventos).
+    if state.needs_autoscroll {
+        cursor_moved = true;
+        state.needs_autoscroll = false;
     }
     let has_focus = ui.memory(|m| m.has_focus(id));
 
@@ -629,6 +669,13 @@ pub fn show(
     let painter = ui.painter_at(clip_rect);
     let sel = selection_range(state);
 
+    // S4: banda de números de línea, pintada ANTES que el texto
+    // (mismo layer: orden de llamadas = orden de pintura).
+    let gutter_rect =
+        egui::Rect::from_min_max(rect.min, egui::pos2(rect.left() + gutter_w, rect.max.y));
+    let gutter_painter = ui.painter_at(gutter_rect);
+    gutter_painter.rect_filled(gutter_rect, 0.0, egui::Color32::from_white_alpha(5));
+
     // La primera línea visible sale O(log n) de la búsqueda binaria
     // sobre cum_rows: el loop de abajo solo recorre las filas que
     // entran en pantalla (más la primera, que puede verse partida),
@@ -644,6 +691,17 @@ pub fn show(
         if line_top_y > rect.bottom() {
             break;
         }
+
+        // S4: el número se alinea a la FILA VISUAL primera de la
+        // línea lógica (una línea envuelta muestra su número una
+        // sola vez) y right-align , para que los dígitos no bailen.
+        gutter_painter.text(
+            egui::pos2(gutter_rect.right() - GUTTER_PAD, line_top_y),
+            egui::Align2::RIGHT_TOP,
+            (i + 1).to_string(),
+            font_id.clone(),
+            egui::Color32::from_gray(110),
+        );
 
         let char_len = state
             .char_lens
@@ -668,9 +726,9 @@ pub fn show(
                     let row_start = line_start_col.max(start);
                     let row_end = line_end_col.min(end);
                     if row_start < row_end || (line_start_col == line_end_col && start == 0 && sub == 0) {
-                        let x0 = rect.left() + PAD_X + (row_start.saturating_sub(start)) as f32 * char_width;
+                        let x0 = text_left + (row_start.saturating_sub(start)) as f32 * char_width;
                         let x1 =
-                            rect.left() + PAD_X + (row_end.saturating_sub(start)).max(row_start.saturating_sub(start) + 1) as f32 * char_width;
+                            text_left + (row_end.saturating_sub(start)).max(row_start.saturating_sub(start) + 1) as f32 * char_width;
                         let sel_rect =
                             egui::Rect::from_min_max(egui::pos2(x0, y), egui::pos2(x1, y + row_height));
                         painter.rect_filled(sel_rect, 0.0, sel_color.gamma_multiply(0.5));
@@ -680,13 +738,13 @@ pub fn show(
 
             if !chunk.is_empty() {
                 let galley = ui.fonts(|f| f.layout_no_wrap(chunk.to_string(), font_id.clone(), text_color));
-                painter.galley(egui::pos2(rect.left() + PAD_X, y), galley, text_color);
+                painter.galley(egui::pos2(text_left, y), galley, text_color);
             }
 
             if has_focus && i == state.cursor_line && state.cursor_col >= start
                 && (state.cursor_col < end || (state.cursor_col == end && sub == rows_here - 1))
             {
-                let caret_x = rect.left() + PAD_X + (state.cursor_col - start) as f32 * char_width;
+                let caret_x = text_left + (state.cursor_col - start) as f32 * char_width;
                 painter.line_segment(
                     [egui::pos2(caret_x, y), egui::pos2(caret_x, y + row_height)],
                     egui::Stroke::new(1.5_f32, egui::Color32::WHITE),
@@ -796,6 +854,20 @@ mod tests {
         let (nl, nc) = insert_text(&mut lines, (0, 0), "\t");
         assert_eq!((nl, nc), (0, 1));
         assert_eq!(lines[0], "\t");
+    }
+
+    // S4: el ancho de la banda de números se calcula con los dígitos
+    // del total de líneas (VS Code style: crece cuando crece el doc,
+    // con padding fijo para no pegarlo al texto).
+    #[test]
+    fn gutter_width_escala_con_digitos() {
+        let cw = 10.0;
+        let pad = 8.0;
+        assert_eq!(gutter_width_for(9, cw), cw + pad); // 1 dígito
+        assert_eq!(gutter_width_for(99, cw), 2.0 * cw + pad);
+        assert_eq!(gutter_width_for(1234, cw), 4.0 * cw + pad);
+        // Documento vacío (0) cuenta como 1 línea: siempre se muestra.
+        assert_eq!(gutter_width_for(0, cw), cw + pad);
     }
 
     #[test]

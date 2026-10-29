@@ -115,6 +115,9 @@ pub struct EditorApp {
     // S1: el archivo en disco cambió por afuera y el buffer está
     // limpio — la barra ofrece "Recargar".
     pub external_changed: bool,
+    // S4: diálogo "Ir a línea" abierto (Ctrl+G) + su campo de texto.
+    pub goto_pending: bool,
+    pub goto_input: String,
     // Bytes del texto actual, cacheado. Recalcular era O(total) en
     // CADA frame (sumaba el largo de todas las líneas para la barra
     // de estado); ahora solo se refresca cuando el texto cambia.
@@ -149,6 +152,8 @@ impl Default for EditorApp {
             close_after_save: false,
             last_mtime_check: None,
             external_changed: false,
+            goto_pending: false,
+            goto_input: String::new(),
             view_bytes: 0,
             dir_cache: None,
         }
