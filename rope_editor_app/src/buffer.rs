@@ -80,17 +80,23 @@ impl Buffer {
         self.modified_at = SystemTime::now();
     }
 
+    /// El "to_string completo + lines().nth()" de antes alocaba el
+    /// documento entero por línea pedida (el renderer pedía ~30 por
+    /// redraw). rope().line() recorre el árbol UNA vez hasta la línea
+    /// pedida.
     pub fn line(&self, line_num: usize) -> String {
-        self.rope.to_string().lines().nth(line_num).unwrap_or("").to_string()
+        self.rope.line(line_num)
     }
 
+    /// Sin alocar: cuenta '\n' en los hojas y revisa el último byte.
     pub fn line_count(&self) -> usize {
-        let text = self.rope.to_string();
-        if text.is_empty() {
-            1
-        } else {
-            text.lines().count().max(1)
-        }
+        self.rope.line_count()
+    }
+
+    /// Ventana de líneas visibles con UN solo recorrido del árbol:
+    /// eso es todo lo que el renderer necesita por redraw.
+    pub fn lines_window(&self, first: usize, count: usize) -> Vec<String> {
+        self.rope.lines_window(first, count)
     }
 
     pub fn is_modified(&self) -> bool {

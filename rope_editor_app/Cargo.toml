@@ -13,3 +13,10 @@ path = "src/main.rs"
 
 [dependencies]
 crossterm = "0.27"
+
+# Binario más liviano y rápido sin cambiar el código: LTO entre crates,
+# una sola unidad de codegen y símbolos de debug fuera.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

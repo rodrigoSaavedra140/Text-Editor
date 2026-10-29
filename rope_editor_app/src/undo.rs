@@ -7,6 +7,11 @@ pub enum EditKind {
     Replace,
 }
 
+/// Tope del historial: cada Edit retiene árboles completos vía Rc
+/// (structural sharing — cada edición nueva cuesta ~pocos nodos),
+/// pero sin tope el grafo crecería para siempre con sesiones largas.
+const MAX_UNDO_EDITS: usize = 200;
+
 pub struct Edit {
     pub kind: EditKind,
     pub position: usize,
@@ -26,6 +31,12 @@ impl UndoStack {
 
     pub fn push(&mut self, edit: Edit) {
         self.stack.push(edit);
+        // Suelta los pasos más viejos al pasar del tope; los árboles
+        // que solo ellos retenían se liberan (Rc llega a 0).
+        let overflow = self.stack.len().saturating_sub(MAX_UNDO_EDITS);
+        if overflow > 0 {
+            self.stack.drain(0..overflow);
+        }
         self.redo_stack.clear();
     }
 

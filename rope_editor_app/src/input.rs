@@ -122,7 +122,6 @@ impl InputHandler {
                 KeyCode::Enter => Command::InsertNewline,
                 KeyCode::Backspace => Command::DeleteCharBackward,
                 KeyCode::Arrow(d) => Command::MoveCursor(d, 1),
-                _ => Command::None,
             },
             EditorMode::Command => match event.code {
                 KeyCode::Esc => Command::SwitchMode(EditorMode::Normal),

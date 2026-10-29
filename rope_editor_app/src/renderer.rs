@@ -25,13 +25,18 @@ impl Renderer {
         // Ya NO limpiamos toda la pantalla acá (eso causaba el
         // parpadeo). Cada línea se limpia sola, individualmente,
         // dentro de Backend::draw_text justo antes de escribirse.
-        for (row, line_num) in viewport.visible_lines().enumerate() {
-            let line = if line_num < buffer.line_count() {
-                buffer.line(line_num)
-            } else {
-                String::new() // limpia filas que quedaron sin contenido
-            };
-            let visible: String = line.chars().skip(viewport.left_col()).take(viewport.width()).collect();
+        //
+        // Una sola pasada recolecta la ventana visible; antes cada
+        // línea visible era un Buffer::line() que alocaba el texto
+        // completo, o sea height x to_string() por tecla.
+        let visible = viewport.visible_lines();
+        let window: Vec<String> = buffer.lines_window(visible.start, viewport.height());
+        for row in 0..viewport.height() {
+            // Filas más allá del final del documento quedan vacías,
+            // igual que antes (line_num >= line_count → "").
+            let line = window.get(row).map(|s| s.as_str()).unwrap_or("");
+            let visible: String =
+                line.chars().skip(viewport.left_col()).take(viewport.width()).collect();
             // Rellenamos con espacios hasta el ancho completo: así el
             // color de fondo cubre TODA la fila, no solo donde hay
             // texto — si no, el resto de la fila se queda con el

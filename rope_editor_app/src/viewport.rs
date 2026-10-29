@@ -30,6 +30,10 @@ impl Viewport {
         self.width
     }
 
+    pub fn height(&self) -> usize {
+        self.height
+    }
+
     pub fn left_col(&self) -> usize {
         self.left_col
     }

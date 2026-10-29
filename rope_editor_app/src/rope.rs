@@ -95,6 +95,101 @@ impl Node {
             }
         }
     }
+
+    fn count_newlines(&self) -> usize {
+        match self {
+            Node::Leaf(s) => s.bytes().filter(|&b| b == b'\n').count(),
+            Node::Internal { left, right, .. } => left.count_newlines() + right.count_newlines(),
+        }
+    }
+
+    /// Último byte del subárbol (None si todo está vacío). Sirve para
+    /// saber si el texto termina en '\n' sin alocar el texto entero.
+    fn last_byte(&self) -> Option<u8> {
+        match self {
+            Node::Leaf(s) => s.bytes().last(),
+            Node::Internal { left, right, .. } => right.last_byte().or_else(|| left.last_byte()),
+        }
+    }
+
+    fn collect_window(node: &Rc<Node>, collector: &mut WindowCollector) {
+        if collector.done {
+            return;
+        }
+        match node.as_ref() {
+            Node::Leaf(s) => collector.feed(s),
+            Node::Internal { left, right, .. } => {
+                Node::collect_window(left, collector);
+                if !collector.done {
+                    Node::collect_window(right, collector);
+                }
+            }
+        }
+    }
+}
+
+/// Recolecta UNA ventana de líneas en un solo recorrido en orden de
+/// las hojas, sin alocar el texto entero. `cur` acumula la línea que
+/// a la fecha siga abierta: puede continuar a lo largo de varias
+/// hojas (por eso los recortes van en '\n', que es seguro en UTF-8).
+struct WindowCollector {
+    first: usize, // primera línea del rango (0-based)
+    end: usize,   // first + count: primera línea fuera del rango
+    nl_seen: usize,
+    lines: Vec<String>,
+    cur: String,
+    done: bool,
+}
+
+impl WindowCollector {
+    fn new(first: usize, count: usize) -> Self {
+        WindowCollector {
+            first,
+            end: first.saturating_add(count),
+            nl_seen: 0,
+            lines: Vec::new(),
+            cur: String::new(),
+            done: false,
+        }
+    }
+
+    fn feed(&mut self, s: &str) {
+        if self.done {
+            return;
+        }
+        let mut chunk_start = 0usize;
+        for (i, &b) in s.as_bytes().iter().enumerate() {
+            if b != b'\n' {
+                continue;
+            }
+            // La línea de índice nl_seen termina en este recorte.
+            if self.nl_seen >= self.first && self.nl_seen < self.end {
+                self.cur.push_str(&s[chunk_start..i]);
+                self.lines.push(std::mem::take(&mut self.cur));
+            }
+            self.nl_seen += 1;
+            chunk_start = i + 1;
+            if self.nl_seen >= self.end {
+                self.done = true;
+                return;
+            }
+        }
+        // Trozo final de la hoja: alimenta la línea todavía abierta.
+        if self.nl_seen >= self.first {
+            self.cur.push_str(&s[chunk_start..]);
+        }
+    }
+
+    /// Última línea del texto, si puede ser empujada en el rango
+    /// (si termina sin '\n' nunca se procesa en el bucle). Solo se
+    /// empuja si tiene contenido: una última línea vacía sin '\n'
+    /// no existe (el texto habría terminado en '\n', y lines() no
+    /// la cuenta).
+    fn finish(&mut self) {
+        if !self.done && !self.cur.is_empty() {
+            self.lines.push(std::mem::take(&mut self.cur));
+        }
+    }
 }
 
 /// Facade persistente: insert/delete/concat/split_at devuelven un
@@ -149,6 +244,43 @@ impl Rope {
             return None;
         }
         Node::char_at(&self.root, index)
+    }
+
+    /// Línea `target` (0-based) sin alocar el texto entero: es
+    /// lines_window(target, 1) — un solo recorrido del árbol.
+    /// Fuera de rango devuelve String::new(), igual que el viejo
+    /// to_string().lines().nth(target).unwrap_or("").
+    pub fn line(&self, target: usize) -> String {
+        self.lines_window(target, 1)
+            .into_iter()
+            .next()
+            .unwrap_or_default()
+    }
+
+    /// Cantidad de líneas con la MISMA semántica que el viejo
+    /// to_string().lines().count() (el '\n' final no agrega una línea
+    /// vacía extra), pero sin alocar ni recorrer dos veces.
+    pub fn line_count(&self) -> usize {
+        if self.len() == 0 {
+            return 1;
+        }
+        let newlines = self.root.count_newlines();
+        if self.root.last_byte() == Some(b'\n') {
+            newlines
+        } else {
+            newlines + 1
+        }
+    }
+
+    /// Devuelve las líneas [first .. first+count) en UN solo recorrido
+    /// del árbol, cortando el recorrido apenas completa la ventana.
+    /// Es lo que el renderer pide en cada redibujado: N líneas visibles
+    /// sin materializar el documento entero.
+    pub fn lines_window(&self, first: usize, count: usize) -> Vec<String> {
+        let mut collector = WindowCollector::new(first, count);
+        Node::collect_window(&self.root, &mut collector);
+        collector.finish();
+        collector.lines
     }
 
     /// Reconstruye el árbol balanceado (útil tras muchas ediciones
