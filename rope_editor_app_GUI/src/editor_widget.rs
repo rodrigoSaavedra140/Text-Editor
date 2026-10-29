@@ -191,6 +191,106 @@ fn insert_text(lines: &mut Vec<String>, at: (usize, usize), text: &str) -> (usiz
     result
 }
 
+/// S5: runa alfanumérica unicode (á, ñ, dígitos, etc.) define los límites de palabra.
+fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric()
+}
+
+/// S5: salto por palabra adelante (Ctrl+→). Si está en una palabra, salta al fin de la palabra.
+/// Si está en separadores, salta al inicio de la siguiente palabra.
+fn next_word_pos(lines: &[String], line: usize, col: usize) -> (usize, usize) {
+    if lines.is_empty() {
+        return (0, 0);
+    }
+    let line = line.min(lines.len() - 1);
+    let chars: Vec<char> = lines[line].chars().collect();
+    let len = chars.len();
+    if col >= len {
+        if line + 1 < lines.len() {
+            (line + 1, 0)
+        } else {
+            (line, len)
+        }
+    } else {
+        let mut c = col;
+        if is_word_char(chars[c]) {
+            while c < len && is_word_char(chars[c]) {
+                c += 1;
+            }
+        } else {
+            while c < len && !is_word_char(chars[c]) {
+                c += 1;
+            }
+        }
+        (line, c)
+    }
+}
+
+/// S5: salto por palabra atrás (Ctrl+←). Retrocede sobre la palabra o separador actual
+/// hasta el límite anterior.
+fn prev_word_pos(lines: &[String], line: usize, col: usize) -> (usize, usize) {
+    if lines.is_empty() {
+        return (0, 0);
+    }
+    if col == 0 {
+        if line > 0 {
+            (line - 1, line_char_count(&lines[line - 1]))
+        } else {
+            (0, 0)
+        }
+    } else {
+        let line = line.min(lines.len() - 1);
+        let chars: Vec<char> = lines[line].chars().collect();
+        let mut c = col.min(chars.len());
+        while c > 0 {
+            c -= 1;
+            if !is_word_char(chars[c]) {
+                break;
+            }
+        }
+        (line, c)
+    }
+}
+
+/// S5: rango [start, end) de la palabra bajo `col` (para doble click).
+fn word_range_at(line: &str, col: usize) -> (usize, usize) {
+    let chars: Vec<char> = line.chars().collect();
+    if chars.is_empty() {
+        return (0, 0);
+    }
+    let c = if col >= chars.len() {
+        chars.len() - 1
+    } else {
+        col
+    };
+    if is_word_char(chars[c]) {
+        let mut start = c;
+        while start > 0 && is_word_char(chars[start - 1]) {
+            start -= 1;
+        }
+        let mut end = c + 1;
+        while end < chars.len() && is_word_char(chars[end]) {
+            end += 1;
+        }
+        (start, end)
+    } else {
+        (c, c + 1)
+    }
+}
+
+/// S5: destino de fila visual al paginar con PageUp / PageDown, acotado a [0, total-1].
+fn page_target_row(current_row: usize, total_rows: usize, page_rows: usize, down: bool) -> usize {
+    if total_rows == 0 {
+        return 0;
+    }
+    let max_row = total_rows.saturating_sub(1);
+    if down {
+        (current_row + page_rows).min(max_row)
+    } else {
+        current_row.saturating_sub(page_rows)
+    }
+}
+
 // ============================================================
 // Ajuste de línea (word wrap) — todo lo de acá para abajo asume
 // fuente monoespaciada, así que "wrap_chars" caracteres entran
@@ -373,13 +473,25 @@ pub fn show(
                 let clicked_col =
                     (sub_row * wrap_chars + col_in_row).min(line_char_count(&lines[clicked_line]));
 
-                if response.clicked() && !response.dragged() {
-                    state.sel_anchor = Some((clicked_line, clicked_col));
-                } else if response.drag_started() {
-                    state.sel_anchor = Some((clicked_line, clicked_col));
+                // S5: doble click selecciona palabra, triple click selecciona línea lógica
+                if response.triple_clicked() {
+                    state.sel_anchor = Some((clicked_line, 0));
+                    state.cursor_line = clicked_line;
+                    state.cursor_col = line_char_count(&lines[clicked_line]);
+                } else if response.double_clicked() {
+                    let (ws, we) = word_range_at(&lines[clicked_line], clicked_col);
+                    state.sel_anchor = Some((clicked_line, ws));
+                    state.cursor_line = clicked_line;
+                    state.cursor_col = we;
+                } else {
+                    if response.clicked() && !response.dragged() {
+                        state.sel_anchor = Some((clicked_line, clicked_col));
+                    } else if response.drag_started() {
+                        state.sel_anchor = Some((clicked_line, clicked_col));
+                    }
+                    state.cursor_line = clicked_line;
+                    state.cursor_col = clicked_col;
                 }
-                state.cursor_line = clicked_line;
-                state.cursor_col = clicked_col;
                 cursor_moved = true;
             }
         }
@@ -551,7 +663,11 @@ pub fn show(
                         resync_rows!();
                     }
                     egui::Key::ArrowLeft => {
-                        if state.cursor_col > 0 {
+                        if modifiers.ctrl || modifiers.command {
+                            let (nl, nc) = prev_word_pos(lines, state.cursor_line, state.cursor_col);
+                            state.cursor_line = nl;
+                            state.cursor_col = nc;
+                        } else if state.cursor_col > 0 {
                             state.cursor_col -= 1;
                         } else if state.cursor_line > 0 {
                             state.cursor_line -= 1;
@@ -562,12 +678,42 @@ pub fn show(
                         }
                     }
                     egui::Key::ArrowRight => {
-                        if state.cursor_col < line_char_count(&lines[state.cursor_line]) {
+                        if modifiers.ctrl || modifiers.command {
+                            let (nl, nc) = next_word_pos(lines, state.cursor_line, state.cursor_col);
+                            state.cursor_line = nl;
+                            state.cursor_col = nc;
+                        } else if state.cursor_col < line_char_count(&lines[state.cursor_line]) {
                             state.cursor_col += 1;
                         } else if state.cursor_line + 1 < lines.len() {
                             state.cursor_line += 1;
                             state.cursor_col = 0;
                         }
+                        if !modifiers.shift {
+                            state.sel_anchor = Some((state.cursor_line, state.cursor_col));
+                        }
+                    }
+                    egui::Key::PageUp => {
+                        let page_rows = ((rect.height() / row_height).floor() as usize).max(1);
+                        let total_rows = *state.cum_rows.last().unwrap_or(&1);
+                        let cur_row = visual_row_of(&state.cum_rows, state.cursor_line, state.cursor_col, wrap_chars);
+                        let target_row = page_target_row(cur_row, total_rows, page_rows, false);
+                        let target_line = line_at_visual_row(&state.cum_rows, target_row);
+                        let sub_row = target_row.saturating_sub(state.cum_rows[target_line]);
+                        state.cursor_line = target_line;
+                        state.cursor_col = clamp_col(lines, target_line, sub_row * wrap_chars + (state.cursor_col % wrap_chars));
+                        if !modifiers.shift {
+                            state.sel_anchor = Some((state.cursor_line, state.cursor_col));
+                        }
+                    }
+                    egui::Key::PageDown => {
+                        let page_rows = ((rect.height() / row_height).floor() as usize).max(1);
+                        let total_rows = *state.cum_rows.last().unwrap_or(&1);
+                        let cur_row = visual_row_of(&state.cum_rows, state.cursor_line, state.cursor_col, wrap_chars);
+                        let target_row = page_target_row(cur_row, total_rows, page_rows, true);
+                        let target_line = line_at_visual_row(&state.cum_rows, target_row);
+                        let sub_row = target_row.saturating_sub(state.cum_rows[target_line]);
+                        state.cursor_line = target_line;
+                        state.cursor_col = clamp_col(lines, target_line, sub_row * wrap_chars + (state.cursor_col % wrap_chars));
                         if !modifiers.shift {
                             state.sel_anchor = Some((state.cursor_line, state.cursor_col));
                         }
@@ -868,6 +1014,68 @@ mod tests {
         assert_eq!(gutter_width_for(1234, cw), 4.0 * cw + pad);
         // Documento vacío (0) cuenta como 1 línea: siempre se muestra.
         assert_eq!(gutter_width_for(0, cw), cw + pad);
+    }
+
+    // S5: salto por palabra (Ctrl+←/→). Palabra = runa alfanumérica
+    // unicode (á, ñ, dígitos, chacras todo); los separadores se
+    // saltean, y al terminar la línea se sigue en el principio de
+    // la siguiente (al final del doc: clavado).
+    #[test]
+    fn next_word_pos_saltea_separadores_y_come_la_palabra() {
+        let lines = vec!["hola =x mundo".to_string(), "segunda línea".to_string()];
+        assert_eq!(next_word_pos(&lines, 0, 1), (0, 4)); // come "ola"
+        assert_eq!(next_word_pos(&lines, 0, 4), (0, 6)); // ' ' -> 'x'
+        assert_eq!(next_word_pos(&lines, 0, 6), (0, 7)); // come "x"
+        assert_eq!(next_word_pos(&lines, 0, 0), (0, 4)); // ya en palabra: come todo
+        // Fin de línea -> principio de la siguiente.
+        assert_eq!(next_word_pos(&lines, 0, 13), (1, 0));
+        // Fin de documento: clavado (no hay a donde ir).
+        let fin = line_char_count(&lines[1]);
+        assert_eq!(next_word_pos(&lines, 1, fin), (1, fin));
+    }
+
+    #[test]
+    fn prev_word_pos_es_el_espejo() {
+        let lines = vec!["hola =x mundo".to_string(), "segunda".to_string()];
+        assert_eq!(prev_word_pos(&lines, 0, 10), (0, 7)); // come "mundo"
+        assert_eq!(prev_word_pos(&lines, 0, 6), (0, 5)); // ' ' -> fin "hola"
+        assert_eq!(prev_word_pos(&lines, 0, 3), (0, 0)); // come "hol"
+        // Principio de línea -> final de la anterior.
+        assert_eq!(prev_word_pos(&lines, 1, 0), (0, 13));
+        // Principio del documento: clavado.
+        assert_eq!(prev_word_pos(&lines, 0, 0), (0, 0));
+    }
+
+    #[test]
+    fn prev_word_pos_saltea_unicode_raro() {
+        let lines = vec!["áé-í".to_string()];
+        assert_eq!(prev_word_pos(&lines, 0, 4), (0, 2)); // come "áé"
+        assert_eq!(prev_word_pos(&lines, 0, 1), (0, 0)); // come "á"
+    }
+
+    // S5: doble click = palabra bajo el cursor, rango [start, end)
+    // exclusivo al final (la convención de select_range del widget).
+    #[test]
+    fn word_range_at_selecta_alfanumerico_unicode() {
+        assert_eq!(word_range_at("hola mundo", 0), (0, 4)); // "hola"
+        assert_eq!(word_range_at("hola mundo", 2), (0, 4)); // mitad de palabra
+        assert_eq!(word_range_at("hola mundo", 3), (0, 4));
+        assert_eq!(word_range_at("señor", 2), (0, 5)); // ñ es alfanumérica
+        // Sobre un separador: el carácter en sí.
+        assert_eq!(word_range_at("hola mundo", 4), (4, 5));
+        // Fuera de rango (fin de línea): la ÚLTIMA runa.
+        assert_eq!(word_range_at("hola", 4), (0, 4));
+    }
+
+    // S5: destino de fila visual al paginar, acotado a [0, total-1].
+    #[test]
+    fn page_target_row_acotea_en_los_dos_bordes() {
+        assert_eq!(page_target_row(3, 10, 4, true), 7);
+        assert_eq!(page_target_row(8, 10, 4, true), 9); // no pasa del final
+        assert_eq!(page_target_row(3, 10, 4, false), 0); // arriba
+        assert_eq!(page_target_row(0, 10, 4, false), 0); // ya arriba: clavado
+        // Documento de una fila: no pasa nada.
+        assert_eq!(page_target_row(0, 1, 50, true), 0);
     }
 
     #[test]
