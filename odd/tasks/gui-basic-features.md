@@ -87,7 +87,7 @@ orden del prompt). El resto de la aceptación se marca como criterio, no como
 | T2 | S7, S6 | inline | listo | 3b03c37 |
 | T3 | S4 | inline | listo | 0e9a8d4 |
 | T4 | S5 | inline | listo | 307b523 |
-| T5 | S3 | inline | pendiente | — |
+| T5 | S3 | inline | listo | 468ca3a |
 | T6 | S2 | inline | pendiente | — |
 | T7 | S8 | inline | pendiente | — |
 | T8 | S10 | inline | pendiente | — |
@@ -137,3 +137,8 @@ disjuntas).
   page_target_row; navegación Ctrl+←/→ por palabra con soporte Shift; PageUp y
   PageDown con salto por páginas de filas visuales; doble click selecciona
   palabra y triple click selecciona línea lógica completa.
+- **L9** (2026-10-29): T5 terminado (commit 468ca3a, suite 34/34, warnings 0).
+  Undo granular: ChunkTracker con timeout de inactividad de 700ms repintando con
+  request_repaint_after; pre_break_snapshot en Enter y Paste para aislar el tipeo
+  previo de la mutación estructural; tope de 200 edits preservado; suite con 3
+  tests puros de la política de chunking.
