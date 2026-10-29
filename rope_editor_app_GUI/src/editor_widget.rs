@@ -108,6 +108,14 @@ fn normalize_pasted(text: &str) -> String {
     text.replace("\r\n", "\n")
 }
 
+/// S6: sangría (espacios/tabs iniciales) de una línea, copiada tal
+/// cual para la línea nueva al apretar Enter — convención de
+/// editores como VS Code. Solo el whitespace INICIAL: el de la
+/// derecha es contenido del texto, no sangría.
+fn inherited_indent(prev_line: &str) -> String {
+    prev_line.chars().take_while(|c| c.is_whitespace()).collect()
+}
+
 /// Texto que Ctrl+C/Ctrl+X copiarian: la selección si hay, y si no
 /// la línea LÓGICA completa bajo el cursor (convención de editores
 /// tipo VS Code). egui-winit consume Ctrl+C/X y solo emite
@@ -376,6 +384,19 @@ pub fn show(
 
     // --- teclado ---
     if has_focus {
+        // S6: mientras el editor tiene foco, egui NO usa Tab para
+        // cambiar de widget enfocado — así Event::Key{Tab} nos llega
+        // y el widget lo inserta como caracter. (Mismos términos que
+        // usa egui::TextEdit para las flechas: EventFilter.)
+        ui.memory_mut(|m| {
+            m.set_focus_lock_filter(
+                id,
+                egui::EventFilter {
+                    tab: true,
+                    ..Default::default()
+                },
+            )
+        });
         let events = ui.input(|i| i.events.clone());
         if !events.is_empty() {
             cursor_moved = true;
@@ -409,14 +430,42 @@ pub fn show(
                     resync_rows!();
                 }
                 egui::Event::Key { key, pressed: true, modifiers, .. } => match key {
+                    egui::Key::Tab
+                        if !(modifiers.shift
+                            || modifiers.ctrl
+                            || modifiers.command
+                            || modifiers.alt) =>
+                    {
+                        // S6: Tab CON foco del editor inserta el
+                        // caracter (no se roba el foco: el filtro de
+                        // foco de egui quedó desactivado para Tab,
+                        // ver set_focus_lock_filter más abajo).
+                        let (nl, nc) =
+                            insert_text(lines, (state.cursor_line, state.cursor_col), "\t");
+                        state.cursor_line = nl;
+                        state.cursor_col = nc;
+                        state.sel_anchor = Some((nl, nc));
+                        changed = true;
+                        resync_rows!();
+                    }
                     egui::Key::Enter => {
                         if let Some((s, e)) = selection_range(state) {
                             delete_range(lines, s, e);
                             state.cursor_line = s.0;
                             state.cursor_col = s.1;
                         }
+                        // S6: la línea nueva hereda la sangría de la
+                        // línea en la que estaba el cursor. (se lee
+                        // DESPUÉS de descartar la selección y ANTES de
+                        // partir la línea en dos).
+                        let indenta = inherited_indent(&lines[state.cursor_line]);
+                        let insert = if indenta.is_empty() {
+                            "\n".to_string()
+                        } else {
+                            format!("\n{}", indenta)
+                        };
                         let (nl, nc) =
-                            insert_text(lines, (state.cursor_line, state.cursor_col), "\n");
+                            insert_text(lines, (state.cursor_line, state.cursor_col), &insert);
                         state.cursor_line = nl;
                         state.cursor_col = nc;
                         state.sel_anchor = Some((nl, nc));
@@ -717,6 +766,36 @@ mod tests {
         let (nl, nc) = insert_text(&mut lines, (0, 3), "A\nB\n");
         assert_eq!(lines, vec!["unoA", "B", " dos"]);
         assert_eq!((nl, nc), (2, 0));
+    }
+
+    // S6: Enter hereda la indentación (incluye espacios y TABS
+    // mezclados) de la línea anterior, convención de editores tipo
+    // VS Code; una línea sin sangría arranca en columna 0.
+    #[test]
+    fn inherited_indent_copia_whitespace_inicial() {
+        assert_eq!(inherited_indent("    hola"), "    ");
+        assert_eq!(inherited_indent("\t\tfn main()"), "\t\t");
+        assert_eq!(inherited_indent("sin sangria"), "");
+        assert_eq!(inherited_indent("   \t  mix"), "   \t  ");
+        assert_eq!(inherited_indent(""), "");
+        // Solo el whitespace INICIAL cuenta: el de la cola es contenido.
+        assert_eq!(inherited_indent("hola   "), "");
+    }
+
+    // S6: Tab debe_INSERTAR el caracter tab cuando el editor tiene
+    // foco (y NO cambiar el foco de widget). La inserción va a
+    // través de insert_text, así que este pin cubre el esfuerzo
+    // ancho: 1 char por tab, cursor avanzado.
+    #[test]
+    fn tab_inserta_caracter_tab() {
+        let mut lines = vec!["x".to_string()];
+        let (nl, nc) = insert_text(&mut lines, (0, 1), "\t");
+        assert_eq!((nl, nc), (0, 2));
+        assert_eq!(lines[0], "x\t");
+        let mut lines = vec!["".to_string()];
+        let (nl, nc) = insert_text(&mut lines, (0, 0), "\t");
+        assert_eq!((nl, nc), (0, 1));
+        assert_eq!(lines[0], "\t");
     }
 
     #[test]

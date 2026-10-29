@@ -325,6 +325,15 @@ impl eframe::App for EditorApp {
                 ui.label(format!("{}{}", path_str, modified));
                 ui.separator();
                 ui.label(format_size(self.view_bytes));
+                // S7: posición del cursor, 1-based (convención de
+                // editores; cursor_line/cursor_col son índices 0-based
+                // dentro de la línea lógica).
+                ui.separator();
+                ui.label(format!(
+                    "Ln {}, Col {}",
+                    self.editor_state.cursor_line + 1,
+                    self.editor_state.cursor_col + 1
+                ));
                 // S1: el archivo cambió "por afuera" y el buffer no le
                 // debe nada (sin cambios propios): ofrecer recarga.
                 if self.external_changed && !self.dirty && self.save_progress.is_none() {
