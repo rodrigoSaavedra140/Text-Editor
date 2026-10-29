@@ -224,6 +224,15 @@ impl eframe::App for EditorApp {
         // dentro del método; aquí solo es invocarla por frame).
         self.check_external_changes();
 
+        // S3: consolidación de chunks de undo por timeout de inactividad (~700ms).
+        let now = std::time::Instant::now();
+        if self.chunk_tracker.check_idle_timeout(now) {
+            self.snapshot_if_changed();
+        }
+        if let Some(remaining) = self.chunk_tracker.remaining_time(now) {
+            ctx.request_repaint_after(remaining);
+        }
+
         // Atajos de teclado globales
         let (want_save, want_undo, want_redo, want_quit, want_goto) = ctx.input(|i| {
             (
@@ -438,11 +447,20 @@ impl eframe::App for EditorApp {
                     &mut self.editor_state,
                     self.text_area_bg,
                 );
+                // S3: corte previo si la acción fue estructural (Enter / Paste).
+                if let Some(prev) = response.pre_break_snapshot {
+                    self.snapshot_text(&prev);
+                }
                 if response.changed {
                     self.dirty = true;
                     // Una vez por edición real (no por frame): refresca
                     // el tamaño de la barra de estado.
                     self.recalc_view_bytes();
+                    if response.force_snapshot {
+                        self.snapshot_if_changed();
+                    } else {
+                        self.chunk_tracker.on_edit(crate::undo::EditAction::Typing, std::time::Instant::now());
+                    }
                 }
                 // Al perder el foco (click afuera, etc.) tomamos un
                 // snapshot para el historial de undo/redo.

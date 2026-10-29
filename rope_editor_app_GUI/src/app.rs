@@ -7,7 +7,7 @@ use std::time::{Duration, Instant, SystemTime};
 use eframe::egui;
 
 use crate::editor_widget::EditorState;
-use crate::undo::{Edit, UndoStack};
+use crate::undo::{ChunkTracker, Edit, UndoStack};
 
 /// Estado compartido entre el hilo que escribe el archivo y la UI,
 /// que solo lee esto para dibujar la barra de progreso.
@@ -127,6 +127,8 @@ pub struct EditorApp {
     // era I/O de disco EN CADA FRAME con el desplegable abierto.
     // Se invalida al navegar a otra carpeta o cuando cambia el
     // mtime de la carpeta (archivos creados/borrados dentro).
+    // S3: agrupamiento de ediciones en chunks por inactividad o Enter/Paste.
+    pub chunk_tracker: ChunkTracker,
     dir_cache: Option<(PathBuf, Option<SystemTime>, Vec<String>, Vec<String>)>,
 }
 
@@ -155,6 +157,7 @@ impl Default for EditorApp {
             goto_pending: false,
             goto_input: String::new(),
             view_bytes: 0,
+            chunk_tracker: ChunkTracker::default_timeout(),
             dir_cache: None,
         }
     }
@@ -194,6 +197,7 @@ impl EditorApp {
         self.editor_state.cursor_col = 0;
         self.editor_state.sel_anchor = None;
         self.editor_state.scroll = 0.0;
+        self.chunk_tracker.reset();
         self.recalc_view_bytes();
     }
 
@@ -231,22 +235,30 @@ impl EditorApp {
         self.lines.len() <= 1 && self.lines.first().map(|l| l.is_empty()).unwrap_or(true)
     }
 
+    /// S3: Registra un snapshot explícito para un texto dado. Si coincide
+    /// con el último snapshot, no hace nada (evita pasos vacíos).
+    pub fn snapshot_text(&mut self, text: &str) {
+        if text != self.last_snapshot {
+            self.undo_stack.push(Edit {
+                before: self.last_snapshot.clone(),
+                after: text.to_string(),
+            });
+            self.last_snapshot = text.to_string();
+            self.dirty = true;
+            self.chunk_tracker.reset();
+        }
+    }
+
     /// Si el texto cambió desde el último snapshot, guarda un Edit
     /// (texto antes / texto después) en el UndoStack.
     pub fn snapshot_if_changed(&mut self) {
         let current = self.current_text();
-        if current != self.last_snapshot {
-            self.undo_stack.push(Edit {
-                before: self.last_snapshot.clone(),
-                after: current.clone(),
-            });
-            self.last_snapshot = current;
-            self.dirty = true;
-        }
+        self.snapshot_text(&current);
     }
 
     pub fn undo(&mut self) {
         self.snapshot_if_changed();
+        self.chunk_tracker.reset();
         if let Some(edit) = self.undo_stack.undo() {
             let text = edit.before.clone();
             self.set_text(&text);
@@ -258,6 +270,7 @@ impl EditorApp {
     }
 
     pub fn redo(&mut self) {
+        self.chunk_tracker.reset();
         if let Some(edit) = self.undo_stack.redo() {
             let text = edit.after.clone();
             self.set_text(&text);

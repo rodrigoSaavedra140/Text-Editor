@@ -47,6 +47,8 @@ impl EditorState {
 pub struct EditorResponse {
     pub changed: bool,
     pub lost_focus: bool,
+    pub pre_break_snapshot: Option<String>,
+    pub force_snapshot: bool,
 }
 
 fn char_to_byte(s: &str, char_idx: usize) -> usize {
@@ -379,6 +381,8 @@ pub fn show(
     bg: egui::Color32,
 ) -> EditorResponse {
     let mut changed = false;
+    let mut force_snapshot = false;
+    let mut pre_break_snapshot: Option<String> = None;
 
     let font_id = egui::FontId::monospace(14.0);
     let row_height = ui.fonts(|f| f.row_height(&font_id));
@@ -569,6 +573,7 @@ pub fn show(
                     resync_rows!();
                 }
                 egui::Event::Paste(t) => {
+                    pre_break_snapshot = Some(lines.join("\n"));
                     if let Some((s, e)) = selection_range(state) {
                         delete_range(lines, s, e);
                         state.cursor_line = s.0;
@@ -579,6 +584,7 @@ pub fn show(
                     state.cursor_col = nc;
                     state.sel_anchor = Some((nl, nc));
                     changed = true;
+                    force_snapshot = true;
                     resync_rows!();
                 }
                 egui::Event::Key { key, pressed: true, modifiers, .. } => match key {
@@ -601,6 +607,7 @@ pub fn show(
                         resync_rows!();
                     }
                     egui::Key::Enter => {
+                        pre_break_snapshot = Some(lines.join("\n"));
                         if let Some((s, e)) = selection_range(state) {
                             delete_range(lines, s, e);
                             state.cursor_line = s.0;
@@ -622,6 +629,7 @@ pub fn show(
                         state.cursor_col = nc;
                         state.sel_anchor = Some((nl, nc));
                         changed = true;
+                        force_snapshot = true;
                         resync_rows!();
                     }
                     egui::Key::Backspace => {
@@ -915,7 +923,12 @@ pub fn show(
         scrollbar_painter.rect_filled(thumb, 4.0, egui::Color32::from_white_alpha(90));
     }
 
-    EditorResponse { changed, lost_focus }
+    EditorResponse {
+        changed,
+        lost_focus,
+        pre_break_snapshot,
+        force_snapshot,
+    }
 }
 
 #[cfg(test)]
