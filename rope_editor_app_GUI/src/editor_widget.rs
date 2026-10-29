@@ -101,6 +101,13 @@ fn delete_range(lines: &mut Vec<String>, start: (usize, usize), end: (usize, usi
     }
 }
 
+/// El portapapeles del sistema (especialmente en Windows/WSL) llega
+/// con finales CRLF; el editor trabaja solo con '\n', así que quedan
+/// caracteres '\r' invisibles si no se normaliza antes de insertar.
+fn normalize_pasted(text: &str) -> String {
+    text.replace("\r\n", "\n")
+}
+
 /// Inserta `text` (puede tener saltos de línea, ej. al pegar) en
 /// `at`, y devuelve la posición del cursor después de insertar.
 fn insert_text(lines: &mut Vec<String>, at: (usize, usize), text: &str) -> (usize, usize) {
@@ -378,7 +385,7 @@ pub fn show(
                         state.cursor_line = s.0;
                         state.cursor_col = s.1;
                     }
-                    let (nl, nc) = insert_text(lines, (state.cursor_line, state.cursor_col), &t);
+                    let (nl, nc) = insert_text(lines, (state.cursor_line, state.cursor_col), &normalize_pasted(&t));
                     state.cursor_line = nl;
                     state.cursor_col = nc;
                     state.sel_anchor = Some((nl, nc));
@@ -496,10 +503,15 @@ pub fn show(
                         state.cursor_col = line_char_count(&lines[state.cursor_line]);
                     }
                     egui::Key::C if modifiers.ctrl => {
-                        if let Some((s, e)) = selection_range(state) {
-                            let text = selected_text(lines, s, e);
-                            ui.output_mut(|o| o.copied_text = text);
-                        }
+                        // Con selección copia la selección; sin selección
+                        // copia la línea LÓGICA bajo el cursor (la
+                        // convención de editores tipo VS Code) — antes
+                        // este caso era un no-op y "no copiaba nada".
+                        let text = match selection_range(state) {
+                            Some((s, e)) => selected_text(lines, s, e),
+                            None => lines[state.cursor_line].clone(),
+                        };
+                        ui.output_mut(|o| o.copied_text = text);
                     }
                     egui::Key::X if modifiers.ctrl => {
                         if let Some((s, e)) = selection_range(state) {
@@ -636,6 +648,36 @@ pub fn show(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalize_pasted_convierte_crlf() {
+        // El portapapeles de Windows/WSL llega con \r\n; sin
+        // normalizar quedan caracteres \r invisibles dentro de las
+        // líneas (y el conteo de columnas deja de coincidir).
+        assert_eq!(normalize_pasted("a\r\nb"), "a\nb");
+        assert_eq!(normalize_pasted("x\r\ny\r\nz"), "x\ny\nz");
+        assert_eq!(normalize_pasted("sin cambios"), "sin cambios");
+        // Un \r suelto no se toca (no es un salto de línea en Windows).
+        assert_eq!(normalize_pasted("a\rb"), "a\rb");
+    }
+
+    #[test]
+    fn pegar_crlf_spawea_dos_lineas_limpias() {
+        let mut lines = vec!["xx".to_string()];
+        let (nl, nc) = insert_text(&mut lines, (0, 0), &normalize_pasted("a\r\nb"));
+        assert_eq!(lines, vec!["a", "bxx"]);
+        assert_eq!((nl, nc), (1, 1)); // cursor al final del texto pegado
+    }
+
+    #[test]
+    fn vivir_insert_text_con_multilinea() {
+        // Comportamiento previo que NO pidió el cambio: pegar texto
+        // multi-línea en medio de una línea parte bien.
+        let mut lines = vec!["uno dos".to_string()];
+        let (nl, nc) = insert_text(&mut lines, (0, 3), "A\nB\n");
+        assert_eq!(lines, vec!["unoA", "B", " dos"]);
+        assert_eq!((nl, nc), (2, 0));
+    }
 
     #[test]
     fn build_cum_rows_suma_prefix() {
