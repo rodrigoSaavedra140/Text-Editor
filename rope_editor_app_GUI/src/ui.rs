@@ -41,6 +41,11 @@ impl EditorApp {
         ctx.request_repaint();
 
         if done {
+            // S1: un guardado bien hecho refresca el mtime recordado
+            // (¡el disco acaba de cambiar!) y un guardado fallido
+            // cancela el "cerrar tras guardar" para no matar la
+            // ventana encima de un error.
+            self.note_save_done();
             match error {
                 Some(e) => self.status = format!("Error al guardar: {}", e),
                 None => {
@@ -49,6 +54,72 @@ impl EditorApp {
                 }
             }
             self.save_progress = None;
+        } else {
+            ctx.request_repaint();
+        }
+
+        // S1: si el usuario pidió guardar-Y-cerrar desde el diálogo y
+        // el guardado terminó bien, recién acá se cierra la ventana.
+        if self.close_after_save && self.save_progress.is_none() {
+            self.close_after_save = false;
+            request_close(ctx, &mut self.closing_since);
+        }
+    }
+
+    /// S1: ventana de confirmación "¿cerrar con cambios sin
+    /// guardar?", visible mientras `close_pending`. Tres caminos:
+    /// Guardar (guarda y cierra al terminar), Descartar (cierra sin
+    /// guardar) y Cancelar (vuelve al editor sin tocar nada). NADA
+    /// mata el proceso mientras el diálogo esté abierto.
+    fn show_close_confirm(&mut self, ctx: &egui::Context) {
+        if !self.close_pending {
+            return;
+        }
+        // Esc = Cancelar, convención universal de diálogos.
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.cancel_close();
+            return;
+        }
+        let mut open = true;
+        egui::Window::new("Cambios sin guardar")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.set_min_width(320.0);
+                ui.label("Tenés cambios sin guardar en este documento.");
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Guardar").clicked() {
+                        self.confirm_close_save();
+                    }
+                    if ui.button("Descartar").clicked() {
+                        self.confirm_close_discard();
+                        request_close(ctx, &mut self.closing_since);
+                    }
+                    if ui.button("Cancelar").clicked() {
+                        self.cancel_close();
+                    }
+                });
+            });
+        if !open {
+            // La X del propio diálogo cuenta como Cancelar.
+            self.cancel_close();
+        }
+    }
+
+    /// Cierre de ventana con puertas de datos: si hay cambios sin
+    /// guardar (o un guardado en pleno vuelo) NO cierra nada — planta
+    /// el diálogo S1 y, si el cierre vino del sistema (X/Alt+F4 del
+    /// WM), lo cancela para que la ventana siga viva mientras el
+    /// usuario decide. Sin cambios: cierre de toda la vida.
+    fn try_close(&mut self, ctx: &egui::Context) {
+        if self.dirty || self.save_progress.is_some() {
+            self.close_pending = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        } else {
+            request_close(ctx, &mut self.closing_since);
         }
     }
 
@@ -92,6 +163,9 @@ impl EditorApp {
 impl eframe::App for EditorApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.show_save_progress(ctx);
+        // S1: comprobación externa de disco (limitada a 1 stat/seg
+        // dentro del método; aquí solo es invocarla por frame).
+        self.check_external_changes();
 
         // Atajos de teclado globales
         let (want_save, want_undo, want_redo, want_quit) = ctx.input(|i| {
@@ -112,14 +186,15 @@ impl eframe::App for EditorApp {
             self.redo();
         }
         if want_quit {
-            request_close(ctx, &mut self.closing_since);
+            self.try_close(ctx);
         }
 
-        // Lo mismo si el cierre vino del botón X de la ventana (no
-        // solo de nuestros botones/atajos).
+        // Lo mismo si el cierre vino del botón X de la ventana o de
+        // Alt+F4 (no solo de nuestros botones/atajos): con cambios
+        // sin guardar try_close lo CANCELA y planta el diálogo.
         let x_close_requested = ctx.input(|i| i.viewport().close_requested());
         if x_close_requested {
-            request_close(ctx, &mut self.closing_since);
+            self.try_close(ctx);
         }
 
         self.ensure_logo_texture(ctx);
@@ -151,10 +226,10 @@ impl eframe::App for EditorApp {
                     ui.add_space(6.0);
                     ui.label(egui::RichText::new("Karkinos").strong());
 
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if title_bar_icon_button(ui, TitleBarIcon::Close).clicked() {
-                            request_close(ctx, &mut self.closing_since);
-                        }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if title_bar_icon_button(ui, TitleBarIcon::Close).clicked() {
+                        self.try_close(ctx);
+                    }
 
                         let is_maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
                         let icon = if is_maximized { TitleBarIcon::Restore } else { TitleBarIcon::Maximize };
@@ -250,6 +325,16 @@ impl eframe::App for EditorApp {
                 ui.label(format!("{}{}", path_str, modified));
                 ui.separator();
                 ui.label(format_size(self.view_bytes));
+                // S1: el archivo cambió "por afuera" y el buffer no le
+                // debe nada (sin cambios propios): ofrecer recarga.
+                if self.external_changed && !self.dirty && self.save_progress.is_none() {
+                    ui.separator();
+                    ui.label(egui::RichText::new("⚠ El archivo cambió en el disco")
+                        .color(egui::Color32::from_rgb(255, 178, 64)));
+                    if ui.button("Recargar").clicked() {
+                        self.reload();
+                    }
+                }
                 if !self.status.is_empty() {
                     ui.separator();
                     ui.label(&self.status);
@@ -292,5 +377,9 @@ impl eframe::App for EditorApp {
                     self.snapshot_if_changed();
                 }
             });
+
+        // S1: al final, para que el diálogo SIEMPRE pinte por encima
+        // de todos los paneles ya dibujados este frame.
+        self.show_close_confirm(ctx);
     }
 }

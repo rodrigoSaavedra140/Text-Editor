@@ -18,6 +18,57 @@ pub struct SaveProgress {
     pub error: Option<String>,
 }
 
+/// Estilo de fin de línea del archivo tal como vive en el disco (S9).
+/// El buffer interno SIEMPRE trabaja con '\n': este estilo solo se
+/// usa al serializar de vuelta al guardar, así que un archivo CRLF
+/// vuelve a disco idéntico a como estaba.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LineEnding {
+    #[default]
+    Lf,
+    Crlf,
+}
+
+/// Detecta el estilo del archivo: CRLF SOLO si cada '\n' viene con su
+/// '\r' delante. Un archivo mixto (algunos CRLF, otros LF) se conserva
+/// como CRLF únicamente si es uniforme; mixed o suelto → LF, que es
+/// el terminador que faltó.
+pub fn detect_line_ending(text: &str) -> LineEnding {
+    let crlf = text.matches("\r\n").count();
+    if crlf > 0 && crlf == text.matches('\n').count() {
+        LineEnding::Crlf
+    } else {
+        LineEnding::Lf
+    }
+}
+
+/// Serializa el texto del buffer (que usa '\n') con el estilo del
+/// archivo. Para LF lo deja tal cual; para CRLF reintroduce el '\r'
+/// delante de cada '\n'.
+pub fn serialize_line_ending(text: &str, ending: LineEnding) -> String {
+    match ending {
+        LineEnding::Lf => text.to_string(),
+        // El buffer no contiene pares '\r\n' (invariante del set_text/
+        // open_path), así que el replace directo no puede duplicarlos.
+        LineEnding::Crlf => text.replace('\n', "\r\n"),
+    }
+}
+
+/// Detecta si el archivo cambió en el disco respecto a lo que
+/// recordamos: mismo mtime = sin cambios; mtime distinto = alguien
+/// lo tocó por afuera; ya no existe en el disco = tocado/borrado;
+/// con mtime "None" (documento nunca ligado a disco) nunca está viejo.
+pub fn mtime_is_stale(
+    disk: Option<SystemTime>,
+    memo: Option<SystemTime>,
+) -> bool {
+    match (disk, memo) {
+        (Some(a), Some(b)) => a != b,
+        (None, Some(_)) => true, // borrado o movido del disco
+        _ => false,
+    }
+}
+
 pub struct EditorApp {
     // Buffer "vivo", partido en líneas — así el widget de edición
     // solo tiene que tocar la línea que cambió, no reconstruir todo
@@ -46,6 +97,24 @@ pub struct EditorApp {
     // tiempo sin que la ventana realmente se cierre (WSLg no
     // responde bien a veces), forzamos la salida igual.
     pub closing_since: Option<Instant>,
+    // S9: estilo de fin de línea con el que se abrió el archivo en
+    // disco (Lf para documentos nuevos).
+    pub line_ending: LineEnding,
+    // S9: mtime del archivo la última vez que lo leímos o guardamos
+    // (None = documento nuevo, nunca ligado a disco).
+    pub last_disk_mtime: Option<SystemTime>,
+    // S1: cierre pedido con cambios sin guardar — el diálogo
+    // Guardar / Descartar / Cancelar está visible.
+    pub close_pending: bool,
+    // S1: el usuario eligió Guardar en el diálogo — cerrar la
+    // ventana en cuanto el guardado termine bien.
+    pub close_after_save: bool,
+    // S1: fecha del último stat de disco (limitamos las comprobaciones
+    // a una por segundo para no hacer I/O en cada frame).
+    pub last_mtime_check: Option<Instant>,
+    // S1: el archivo en disco cambió por afuera y el buffer está
+    // limpio — la barra ofrece "Recargar".
+    pub external_changed: bool,
     // Bytes del texto actual, cacheado. Recalcular era O(total) en
     // CADA frame (sumaba el largo de todas las líneas para la barra
     // de estado); ahora solo se refresca cuando el texto cambia.
@@ -74,6 +143,12 @@ impl Default for EditorApp {
             logo_texture: None,
             save_progress: None,
             closing_since: None,
+            line_ending: LineEnding::Lf,
+            last_disk_mtime: None,
+            close_pending: false,
+            close_after_save: false,
+            last_mtime_check: None,
+            external_changed: false,
             view_bytes: 0,
             dir_cache: None,
         }
@@ -88,10 +163,23 @@ impl EditorApp {
         self.lines.join("\n")
     }
 
+    /// El texto del buffer serializado con el estilo de fin de línea
+    /// que registró el archivo al abrirse (S9): así un .txt que llega
+    /// con CRLF sale a disco EXACTAMENTE como estaba, sin '\r'
+    /// escondidos en el medio (el buffer solo usa '\n').
+    pub fn current_text_with_ending(&self) -> String {
+        let text = self.current_text();
+        serialize_line_ending(&text, self.line_ending)
+    }
+
     /// Reemplaza el contenido completo del buffer a partir de un
     /// String (abrir archivo, deshacer, rehacer). También se usa
     /// solo en momentos puntuales, no por cada tecla.
+    /// Invariante del buffer (S9): no hay pares '\r\n' — si el texto
+    /// trae, se normalizan a '\n' (un '\r' suelto a mitad de línea se
+    /// conserva: es contenido del texto, no un salto).
     pub fn set_text(&mut self, text: &str) {
+        let text = text.replace("\r\n", "\n");
         self.lines = if text.is_empty() {
             vec![String::new()]
         } else {
@@ -179,10 +267,14 @@ impl EditorApp {
     /// carpetas). Después de abrir, el campo "Archivo" solo muestra
     /// el nombre — la ruta completa se ve en la barra de abajo.
     pub fn open_path(&mut self, path: PathBuf) {
-        match fs::read_to_string(&path) {
-            Ok(content) => {
+        match Self::read_file(&path) {
+            Ok((content, ending, mtime)) => {
                 self.set_text(&content);
                 self.last_snapshot = content;
+                self.line_ending = ending;
+                self.last_disk_mtime = mtime;
+                self.external_changed = false;
+                self.last_mtime_check = None;
                 if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
                     self.file_path_input = name.to_string();
                 }
@@ -194,6 +286,24 @@ impl EditorApp {
                 self.status = format!("Error al abrir: {}", e);
             }
         }
+    }
+
+    /// Lee un archivo del disco: contenido ya normalizado a '\n' para
+    /// el buffer, el estilo de fin de línea ORIGINAL y su mtime — los
+    /// tres juntos, de una sola pasada de I/O.
+    fn read_file(
+        path: &std::path::Path,
+    ) -> std::io::Result<(String, LineEnding, Option<SystemTime>)> {
+        use std::io::Read;
+
+        let mut bytes = Vec::new();
+        fs::File::open(path)?.read_to_end(&mut bytes)?;
+        let raw = String::from_utf8(bytes)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        let ending = detect_line_ending(&raw);
+        let content = raw.replace("\r\n", "\n");
+        let mtime = fs::metadata(path).ok().and_then(|m| m.modified().ok());
+        Ok((content, ending, mtime))
     }
 
     /// Abre lo que haya escrito en el campo "Archivo" (botón "Abrir"
@@ -244,9 +354,14 @@ impl EditorApp {
         (dirs, files)
     }
 
-    pub fn save(&mut self) {
+    /// Guarda el documento con su estilo de fin de línea original
+    /// (S9). Devuelve true SOLO si realmente puso un guardado en
+    /// marcha (el callback de cierre lo usa: si no se pudo empezar
+    /// a guardar —ruta vacía o otro guardado en curso— el diálogo
+    /// de cierre no debe pegar cerrar solo).
+    pub fn save(&mut self) -> bool {
         if self.save_progress.is_some() {
-            return; // ya hay un guardado en curso, no arranquemos otro encima
+            return false; // ya hay un guardado en curso, no arranquemos otro encima
         }
 
         self.snapshot_if_changed();
@@ -257,10 +372,10 @@ impl EditorApp {
         };
         if path.as_os_str().is_empty() {
             self.status = "Escribí una ruta de archivo antes de guardar".to_string();
-            return;
+            return false;
         }
 
-        let data = self.current_text().into_bytes();
+        let data = self.current_text_with_ending().into_bytes();
         let total = data.len();
         let progress = Arc::new(Mutex::new(SaveProgress { written: 0, total, done: false, error: None }));
         self.save_progress = Some(Arc::clone(&progress));
@@ -299,5 +414,215 @@ impl EditorApp {
                 }
             }
         });
+        true
+    }
+
+    /// Fin de un guardado: refresca el mtime recordado del archivo
+    /// (el disco cambió al escribir!) para que la detección de
+    /// cambios externos (S1) no marque como "tocado por afuera" el
+    /// archivo que ACABAMOS de guardar. Con error no refresca y, si
+    /// la ventana estaba esperando cerrar tras guardar, se queda
+    /// abierta para que el usuario vea el problema.
+    pub fn note_save_done(&mut self) {
+        let had_error = match &self.save_progress {
+            Some(p) => p.lock().map(|p| p.error.is_some()).unwrap_or(false),
+            None => false,
+        };
+        if had_error {
+            self.close_after_save = false;
+        } else if let Some(path) = &self.current_file {
+            self.last_disk_mtime = fs::metadata(path).ok().and_then(|m| m.modified().ok());
+        }
+    }
+
+    // ---- S1: cierre con cambios sin guardar ----
+
+    /// El usuario pidió cerrar (X o Ctrl+Q) y el diálogo está abierto
+    /// pero quiere cerrarlo sin decidir nada todavía: lo usan el
+    /// botón "Cancelar" y la tecla Esc.
+    pub fn cancel_close(&mut self) {
+        self.close_pending = false;
+        self.close_after_save = false;
+    }
+
+    /// Botón "Descartar" del diálogo: tiran los cambios sin guardar;
+    /// el llamador (ui.rs) ejecuta a continuación el cierre real de
+    /// la ventana (necesita el egui::Context).
+    pub fn confirm_close_discard(&mut self) {
+        self.close_pending = false;
+        self.close_after_save = false;
+    }
+
+    /// Botón "Guardar" del diálogo: re-lanzar guardado y cerrar en
+    /// cuanto baje. Si el guardado no pudo arrancar (ruta vacía,
+    /// otro guardado en curso) el diálogo queda abierto: mentirle
+    /// cerrando la ventana perdería datos.
+    pub fn confirm_close_save(&mut self) {
+        self.close_pending = false;
+        self.close_after_save = true;
+        if !self.save() {
+            self.close_after_save = false;
+            self.close_pending = true;
+        }
+    }
+
+    // ---- S1: archivo cambiado por afuera ----
+
+    /// Compara el mtime del archivo en disco con el recordado de la
+    /// última apertura o del último guardado (S1). Limitado a UN
+    /// stat por segundo: corre en cada frame y una syscall por cada
+    /// frame sería I/O innecesario.
+    pub fn check_external_changes(&mut self) {
+        // Mientras se guarda, el archivo en disco está SIEMPRE
+        // "distinto" del memo: esperar a que el guardado baje para
+        // no ofrecer "Recargar" a la mitad de un write propio.
+        if self.save_progress.is_some() {
+            return;
+        }
+        let now = Instant::now();
+        if let Some(last) = self.last_mtime_check {
+            if now.duration_since(last) < Duration::from_secs(1) {
+                return;
+            }
+        }
+        self.last_mtime_check = Some(now);
+        let Some(path) = self.current_file.clone() else {
+            self.external_changed = false;
+            return;
+        };
+        let disk = fs::metadata(&path).ok().and_then(|m| m.modified().ok());
+        self.external_changed = mtime_is_stale(disk, self.last_disk_mtime);
+    }
+
+    /// Reabre el archivo del disco actual (botón "Recargar" de la
+    /// barra). NO hace nada si hay cambios sin guardar: pisar el
+    /// buffer perdería trabajo del usuario.
+    pub fn reload(&mut self) {
+        let Some(path) = self.current_file.clone() else {
+            return;
+        };
+        if self.dirty {
+            self.status = "Hay cambios sin guardar: guardá primero para recargar".to_string();
+            return;
+        }
+        self.open_path(path);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ---- S9: preservar saltos de línea originales ----
+
+    #[test]
+    fn detecta_ending_crlf_lf_y_archivo_nuevo() {
+        assert_eq!(detect_line_ending("a\r\nb"), LineEnding::Crlf);
+        assert_eq!(detect_line_ending("a\nb"), LineEnding::Lf);
+        assert_eq!(detect_line_ending(""), LineEnding::Lf); // documento nuevo
+        // SI un \r suelto existe sin su \n, no lo contamos como CRLF.
+        assert_eq!(detect_line_ending("a\rb\nc"), LineEnding::Lf);
+    }
+
+    #[test]
+    fn serialize_reintroduce_crlf_y_deja_lf_tal_cual() {
+        assert_eq!(
+            serialize_line_ending("a\nb\nc", LineEnding::Crlf),
+            "a\r\nb\r\nc"
+        );
+        assert_eq!(serialize_line_ending("a\nb", LineEnding::Lf), "a\nb");
+    }
+
+    #[test]
+    fn abrir_archivo_crlf_stack_buffer_limpio_y_ending_recordado()
+    -> std::io::Result<()> {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("karkinos_crlf_{}.txt", std::process::id()));
+        std::fs::write(&path, "uno\r\ndos\r\n\r\ntres")?;
+        let mut app = EditorApp::default();
+        app.open_path(path.clone());
+        // Dentro del buffer quedan líneas SIN \r escondido.
+        assert_eq!(app.lines, vec!["uno", "dos", "", "tres"]);
+        // Y el serializer trae de vuelta el archivo EXACTO original.
+        assert_eq!(app.current_text_with_ending(), "uno\r\ndos\r\n\r\ntres");
+        std::fs::remove_file(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn abrir_archivo_lf_preserva_lf() -> std::io::Result<()> {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("karkinos_lf_{}.txt", std::process::id()));
+        std::fs::write(&path, "a\nb")?;
+        let mut app = EditorApp::default();
+        app.open_path(path.clone());
+        assert_eq!(app.current_text_with_ending(), "a\nb");
+        std::fs::remove_file(path)?;
+        Ok(())
+    }
+
+    // ---- S1: cierre pedido con cambios sin guardar ----
+
+    #[test]
+    fn cerrar_guardando_sin_ruta_no_cierra_por_debajo() {
+        let mut app = EditorApp::default();
+        app.dirty = true;
+        // Sin ruta y sin archivo: save() no puede arrancar → el
+        // diálogo NO debe "prometer" cerrar tras un guardado que
+        // nunca pasa; tiene que seguir abierto esperando decisión.
+        app.confirm_close_save();
+        assert!(app.close_pending);
+        assert!(!app.close_after_save);
+    }
+
+    #[test]
+    fn note_save_done_refresca_mtime_y_cancela_cierre_en_error()
+    -> std::io::Result<()> {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("karkinos_save_{}.txt", std::process::id()));
+        std::fs::write(&path, "contenido")?;
+        let mut app = EditorApp::default();
+        app.current_file = Some(path.clone());
+        // Memo viejo (como si el buffer hubiera venido de un archivo
+        // distinto): tras un guardado ok tiene que quedar "no stale".
+        app.last_disk_mtime = None;
+        let progress = Arc::new(Mutex::new(SaveProgress {
+            written: 9,
+            total: 9,
+            done: true,
+            error: None,
+        }));
+        app.save_progress = Some(Arc::clone(&progress));
+        app.close_after_save = true;
+        app.note_save_done();
+        assert!(app.last_disk_mtime.is_some(), "post-guardado el memo tiene mtime nuevo");
+        assert!(app.close_after_save, "success: sigue el plan de cerrar");
+
+        // Con error: cancelar el cierre automático y NO refrescar memo.
+        progress.lock().unwrap().error = Some("disco lleno".to_string());
+        app.note_save_done();
+        assert!(!app.close_after_save);
+        std::fs::remove_file(path)?;
+        Ok(())
+    }
+
+    // ---- S1: archivo cambiado en el disco (reload externo) ----
+
+    #[test]
+    fn mtime_viejo_con_actual_diferente_es_stale() {
+        let t = SystemTime::now();
+        // No cambió: memo igual.
+        assert!(!mtime_is_stale(Some(t), Some(t)));
+        // Cambió en el disco (actual más nuevo).
+        assert!(mtime_is_stale(Some(t), Some(t + Duration::from_secs(3))));
+        // Borrado del disco: no hay mtime actual pero SÍ recordamos uno.
+        assert!(mtime_is_stale(None, Some(t)));
+        // Archivo en disco cuyo mtime todavía no memorizamos: está
+        // "sin cambios por afuera" por DEFAULT — ofrecer recargar
+        // sobre un buffer que nunca se comparó con disco sería
+        // riesgo de datos.
+        assert!(!mtime_is_stale(Some(t), None));
+        // Documento nunca ligado a disco: recién ahí tampoco.
+        assert!(!mtime_is_stale(None, None));
     }
 }
