@@ -21,7 +21,7 @@
 | ID | Specs | Route | Status | Commit |
 |----|-------|-------|--------|--------|
 | T1 | S1 | inline | listo | e4eb95c |
-| T2 | S2 | inline | pendiente | - |
+| T2 | S2 | inline | listo | 9403330 |
 | T3 | S3 | inline | pendiente | - |
 
 ## Log
@@ -35,3 +35,6 @@
   `char_to_byte` ahora ejecuta en O(1) vía clamp directo cuando la línea es ASCII (`s.is_ascii()`).
   En el render loop de `show()`, si `line.len() == char_len`, la conversión de sub-fila a byte offsets
   se resuelve en O(1) directo sin recorrer caracteres. Test exhaustivo de equivalencia ASCII/UTF-8 agregado.
+- **L3** (2026-10-29): T2 terminado (commit 9403330, suite 48/48 pasando, 0 warnings).
+  En `show()`, el vector de eventos de entrada `ui.input(|i| i.events)` ahora solo se clona si
+  `!events.is_empty()`, eliminando alocaciones y copias en el heap en frames ociosos con foco activo.
