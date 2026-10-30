@@ -90,7 +90,7 @@ orden del prompt). El resto de la aceptación se marca como criterio, no como
 | T5 | S3 | inline | listo | 468ca3a |
 | T6 | S2 | inline | listo | 74a4b92 |
 | T7 | S8 | inline | listo | 478c1d4 |
-| T8 | S10 | inline | pendiente | — |
+| T8 | S10 | inline | listo | (ver L12) |
 
 Nota de ruta: los 10 features comparten edit surfaces (editor_widget.rs y
 ui.rs), así que NO hay writers paralelos — el padre escribe inline en serie.
@@ -152,3 +152,15 @@ disjuntas).
   abre diálogo de confirmación (Guardar / Descartar / Cancelar) antes de limpiar
   el buffer; buffer vacío, current_file = None, file_path_input vacío, dirty = false
   y reset de pila de undo. Suite con 2 tests.
+- **L12** (2026-10-29): T8 terminado, suite 42/42 (RED observado: E0425 en
+  los 3 tests nuevos de la política de zoom; luego GREEN), warnings 0.
+  Zoom de fuente (S10): helper puro apply_zoom (paso entero, clamp 8..32),
+  EditorState.zoom_in/zoom_out reutilizados; el widget ahora usa
+  state.font_size en el FontId (antes 14.0 hardcodeado), así wrap_chars,
+  gutter y autoscroll se re-ajustan solos al cambiar el tamaño. Ctrl+Scroll
+  sobre el editor zoomea un paso por notch (umbral de 2.0 del delta);
+  Ctrl+= / Ctrl+- global; botones − / + en la toolbar. Persistencia: solo
+  el zoom via eframe::App::save → Storage ("editor_font_size"), carga en
+  el closure de main con clamp defensivo. Sin `Risk: none` directo — el
+  touched compartido con T1–T7 es el hovered-scroll del widget: sigue
+  scrolleando normal sin Ctrl.
