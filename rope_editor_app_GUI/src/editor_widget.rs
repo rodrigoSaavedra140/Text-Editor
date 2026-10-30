@@ -932,6 +932,15 @@ pub fn show(
             break;
         }
 
+        // S1 (Etapa 2): Resaltado de la línea activa bajo el cursor
+        if has_focus && i == state.cursor_line {
+            let active_line_rect = egui::Rect::from_min_max(
+                egui::pos2(rect.left() + gutter_w, line_top_y),
+                egui::pos2(clip_rect.right(), line_top_y + rows_here as f32 * row_height),
+            );
+            painter.rect_filled(active_line_rect, 0.0, egui::Color32::from_white_alpha(12));
+        }
+
         // S4: el número se alinea a la FILA VISUAL primera de la
         // línea lógica (una línea envuelta muestra su número una
         // sola vez) y right-align , para que los dígitos no bailen.
