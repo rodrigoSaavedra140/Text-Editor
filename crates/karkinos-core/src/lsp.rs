@@ -516,8 +516,10 @@ impl LspClient {
 impl Drop for LspClient {
     fn drop(&mut self) {
         if let Some(ref proc_lock) = self.server_process {
-            if let Ok(mut child) = proc_lock.lock() {
-                let _ = child.kill();
+            if Arc::strong_count(proc_lock) <= 1 {
+                if let Ok(mut child) = proc_lock.lock() {
+                    let _ = child.kill();
+                }
             }
         }
     }

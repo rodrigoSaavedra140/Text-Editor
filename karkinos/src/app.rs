@@ -150,7 +150,6 @@ pub struct TabDocument {
     pub external_changed: bool,
     pub last_mtime_check: Option<Instant>,
     pub view_bytes: usize,
-    pub lsp_client: Option<karkinos_core::lsp::LspClient>,
 }
 
 impl TabDocument {
@@ -170,7 +169,6 @@ impl TabDocument {
             external_changed: false,
             last_mtime_check: None,
             view_bytes: 0,
-            lsp_client: None,
         }
     }
 
@@ -380,7 +378,6 @@ impl EditorApp {
             tab.external_changed = self.external_changed;
             tab.last_mtime_check = self.last_mtime_check;
             tab.view_bytes = self.view_bytes;
-            tab.lsp_client = self.lsp_client.clone();
         }
     }
 
@@ -435,11 +432,19 @@ impl EditorApp {
             self.external_changed = tab.external_changed;
             self.last_mtime_check = tab.last_mtime_check;
             self.view_bytes = tab.view_bytes;
-            self.lsp_client = tab.lsp_client.clone();
             self.chunk_tracker.reset();
             self.find_matches.clear();
-            self.update_ast();
-            self.update_lsp();
+
+            // S3: If AST hasn't been initialized yet for a Rust file, initialize it once
+            if self.current_language() == crate::syntax::Language::Rust && self.editor_state.ast_engine.is_none() {
+                self.update_ast();
+            }
+
+            // S4: Fast in-memory diagnostics lookup from existing singleton LSP client without process re-spawning
+            if let (Some(ref client), Some(ref path)) = (&self.lsp_client, &self.current_file) {
+                let uri = format!("file://{}", path.display());
+                self.editor_state.diagnostics = client.diagnostics_for_file(&uri);
+            }
         }
     }
 
@@ -897,16 +902,16 @@ impl EditorApp {
 
         match Self::read_file(&path) {
             Ok((content, ending, mtime)) => {
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    self.file_path_input = name.to_string();
+                }
+                self.current_file = Some(path);
                 self.set_text(&content);
                 self.last_snapshot = Rope::from_str(&content);
                 self.line_ending = ending;
                 self.last_disk_mtime = mtime;
                 self.external_changed = false;
                 self.last_mtime_check = None;
-                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                    self.file_path_input = name.to_string();
-                }
-                self.current_file = Some(path);
                 self.dirty = false;
                 self.status = "File opened".to_string();
                 self.sync_active_to_tab();
@@ -1932,5 +1937,68 @@ mod tests {
         let word_count_handled = app.execute_plugin_command("word_count");
         assert!(word_count_handled);
         assert!(app.status.contains("3 words"));
+    }
+
+    #[test]
+    fn test_tab_switching_preserves_lsp_singleton_and_ast() {
+        use karkinos_core::lsp::{DiagnosticSeverity, LspClient, LspDiagnostic, LspPosition, LspRange};
+
+        let mut app = EditorApp::default();
+        app.current_file = Some(PathBuf::from("tab1.rs"));
+        app.set_text("fn tab_one() {}");
+
+        let client = LspClient::mock();
+        client.set_diagnostics_for_file(
+            "file://tab1.rs",
+            vec![LspDiagnostic {
+                range: LspRange {
+                    start: LspPosition { line: 0, character: 0 },
+                    end: LspPosition { line: 0, character: 2 },
+                },
+                severity: Some(DiagnosticSeverity::Warning),
+                code: None,
+                source: Some("rustc".to_string()),
+                message: "tab1 warning".to_string(),
+            }],
+        );
+        client.set_diagnostics_for_file(
+            "file://tab2.rs",
+            vec![LspDiagnostic {
+                range: LspRange {
+                    start: LspPosition { line: 0, character: 0 },
+                    end: LspPosition { line: 0, character: 2 },
+                },
+                severity: Some(DiagnosticSeverity::Error),
+                code: None,
+                source: Some("rustc".to_string()),
+                message: "tab2 error".to_string(),
+            }],
+        );
+        app.lsp_client = Some(client);
+        app.update_lsp();
+        assert_eq!(app.editor_state.diagnostics.len(), 1);
+        assert_eq!(app.editor_state.diagnostics[0].message, "tab1 warning");
+
+        // Create tab 2 with Rust code
+        app.new_tab();
+        app.current_file = Some(PathBuf::from("tab2.rs"));
+        app.set_text("fn tab_two() {}");
+        app.update_lsp();
+        assert_eq!(app.editor_state.diagnostics.len(), 1);
+        assert_eq!(app.editor_state.diagnostics[0].message, "tab2 error");
+
+        // Switching back to tab 1 must NOT drop LSP client and must load tab1 diagnostics
+        app.switch_tab(0);
+        assert!(app.lsp_client.is_some(), "LSP client singleton must remain alive");
+        assert_eq!(app.editor_state.diagnostics.len(), 1);
+        assert_eq!(app.editor_state.diagnostics[0].message, "tab1 warning");
+        assert!(app.editor_state.ast_engine.is_some(), "AST engine must remain cached");
+
+        // Switching to tab 2 must also preserve LSP client and load tab2 diagnostics
+        app.switch_tab(1);
+        assert!(app.lsp_client.is_some(), "LSP client singleton must remain alive");
+        assert_eq!(app.editor_state.diagnostics.len(), 1);
+        assert_eq!(app.editor_state.diagnostics[0].message, "tab2 error");
+        assert!(app.editor_state.ast_engine.is_some(), "AST engine must remain cached");
     }
 }
