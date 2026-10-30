@@ -104,6 +104,9 @@ pub struct EditorResponse {
 }
 
 fn char_to_byte(s: &str, char_idx: usize) -> usize {
+    if s.is_ascii() {
+        return char_idx.min(s.len());
+    }
     s.char_indices().nth(char_idx).map(|(b, _)| b).unwrap_or(s.len())
 }
 
@@ -113,7 +116,11 @@ pub fn char_to_byte_pub(s: &str, char_idx: usize) -> usize {
 }
 
 fn line_char_count(s: &str) -> usize {
-    s.chars().count()
+    if s.is_ascii() {
+        s.len()
+    } else {
+        s.chars().count()
+    }
 }
 
 /// S4: ancho de la banda de números: dígitos del total de líneas +
@@ -940,6 +947,7 @@ pub fn show(
             .get(i)
             .copied()
             .unwrap_or_else(|| line_char_count(line));
+        let is_pure_ascii = line.len() == char_len;
         for sub in 0..rows_here {
             let y = line_top_y + sub as f32 * row_height;
             if y + row_height < rect.top() || y > rect.bottom() {
@@ -947,8 +955,8 @@ pub fn show(
             }
             let start = sub * wrap_chars;
             let end = (start + wrap_chars).min(char_len);
-            let sb = char_to_byte(line, start);
-            let eb = char_to_byte(line, end);
+            let sb = if is_pure_ascii { start } else { char_to_byte(line, start) };
+            let eb = if is_pure_ascii { end } else { char_to_byte(line, end) };
             let chunk = &line[sb..eb];
 
             if let Some((s, e)) = sel {
@@ -1229,5 +1237,46 @@ mod tests {
         assert_eq!(visual_row_of(&cum, 2, 10, 80), 4);
         // col avanza en sub-filas enteras dentro de su línea
         assert_eq!(visual_row_of(&cum, 1, 160, 80), 3);
+    }
+
+    #[test]
+    fn char_to_byte_y_line_char_count_ascii_y_unicode() {
+        // ASCII puro: byte == char
+        let ascii = "hello world 123";
+        assert_eq!(line_char_count(ascii), 15);
+        for c in 0..=15 {
+            assert_eq!(char_to_byte(ascii, c), c);
+        }
+        // Clampeo a len en overflow
+        assert_eq!(char_to_byte(ascii, 999), 15);
+
+        // Unicode multi-byte (acentos, ñ, emoji)
+        let unicode = "hola niños 🦀!";
+        // "hola " (chars 0..5, bytes 0..5)
+        // "ni" (chars 5..7, bytes 5..7)
+        // 'ñ' (char 7, byte 7..9)
+        // "os " (chars 8..11, bytes 9..12)
+        // '🦀' (char 11, bytes 12..16)
+        // '!' (char 12, byte 16..17)
+        assert_eq!(line_char_count(unicode), 13);
+        assert_eq!(char_to_byte(unicode, 0), 0);
+        assert_eq!(char_to_byte(unicode, 5), 5); // 'n'
+        assert_eq!(char_to_byte(unicode, 7), 7); // 'ñ'
+        assert_eq!(char_to_byte(unicode, 8), 9); // 'o' después de 'ñ'
+        assert_eq!(char_to_byte(unicode, 11), 12); // '🦀'
+        assert_eq!(char_to_byte(unicode, 12), 16); // '!' después de emoji 4 bytes
+        assert_eq!(char_to_byte(unicode, 13), 17); // fin
+        assert_eq!(char_to_byte(unicode, 100), unicode.len());
+
+        // Equivalencia estricta con el cálculo ingenuo sobre char_indices()
+        let test_cases = ["", "abc", "áéíóú", "🦀🚀✨", "mixed niño 123 ñ"];
+        for text in test_cases {
+            let naive_count = text.chars().count();
+            assert_eq!(line_char_count(text), naive_count);
+            for c in 0..=(naive_count + 5) {
+                let naive_byte = text.char_indices().nth(c).map(|(b, _)| b).unwrap_or(text.len());
+                assert_eq!(char_to_byte(text, c), naive_byte);
+            }
+        }
     }
 }
