@@ -155,8 +155,6 @@ pub struct EditorApp {
     // mismo — no tiene por qué ser la misma que la carpeta desde
     // donde se lanzó el programa, porque se puede navegar.
     pub browse_dir: PathBuf,
-    // Color de fondo del área de texto.
-    pub text_area_bg: egui::Color32,
     // Textura del logo, cargada una sola vez en el primer frame
     // (None hasta ese momento).
     pub logo_texture: Option<egui::TextureHandle>,
@@ -219,6 +217,8 @@ pub struct EditorApp {
     // S10: tamaño en puntos de la fuente monoespaciada del editor
     // (clamp 8..32). Solo la fuente del editor, no toda la UI.
     pub font_size: f32,
+    // S5 (Etapa 2): Tema visual activo (Dark, Light, Monokai, Dracula).
+    pub theme_mode: crate::theme::ThemeMode,
     dir_cache: Option<(PathBuf, Option<SystemTime>, Vec<String>, Vec<String>)>,
 }
 
@@ -234,7 +234,6 @@ impl Default for EditorApp {
             dirty: false,
             status: "Listo".to_string(),
             browse_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-            text_area_bg: egui::Color32::from_rgb(10, 10, 10),
             logo_texture: None,
             save_progress: None,
             closing_since: None,
@@ -259,12 +258,17 @@ impl Default for EditorApp {
             find_matches: Vec::new(),
             find_current: 0,
             font_size: 14.0,
+            theme_mode: crate::theme::ThemeMode::Dark,
             dir_cache: None,
         }
     }
 }
 
 impl EditorApp {
+    /// S5 (Etapa 2): Retorna la paleta de colores del tema activo.
+    pub fn theme(&self) -> crate::theme::Theme {
+        self.theme_mode.theme()
+    }
     /// Reconstruye el texto completo a partir de `lines` — es O(n),
     /// así que solo se llama en momentos puntuales (snapshot, guardar),
     /// nunca en cada tecla.

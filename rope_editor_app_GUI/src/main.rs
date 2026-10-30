@@ -1,5 +1,6 @@
 mod app;
 mod editor_widget;
+mod theme;
 mod title_bar;
 mod ui;
 mod undo;
@@ -53,6 +54,9 @@ fn main() -> eframe::Result<()> {
                     app.font_size = parsed;
                     app.editor_state.set_font_size(parsed);
                 }
+            }
+            if let Some(theme_str) = storage.get_string("editor_theme") {
+                app.theme_mode = crate::theme::ThemeMode::from_storage_str(&theme_str);
             }
         }
         Box::new(app)

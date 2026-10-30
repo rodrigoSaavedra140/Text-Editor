@@ -407,9 +407,9 @@ impl EditorApp {
 
 impl eframe::App for EditorApp {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
-        // S10: persistir SOLO el zoom (lo demás es estado de sesión:
-        // buffer, cursor, desplegables).
+        // S10 y S5: persistir zoom y tema visual
         storage.set_string("editor_font_size", crate::app::font_size_to_string(self.font_size));
+        storage.set_string("editor_theme", self.theme_mode.to_storage_str().to_string());
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
@@ -497,13 +497,15 @@ impl eframe::App for EditorApp {
 
         self.ensure_logo_texture(ctx);
 
+        let theme = self.theme();
+
         // Le sacamos la decoración nativa a la ventana (ver main()),
         // así que esta barra ocupa exactamente el lugar donde antes
         // estaba la barra nativa del sistema operativo — con nuestro
         // logo, "Karkinos", y los mismos botones de siempre.
         egui::TopBottomPanel::top("custom_title_bar")
             .exact_height(32.0)
-            .frame(egui::Frame::none().fill(egui::Color32::from_rgb(18, 18, 18)))
+            .frame(egui::Frame::none().fill(theme.title_bar_bg))
             .show(ctx, |ui| {
                 let bar_rect = ui.max_rect();
                 let drag_response =
@@ -591,6 +593,17 @@ impl eframe::App for EditorApp {
                 if ui.button("+").clicked() {
                     self.zoom(true);
                 }
+                ui.separator();
+                // S5 (Etapa 2): selector de temas visuales
+                egui::ComboBox::from_id_source("theme_picker")
+                    .selected_text(format!("🎨 {}", self.theme_mode.name()))
+                    .show_ui(ui, |ui| {
+                        for mode in crate::theme::ThemeMode::ALL {
+                            if ui.selectable_label(self.theme_mode == mode, mode.name()).clicked() {
+                                self.theme_mode = mode;
+                            }
+                        }
+                    });
             });
         });
 
@@ -643,7 +656,7 @@ impl eframe::App for EditorApp {
         // Sin márgenes propios: así el área de texto puede ocupar
         // el panel central entero, sin ese borde gris alrededor.
         egui::CentralPanel::default()
-            .frame(egui::Frame::none().fill(self.text_area_bg))
+            .frame(egui::Frame::none().fill(theme.bg))
             .show(ctx, |ui| {
                 // Fondo minimalista con el logo, SOLO mientras el
                 // buffer está vacío — apenas empezás a escribir,
@@ -678,7 +691,7 @@ impl eframe::App for EditorApp {
                     ui,
                     &mut self.lines,
                     &mut self.editor_state,
-                    self.text_area_bg,
+                    &theme,
                     search,
                 );
                 // S10: el Ctrl+Scroll zoomea DIRECTO en el EditorState

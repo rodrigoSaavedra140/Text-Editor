@@ -566,7 +566,7 @@ pub fn show(
     ui: &mut egui::Ui,
     lines: &mut Vec<String>,
     state: &mut EditorState,
-    bg: egui::Color32,
+    theme: &crate::theme::Theme,
     search: Option<SearchHighlight<'_>>,
 ) -> EditorResponse {
     let mut changed = false;
@@ -579,12 +579,11 @@ pub fn show(
     let font_id = egui::FontId::monospace(state.font_size);
     let row_height = ui.fonts(|f| f.row_height(&font_id));
     let char_width = ui.fonts(|f| f.glyph_width(&font_id, ' '));
-    let text_color = egui::Color32::from_gray(225);
-    let sel_color = egui::Color32::from_rgb(60, 90, 150);
+    let text_color = theme.text;
+    let sel_color = theme.selection;
 
     let available = ui.available_size();
     let (rect, response) = ui.allocate_exact_size(available, egui::Sense::click_and_drag());
-    let _ = bg; // el fondo ya lo pinta el CentralPanel de ui.rs
 
     let id = response.id;
     let has_focus_before = ui.memory(|m| m.has_focus(id));
@@ -1105,7 +1104,7 @@ pub fn show(
     let gutter_rect =
         egui::Rect::from_min_max(rect.min, egui::pos2(rect.left() + gutter_w, rect.max.y));
     let gutter_painter = ui.painter_at(gutter_rect);
-    gutter_painter.rect_filled(gutter_rect, 0.0, egui::Color32::from_white_alpha(5));
+    gutter_painter.rect_filled(gutter_rect, 0.0, theme.gutter_bg);
 
     // S3 (Etapa 2): matching de delimitadores () [] {} bajo el cursor
     let bracket_match = if has_focus && sel.is_none() {
@@ -1136,7 +1135,7 @@ pub fn show(
                 egui::pos2(rect.left() + gutter_w, line_top_y),
                 egui::pos2(clip_rect.right(), line_top_y + rows_here as f32 * row_height),
             );
-            painter.rect_filled(active_line_rect, 0.0, egui::Color32::from_white_alpha(12));
+            painter.rect_filled(active_line_rect, 0.0, theme.active_line);
         }
 
         // S4: el número se alinea a la FILA VISUAL primera de la
@@ -1147,7 +1146,7 @@ pub fn show(
             egui::Align2::RIGHT_TOP,
             (i + 1).to_string(),
             font_id.clone(),
-            egui::Color32::from_gray(110),
+            theme.gutter_text,
         );
 
         let char_len = state
@@ -1270,7 +1269,7 @@ pub fn show(
                 let caret_x = text_left + (state.cursor_col - start) as f32 * char_width;
                 painter.line_segment(
                     [egui::pos2(caret_x, y), egui::pos2(caret_x, y + row_height)],
-                    egui::Stroke::new(1.5_f32, egui::Color32::WHITE),
+                    egui::Stroke::new(1.5_f32, theme.caret),
                 );
             }
         }
