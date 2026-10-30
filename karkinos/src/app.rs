@@ -376,18 +376,23 @@ impl EditorApp {
         self.theme_mode.theme()
     }
 
-    /// S6 (Etapa 2): Retorna el lenguaje detectado para el documento actual.
+    /// S6 (Etapa 2): Retorna el lenguaje detectado para el documento actual (autodetecta por extensión y contenido).
     pub fn current_language(&self) -> crate::syntax::Language {
-        if let Some(ref p) = self.current_file {
-            crate::syntax::Language::from_path(p)
+        let path = self.current_file.as_deref().or_else(|| {
+            if self.file_path_input.is_empty() {
+                None
+            } else {
+                Some(std::path::Path::new(&self.file_path_input))
+            }
+        });
+
+        let sample = if self.lines.len() <= 100 {
+            self.lines.join("\n")
         } else {
-            crate::syntax::Language::from_extension(
-                std::path::Path::new(&self.file_path_input)
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .unwrap_or(""),
-            )
-        }
+            self.lines[..100].join("\n")
+        };
+
+        crate::syntax::Language::detect(path, &sample)
     }
 
     /// S8 (Etapa 2): Guarda el estado actual del editor en la pestaña activa.
@@ -2352,5 +2357,27 @@ mod tests {
         assert!(uninstalled);
         assert!(!test_vsix.exists());
         assert!(app.status.contains("Uninstalled .vsix extension: test-ext-1.0.0.vsix"));
+    }
+
+    #[test]
+    fn test_current_language_autodetection_without_extension() {
+        let mut app = EditorApp::default();
+        app.current_file = None;
+        app.file_path_input = String::new();
+
+        // Initially empty buffer -> PlainText
+        assert_eq!(app.current_language(), crate::syntax::Language::PlainText);
+
+        // Buffer with Rust function -> Autodetects Rust
+        app.set_text("pub fn main() {\n    println!(\"hello\");\n}");
+        assert_eq!(app.current_language(), crate::syntax::Language::Rust);
+
+        // Buffer with JSON -> Autodetects Json
+        app.set_text("{\n  \"editor\": \"karkinos\"\n}");
+        assert_eq!(app.current_language(), crate::syntax::Language::Json);
+
+        // Buffer with HTML -> Autodetects Html
+        app.set_text("<!DOCTYPE html>\n<html><body></body></html>");
+        assert_eq!(app.current_language(), crate::syntax::Language::Html);
     }
 }

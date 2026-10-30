@@ -37,12 +37,190 @@ pub enum Language {
 
 impl Language {
     /// Detecta el lenguaje a partir de la extensión de la ruta.
+    #[allow(dead_code)]
     pub fn from_path(path: &Path) -> Self {
-        let ext = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("");
-        Self::from_extension(ext)
+        Self::detect(Some(path), "")
+    }
+
+    /// Autodetects language from file path (extensions & filenames) and content heuristics (shebang & syntax signatures).
+    pub fn detect(path: Option<&Path>, sample_content: &str) -> Self {
+        // 1. Try file extension
+        if let Some(p) = path {
+            let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
+            let from_ext = Self::from_extension(ext);
+            if from_ext != Language::PlainText {
+                return from_ext;
+            }
+
+            // 2. Try well-known filenames without extension
+            if let Some(name) = p.file_name().and_then(|f| f.to_str()) {
+                match name.to_lowercase().as_str() {
+                    "readme" | "changelog" | "contributing" | "license" | "todo" => {
+                        return Language::Markdown;
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // 3. Fallback: Autodetect from content without extension
+        if !sample_content.is_empty() {
+            Self::detect_from_content(sample_content)
+        } else {
+            Language::PlainText
+        }
+    }
+
+    /// Autodetects language strictly from content (shebang, syntax patterns, keywords).
+    pub fn detect_from_content(content: &str) -> Self {
+        let lines: Vec<&str> = content.lines().take(100).collect();
+        if lines.is_empty() {
+            return Language::PlainText;
+        }
+
+        // 1. Check Shebang on first line
+        if let Some(first) = lines.first() {
+            let t = first.trim();
+            if t.starts_with("#!") {
+                if t.contains("node") || t.contains("deno") || t.contains("bun") {
+                    return Language::JavaScript;
+                }
+                if t.contains("rust-script") || t.contains("cargo") {
+                    return Language::Rust;
+                }
+            }
+        }
+
+        let trimmed_content = content.trim();
+
+        // 2. Check JSON (object with "key": or array of items)
+        if (trimmed_content.starts_with('{') && trimmed_content.contains("\":"))
+            || (trimmed_content.starts_with('[') && trimmed_content.ends_with(']'))
+        {
+            return Language::Json;
+        }
+
+        // 3. Check HTML / XML
+        let has_html_doctype = trimmed_content.to_ascii_lowercase().starts_with("<!doctype html");
+        let has_html_tags = lines.iter().any(|l| {
+            let lower = l.to_ascii_lowercase();
+            lower.contains("<html") || lower.contains("</html>") || lower.contains("<body")
+        });
+        if has_html_doctype || has_html_tags {
+            return Language::Html;
+        }
+
+        // 4. Check Rust signatures
+        let is_rust = lines.iter().any(|line| {
+            let l = line.trim();
+            l.starts_with("fn ")
+                || l.starts_with("pub fn ")
+                || l.starts_with("use std::")
+                || l.starts_with("pub use ")
+                || l.starts_with("impl ")
+                || l.starts_with("pub struct ")
+                || l.starts_with("pub enum ")
+                || l.starts_with("#[derive(")
+                || l.starts_with("#[inline]")
+                || l.starts_with("#[test]")
+                || l.starts_with("#[no_std]")
+                || l.starts_with("mod ")
+                || l.starts_with("pub mod ")
+                || l.starts_with("extern crate ")
+                || l.contains("let mut ")
+                || l.contains("println!(")
+                || l.contains("eprintln!(")
+        });
+        if is_rust {
+            return Language::Rust;
+        }
+
+        // 5. Check C / C++ signatures
+        let has_include = lines.iter().any(|l| l.trim().starts_with("#include"));
+        let has_cpp_syntax = lines.iter().any(|l| {
+            let t = l.trim();
+            t.contains("std::")
+                || t.starts_with("template<")
+                || t.starts_with("class ")
+                || t.contains("cout <<")
+                || t.contains("cin >>")
+        });
+        if has_include {
+            if has_cpp_syntax {
+                return Language::Cpp;
+            }
+            return Language::C;
+        }
+
+        // 6. Check Java signatures
+        let is_java = lines.iter().any(|l| {
+            let t = l.trim();
+            t.starts_with("package ")
+                || t.starts_with("public class ")
+                || t.contains("public static void main")
+                || t.contains("System.out.println")
+        });
+        if is_java {
+            return Language::Java;
+        }
+
+        // 7. Check JavaScript / TypeScript signatures
+        let is_js = lines.iter().any(|l| {
+            let t = l.trim();
+            (t.starts_with("import ") && (t.contains(" from '") || t.contains(" from \"")))
+                || t.starts_with("export default ")
+                || t.starts_with("export const ")
+                || t.starts_with("export function ")
+                || (t.starts_with("const ") && t.contains(" = require("))
+                || t.contains("console.log(")
+                || t.contains("function* ")
+        });
+        if is_js {
+            return Language::JavaScript;
+        }
+
+        // 8. Check SQL signatures
+        let is_sql = lines.iter().any(|l| {
+            let t = l.trim().to_uppercase();
+            (t.starts_with("SELECT ") && t.contains(" FROM "))
+                || t.starts_with("CREATE TABLE ")
+                || t.starts_with("INSERT INTO ")
+                || t.starts_with("DROP TABLE ")
+                || t.starts_with("ALTER TABLE ")
+        });
+        if is_sql {
+            return Language::Sql;
+        }
+
+        // 9. Check CSS signatures
+        let is_css = lines.iter().any(|l| {
+            let t = l.trim();
+            t.starts_with("@import ")
+                || t.starts_with("@media ")
+                || (t.contains('{')
+                    && (t.contains("margin:")
+                        || t.contains("padding:")
+                        || t.contains("color:")
+                        || t.contains("background:")))
+        });
+        if is_css {
+            return Language::Css;
+        }
+
+        // 10. Check Markdown signatures
+        let is_md = lines.iter().any(|l| {
+            let t = l.trim();
+            t.starts_with("# ")
+                || t.starts_with("## ")
+                || t.starts_with("### ")
+                || t.starts_with("- [ ] ")
+                || t.starts_with("- [x] ")
+        });
+        if is_md {
+            return Language::Markdown;
+        }
+
+        Language::PlainText
     }
 
     /// Detecta el lenguaje a partir de una extensión textual (ej: "rs", "cpp", "js").
@@ -1686,6 +1864,39 @@ mod tests {
         assert_eq!(Language::from_extension("css"), Language::Css);
         assert_eq!(Language::from_extension("scss"), Language::Css);
         assert_eq!(Language::from_extension("txt"), Language::PlainText);
+    }
+
+    #[test]
+    fn test_autodetect_language_without_extension() {
+        use std::path::Path;
+
+        // 1. Filenames without extension
+        assert_eq!(Language::detect(Some(Path::new("README")), ""), Language::Markdown);
+        assert_eq!(Language::detect(Some(Path::new("CHANGELOG")), ""), Language::Markdown);
+
+        // 2. Shebangs without extension
+        assert_eq!(Language::detect(Some(Path::new("my-script")), "#!/usr/bin/env node\nconsole.log(1);"), Language::JavaScript);
+        assert_eq!(Language::detect(None, "#!/usr/bin/env rust-script\nfn main() {}"), Language::Rust);
+
+        // 3. Rust syntax signatures without extension
+        assert_eq!(Language::detect(Some(Path::new("unknown_file")), "pub fn compute(x: i32) -> i32 {\n    let mut y = x;\n    y\n}"), Language::Rust);
+        assert_eq!(Language::detect(None, "#[derive(Debug)]\npub struct Config {\n}"), Language::Rust);
+
+        // 4. HTML signatures without extension
+        assert_eq!(Language::detect(None, "<!DOCTYPE html>\n<html>\n<body>\n</body>\n</html>"), Language::Html);
+
+        // 5. JSON signatures without extension
+        assert_eq!(Language::detect(None, "{\n  \"name\": \"karkinos\",\n  \"version\": 1\n}"), Language::Json);
+
+        // 6. C/C++ signatures without extension
+        assert_eq!(Language::detect(None, "#include <stdio.h>\nint main() { return 0; }"), Language::C);
+        assert_eq!(Language::detect(None, "#include <iostream>\nint main() { std::cout << 42; return 0; }"), Language::Cpp);
+
+        // 7. SQL signatures without extension
+        assert_eq!(Language::detect(None, "SELECT user_id, email FROM users WHERE active = 1;"), Language::Sql);
+
+        // 8. Plain text fallback
+        assert_eq!(Language::detect(None, "Just some normal notes without any code patterns."), Language::PlainText);
     }
 
     #[test]
