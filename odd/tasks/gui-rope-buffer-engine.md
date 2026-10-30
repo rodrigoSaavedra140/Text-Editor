@@ -26,8 +26,8 @@ Reemplazar la representación ingenua `Vec<String>` por una estructura de datos 
 | ID | Specs | Route | Status | Commit |
 |----|-------|-------|--------|--------|
 | T1 | S1 | inline | listo | 6d79d71 |
-| T2 | S2 | inline | pendiente | |
-| T3 | S3 | inline | pendiente | |
+| T2 | S2 | inline | listo | 2872024 |
+| T3 | S3 | inline | listo | 2872024 |
 | T4 | S4 | inline | listo | 6d79d71 |
 
 ## Log
@@ -37,3 +37,7 @@ Reemplazar la representación ingenua `Vec<String>` por una estructura de datos 
   Se incorporó `ropey = "1.6"` y se creó el módulo `buffer.rs` (`TextBuffer`) con operaciones $O(\log N)$,
   indexación bidireccional `(line, col) <-> char_idx`, snapshots COW instantáneos en $O(1)$ y prueba de estrés
   con 50.000 líneas en milisegundos.
+- **L3** (2026-10-30): T2 y T3 completadas (commit 2872024, 78/78 tests pasando, 0 warnings).
+  Se integró `Rope` en `UndoStack` (`Edit { before, after }`), logrando snapshots Copy-On-Write en $O(1)$ sin
+  duplicación en memoria del heap. Se adaptaron `TabDocument` y `EditorApp` para gobernar `TextBuffer` con
+  sincronización multi-pestaña y preservación total de la suite de pruebas.
