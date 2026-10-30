@@ -45,7 +45,7 @@
 | ID | Specs | Route | Status | Commit |
 |----|-------|-------|--------|--------|
 | T1 | S1 | inline | listo | 9b1f340 |
-| T2 | S2 | inline | pendiente | - |
+| T2 | S2 | inline | listo | 2be1a15 |
 | T3 | S3 | inline | pendiente | - |
 | T4 | S4 | inline | pendiente | - |
 | T5 | S5 | inline | pendiente | - |
@@ -60,3 +60,7 @@
 - **L2** (2026-10-29): T1 terminado (commit 9b1f340, suite 49/49 pasando, 0 warnings).
   Franja de fondo sutil (`Color32::from_white_alpha(12)`) sobre la línea lógica activa bajo el cursor
   (abarcando todas sus sub-filas visuales si hay wrap), activa únicamente con foco del widget.
+- **L3** (2026-10-29): T2 terminado (commit 2be1a15, suite 49/49 pasando, 0 warnings).
+  Resaltado de todas las coincidencias visibles de búsqueda en el viewport (ámbar translúcido para
+  matches secundarios y naranja intenso para el match actualmente enfocado). Búsqueda binaria O(log M)
+  por línea en los matches ordenados y cero alocaciones (referencias prestadas en `SearchHighlight`).
