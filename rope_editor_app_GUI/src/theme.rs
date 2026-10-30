@@ -58,6 +58,11 @@ impl ThemeMode {
                 caret: egui::Color32::WHITE,
                 title_bar_bg: egui::Color32::from_rgb(18, 18, 18),
                 panel_bg: egui::Color32::from_rgb(22, 22, 22),
+                syntax_keyword: egui::Color32::from_rgb(197, 134, 192),
+                syntax_type: egui::Color32::from_rgb(78, 201, 176),
+                syntax_string: egui::Color32::from_rgb(206, 145, 120),
+                syntax_comment: egui::Color32::from_rgb(106, 153, 85),
+                syntax_number: egui::Color32::from_rgb(181, 206, 168),
             },
             ThemeMode::Light => Theme {
                 mode: ThemeMode::Light,
@@ -70,6 +75,11 @@ impl ThemeMode {
                 caret: egui::Color32::from_rgb(20, 20, 20),
                 title_bar_bg: egui::Color32::from_rgb(230, 230, 230),
                 panel_bg: egui::Color32::from_rgb(240, 240, 240),
+                syntax_keyword: egui::Color32::from_rgb(175, 0, 219),
+                syntax_type: egui::Color32::from_rgb(38, 127, 153),
+                syntax_string: egui::Color32::from_rgb(163, 21, 21),
+                syntax_comment: egui::Color32::from_rgb(0, 128, 0),
+                syntax_number: egui::Color32::from_rgb(9, 134, 88),
             },
             ThemeMode::Monokai => Theme {
                 mode: ThemeMode::Monokai,
@@ -82,6 +92,11 @@ impl ThemeMode {
                 caret: egui::Color32::from_rgb(248, 248, 240),
                 title_bar_bg: egui::Color32::from_rgb(26, 27, 22),
                 panel_bg: egui::Color32::from_rgb(33, 34, 28),
+                syntax_keyword: egui::Color32::from_rgb(249, 38, 114),
+                syntax_type: egui::Color32::from_rgb(102, 217, 239),
+                syntax_string: egui::Color32::from_rgb(230, 219, 116),
+                syntax_comment: egui::Color32::from_rgb(117, 113, 94),
+                syntax_number: egui::Color32::from_rgb(174, 129, 255),
             },
             ThemeMode::Dracula => Theme {
                 mode: ThemeMode::Dracula,
@@ -94,6 +109,11 @@ impl ThemeMode {
                 caret: egui::Color32::from_rgb(255, 121, 198),
                 title_bar_bg: egui::Color32::from_rgb(25, 26, 33),
                 panel_bg: egui::Color32::from_rgb(33, 34, 44),
+                syntax_keyword: egui::Color32::from_rgb(255, 121, 198),
+                syntax_type: egui::Color32::from_rgb(139, 233, 253),
+                syntax_string: egui::Color32::from_rgb(241, 250, 140),
+                syntax_comment: egui::Color32::from_rgb(98, 114, 164),
+                syntax_number: egui::Color32::from_rgb(189, 147, 249),
             },
         }
     }
@@ -114,6 +134,11 @@ pub struct Theme {
     pub title_bar_bg: egui::Color32,
     #[allow(dead_code)]
     pub panel_bg: egui::Color32,
+    pub syntax_keyword: egui::Color32,
+    pub syntax_type: egui::Color32,
+    pub syntax_string: egui::Color32,
+    pub syntax_comment: egui::Color32,
+    pub syntax_number: egui::Color32,
 }
 
 #[cfg(test)]

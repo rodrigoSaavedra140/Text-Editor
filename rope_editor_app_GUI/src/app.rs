@@ -269,6 +269,20 @@ impl EditorApp {
     pub fn theme(&self) -> crate::theme::Theme {
         self.theme_mode.theme()
     }
+
+    /// S6 (Etapa 2): Retorna el lenguaje detectado para el documento actual.
+    pub fn current_language(&self) -> crate::syntax::Language {
+        if let Some(ref p) = self.current_file {
+            crate::syntax::Language::from_path(p)
+        } else {
+            crate::syntax::Language::from_extension(
+                std::path::Path::new(&self.file_path_input)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or(""),
+            )
+        }
+    }
     /// Reconstruye el texto completo a partir de `lines` — es O(n),
     /// así que solo se llama en momentos puntuales (snapshot, guardar),
     /// nunca en cada tecla.

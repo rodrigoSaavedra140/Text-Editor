@@ -633,6 +633,8 @@ impl eframe::App for EditorApp {
                     self.editor_state.cursor_line + 1,
                     self.editor_state.cursor_col + 1
                 ));
+                ui.separator();
+                ui.label(self.current_language().name());
                 // S1: el archivo cambió "por afuera" y el buffer no le
                 // debe nada (sin cambios propios): ofrecer recarga.
                 if self.external_changed && !self.dirty && self.save_progress.is_none() {
@@ -687,11 +689,13 @@ impl eframe::App for EditorApp {
                 } else {
                     None
                 };
+                let language = self.current_language();
                 let response = crate::editor_widget::show(
                     ui,
                     &mut self.lines,
                     &mut self.editor_state,
                     &theme,
+                    language,
                     search,
                 );
                 // S10: el Ctrl+Scroll zoomea DIRECTO en el EditorState

@@ -567,6 +567,7 @@ pub fn show(
     lines: &mut Vec<String>,
     state: &mut EditorState,
     theme: &crate::theme::Theme,
+    language: crate::syntax::Language,
     search: Option<SearchHighlight<'_>>,
 ) -> EditorResponse {
     let mut changed = false;
@@ -1156,6 +1157,13 @@ pub fn show(
             .unwrap_or_else(|| line_char_count(line));
         let is_pure_ascii = line.len() == char_len;
 
+        // S6 (Etapa 2): Resaltado de sintaxis ligero
+        let line_tokens = if language != crate::syntax::Language::PlainText {
+            crate::syntax::tokenize_line(line, language)
+        } else {
+            Vec::new()
+        };
+
         // S2 (Etapa 2): Coincidencias de búsqueda en la línea i
         let line_matches = if let Some(ref s) = search {
             let start_idx = s.matches.partition_point(|&(line, _)| line < i);
@@ -1218,7 +1226,18 @@ pub fn show(
             }
 
             if !chunk.is_empty() {
-                let galley = ui.fonts(|f| f.layout_no_wrap(chunk.to_string(), font_id.clone(), text_color));
+                let galley = if language == crate::syntax::Language::PlainText {
+                    ui.fonts(|f| f.layout_no_wrap(chunk.to_string(), font_id.clone(), text_color))
+                } else {
+                    let job = crate::syntax::build_layout_job(
+                        chunk,
+                        sb,
+                        &line_tokens,
+                        theme,
+                        font_id.clone(),
+                    );
+                    ui.fonts(|f| f.layout_job(job))
+                };
                 painter.galley(egui::pos2(text_left, y), galley, text_color);
             }
 
