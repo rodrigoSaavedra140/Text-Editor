@@ -47,7 +47,7 @@
 | T1 | S1 | inline | listo | 9b1f340 |
 | T2 | S2 | inline | listo | 2be1a15 |
 | T3 | S3 | inline | listo | 9f14c29 |
-| T4 | S4 | inline | pendiente | - |
+| T4 | S4 | inline | listo | 86f018c |
 | T5 | S5 | inline | pendiente | - |
 | T6 | S6 | inline | pendiente | - |
 | T7 | S7 | inline | pendiente | - |
@@ -69,3 +69,7 @@
   anidación, búsqueda bidireccional y detección de desbalance (cap defensivo 2000 líneas).
   Visualización con recuadro azul/cyan para pares coincidentes y alerta roja tenue para delimitadores
   huérfanos. Suite con test multilínea, anidado y desbalanceado.
+- **L5** (2026-10-29): T4 terminado (commit 86f018c, suite 51/51 pasando, 0 warnings).
+  Indentación de bloques: Tab en selección multilínea indenta todas las líneas seleccionadas y expande
+  la selección para preservarla. Shift+Tab quita sangría (\t o hasta 4 espacios) tanto en bloque
+  multilínea como en línea simple. Helpers puros `indent_line` y `dedent_line` con test unitario.
