@@ -646,17 +646,14 @@ impl EditorApp {
     /// donde vas a empezar a escribir. El nombre "Karkinos" ya se
     /// muestra en la barra de título propia, así que acá no hace
     /// falta repetirlo. El tinte se adapta según el tema visual.
-    fn draw_watermark(&self, ui: &egui::Ui, rect: egui::Rect, theme: &crate::theme::Theme) {
+    fn draw_watermark(&self, ui: &egui::Ui, rect: egui::Rect, _theme: &crate::theme::Theme) {
         let painter = ui.painter();
         let center = rect.center();
 
         if let Some(tex) = &self.logo_texture {
             let logo_side = (rect.height() * 0.32).min(260.0);
             let logo_rect = egui::Rect::from_center_size(center, egui::vec2(logo_side, logo_side));
-            let tint = match theme.mode {
-                crate::theme::ThemeMode::Light => egui::Color32::from_white_alpha(170),
-                _ => egui::Color32::from_white_alpha(45),
-            };
+            let tint = egui::Color32::from_white_alpha(45);
             painter.image(
                 tex.id(),
                 logo_rect,

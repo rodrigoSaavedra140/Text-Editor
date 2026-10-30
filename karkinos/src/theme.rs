@@ -5,15 +5,13 @@ use eframe::egui;
 pub enum ThemeMode {
     #[default]
     Dark,
-    Light,
     Monokai,
     Dracula,
 }
 
 impl ThemeMode {
-    pub const ALL: [ThemeMode; 4] = [
+    pub const ALL: [ThemeMode; 3] = [
         ThemeMode::Dark,
-        ThemeMode::Light,
         ThemeMode::Monokai,
         ThemeMode::Dracula,
     ];
@@ -21,7 +19,6 @@ impl ThemeMode {
     pub fn name(&self) -> &'static str {
         match self {
             ThemeMode::Dark => "Dark",
-            ThemeMode::Light => "Light",
             ThemeMode::Monokai => "Monokai",
             ThemeMode::Dracula => "Dracula",
         }
@@ -30,7 +27,6 @@ impl ThemeMode {
     pub fn to_storage_str(&self) -> &'static str {
         match self {
             ThemeMode::Dark => "dark",
-            ThemeMode::Light => "light",
             ThemeMode::Monokai => "monokai",
             ThemeMode::Dracula => "dracula",
         }
@@ -38,7 +34,6 @@ impl ThemeMode {
 
     pub fn from_storage_str(s: &str) -> Self {
         match s.to_lowercase().as_str() {
-            "light" => ThemeMode::Light,
             "monokai" => ThemeMode::Monokai,
             "dracula" => ThemeMode::Dracula,
             _ => ThemeMode::Dark,
@@ -63,23 +58,6 @@ impl ThemeMode {
                 syntax_string: egui::Color32::from_rgb(206, 145, 120),
                 syntax_comment: egui::Color32::from_rgb(106, 153, 85),
                 syntax_number: egui::Color32::from_rgb(181, 206, 168),
-            },
-            ThemeMode::Light => Theme {
-                mode: ThemeMode::Light,
-                bg: egui::Color32::from_rgb(250, 250, 250),
-                text: egui::Color32::from_rgb(30, 30, 30),
-                gutter_bg: egui::Color32::from_rgb(240, 240, 240),
-                gutter_text: egui::Color32::from_rgb(130, 130, 130),
-                selection: egui::Color32::from_rgb(180, 215, 255),
-                active_line: egui::Color32::from_rgb(238, 238, 238),
-                caret: egui::Color32::from_rgb(20, 20, 20),
-                title_bar_bg: egui::Color32::from_rgb(230, 230, 230),
-                panel_bg: egui::Color32::from_rgb(240, 240, 240),
-                syntax_keyword: egui::Color32::from_rgb(175, 0, 219),
-                syntax_type: egui::Color32::from_rgb(38, 127, 153),
-                syntax_string: egui::Color32::from_rgb(163, 21, 21),
-                syntax_comment: egui::Color32::from_rgb(0, 128, 0),
-                syntax_number: egui::Color32::from_rgb(9, 134, 88),
             },
             ThemeMode::Monokai => Theme {
                 mode: ThemeMode::Monokai,

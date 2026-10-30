@@ -19,7 +19,7 @@ karkinos/
     ├── title_bar.rs     # Frameless title bar with vector icons and window controls
     ├── syntax.rs        # Syntax tokenizers and LayoutJob colorizer (10+ languages)
     ├── quick_open.rs    # Quick Open file search dialog (Ctrl+P) with fuzzy matching
-    ├── theme.rs         # Theme palettes (Dark, Light, Monokai, Dracula)
+    ├── theme.rs         # Theme palettes (Dark, Monokai, Dracula)
     ├── util.rs          # Byte formatters, goto calculations, and WSL environment detection
     └── undo.rs          # UndoStack with idle chunking and O(1) Copy-On-Write Rope snapshots
 ```

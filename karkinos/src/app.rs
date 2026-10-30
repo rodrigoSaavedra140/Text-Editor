@@ -269,7 +269,7 @@ pub struct EditorApp {
     // S10: tamaño en puntos de la fuente monoespaciada del editor
     // (clamp 8..32). Solo la fuente del editor, no toda la UI.
     pub font_size: f32,
-    // S5 (Etapa 2): Tema visual activo (Dark, Light, Monokai, Dracula).
+    // S5 (Etapa 2): Tema visual activo (Dark, Monokai, Dracula).
     pub theme_mode: crate::theme::ThemeMode,
     // S7 (Etapa 2): Estado del modal de búsqueda rápida de archivos (Ctrl+P).
     pub quick_open: crate::quick_open::QuickOpenState,

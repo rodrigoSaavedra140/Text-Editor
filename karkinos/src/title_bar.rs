@@ -21,20 +21,14 @@ pub fn title_bar_icon_button(
 
     if response.hovered() {
         let bg = if matches!(icon, TitleBarIcon::Close) {
-            egui::Color32::from_rgb(196, 43, 28) // hover rojo, como en Windows
-        } else if theme.mode == crate::theme::ThemeMode::Light {
-            egui::Color32::from_black_alpha(25)
+            egui::Color32::from_rgb(196, 43, 28) // hover red, like on Windows
         } else {
             egui::Color32::from_white_alpha(25)
         };
         ui.painter().rect_filled(rect, 0.0, bg);
     }
 
-    let stroke_color = if theme.mode == crate::theme::ThemeMode::Light {
-        egui::Color32::from_rgb(40, 40, 40)
-    } else {
-        egui::Color32::from_gray(225)
-    };
+    let stroke_color = egui::Color32::from_gray(225);
     let stroke = egui::Stroke::new(1.2_f32, stroke_color);
     let center = rect.center();
     let painter = ui.painter();
