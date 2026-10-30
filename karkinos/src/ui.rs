@@ -839,8 +839,18 @@ impl EditorApp {
                     ui.label(egui::RichText::new("Installed Extensions & Active Plugins").strong());
                     ui.add_space(4.0);
 
+                    let mut plugin_to_uninstall: Option<String> = None;
+                    let mut vsix_to_uninstall: Option<String> = None;
+
                     let plugins = self.plugin_manager.installed_plugins();
                     egui::ScrollArea::vertical().max_height(280.0).show(ui, |ui| {
+                        if plugins.is_empty() {
+                            ui.label(
+                                egui::RichText::new("No active plugins registered.")
+                                    .italics()
+                                    .color(egui::Color32::from_gray(140)),
+                            );
+                        }
                         for plugin in &plugins {
                             ui.group(|ui| {
                                 ui.horizontal(|ui| {
@@ -850,6 +860,9 @@ impl EditorApp {
                                             .color(egui::Color32::from_gray(140)),
                                     );
                                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        if ui.small_button("🗑️ Uninstall").clicked() {
+                                            plugin_to_uninstall = Some(plugin.name.clone());
+                                        }
                                         ui.label(
                                             egui::RichText::new("● Active")
                                                 .color(egui::Color32::from_rgb(80, 200, 120)),
@@ -876,7 +889,48 @@ impl EditorApp {
                             });
                             ui.add_space(4.0);
                         }
+
+                        ui.add_space(6.0);
+                        ui.separator();
+                        ui.label(egui::RichText::new("Downloaded .vsix Packages").strong());
+                        ui.add_space(2.0);
+
+                        let vsix_list = Self::list_installed_vsix();
+                        if vsix_list.is_empty() {
+                            ui.label(
+                                egui::RichText::new(
+                                    "No .vsix packages downloaded yet. Use the Open VSX Registry tab to find extensions.",
+                                )
+                                .italics()
+                                .color(egui::Color32::from_gray(140)),
+                            );
+                        } else {
+                            for (filename, size) in &vsix_list {
+                                ui.group(|ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.label(egui::RichText::new(filename).strong());
+                                        ui.label(
+                                            egui::RichText::new(format_size(*size as usize))
+                                                .color(egui::Color32::from_gray(140)),
+                                        );
+                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                            if ui.small_button("🗑️ Uninstall").clicked() {
+                                                vsix_to_uninstall = Some(filename.clone());
+                                            }
+                                        });
+                                    });
+                                });
+                                ui.add_space(3.0);
+                            }
+                        }
                     });
+
+                    if let Some(name) = plugin_to_uninstall {
+                        self.uninstall_plugin(&name);
+                    }
+                    if let Some(filename) = vsix_to_uninstall {
+                        self.uninstall_vsix(&filename);
+                    }
                 } else if self.extensions_tab == 1 {
                     ui.label(egui::RichText::new("Community Extensions & Contributions").strong());
                     ui.label(
@@ -959,6 +1013,7 @@ impl EditorApp {
 
                     let mut do_search = false;
                     let mut download_target: Option<karkinos_core::open_vsx::OpenVsxExtension> = None;
+                    let mut vsix_to_uninstall_registry: Option<String> = None;
 
                     ui.horizontal(|ui| {
                         let resp = ui.add(
@@ -1011,7 +1066,17 @@ impl EditorApp {
                                         ui.label(egui::RichText::new(format!("📥 {} downloads", ext.download_count)).small().color(egui::Color32::from_gray(140)));
                                     }
                                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                        if !ext.download_url.is_empty() {
+                                        let vsix_name = format!("{}-{}.vsix", ext.name, ext.version);
+                                        if self.is_vsix_installed(ext) {
+                                            if ui.small_button("🗑️ Uninstall").clicked() {
+                                                vsix_to_uninstall_registry = Some(vsix_name);
+                                            }
+                                            ui.label(
+                                                egui::RichText::new("✓ Installed")
+                                                    .color(egui::Color32::from_rgb(80, 200, 120))
+                                                    .strong(),
+                                            );
+                                        } else if !ext.download_url.is_empty() {
                                             if ui.small_button("📥 Download .vsix").clicked() {
                                                 download_target = Some(ext.clone());
                                             }
@@ -1029,6 +1094,9 @@ impl EditorApp {
                     }
                     if let Some(target) = download_target {
                         self.download_open_vsx_extension(&target);
+                    }
+                    if let Some(filename) = vsix_to_uninstall_registry {
+                        self.uninstall_vsix(&filename);
                     }
                 }
 
@@ -1339,27 +1407,6 @@ impl eframe::App for EditorApp {
 
                 ui.separator();
 
-                // S1 (Rust IDE): Rust & Cargo Developer Tools
-                ui.label(egui::RichText::new("🦀 Rust:").strong().color(egui::Color32::from_rgb(222, 100, 50)));
-                if ui.button("Check").on_hover_text("Run cargo check (F7)").clicked() {
-                    self.run_cargo(karkinos_core::cargo::CargoAction::Check);
-                }
-                if ui.button("Clippy").on_hover_text("Run cargo clippy").clicked() {
-                    self.run_cargo(karkinos_core::cargo::CargoAction::Clippy);
-                }
-                if ui.button("Test").on_hover_text("Run cargo test").clicked() {
-                    self.run_cargo(karkinos_core::cargo::CargoAction::Test);
-                }
-                if ui.button("▶ Run").on_hover_text("Run cargo run (F5)").clicked() {
-                    self.run_cargo(karkinos_core::cargo::CargoAction::Run);
-                }
-                let panel_toggle_label = if self.cargo_panel_open { "Console ▾" } else { "Console ▸" };
-                if ui.button(panel_toggle_label).on_hover_text("Toggle Cargo Console (Ctrl+\\)").clicked() {
-                    self.cargo_panel_open = !self.cargo_panel_open;
-                }
-
-                ui.separator();
-
                 // Selector de temas visuales
                 egui::ComboBox::from_id_source("theme_picker")
                     .selected_text(format!("🎨 {}", self.theme_mode.name()))
@@ -1376,9 +1423,22 @@ impl eframe::App for EditorApp {
                 // Menú de extensiones para la comunidad y plugins activos
                 let mut chosen_cmd: Option<String> = None;
                 ui.menu_button("🧩 Extensions", |ui| {
-                    if ui.button("📦 Community Extensions Manager…").clicked() {
+                    if ui.button("📦 Installed Extensions…").clicked() {
                         self.extensions_modal_open = true;
                         self.extensions_tab = 0;
+                        ui.close_menu();
+                    }
+                    if ui.button("🗑️ Uninstall / Manage Extensions…").clicked() {
+                        self.extensions_modal_open = true;
+                        self.extensions_tab = 0;
+                        ui.close_menu();
+                    }
+                    if ui.button("🛒 Open VSX Registry…").clicked() {
+                        self.extensions_modal_open = true;
+                        self.extensions_tab = 2;
+                        if self.open_vsx_results.is_empty() && !self.open_vsx_searching {
+                            self.search_open_vsx("rust");
+                        }
                         ui.close_menu();
                     }
                     if ui.button("🌐 Browse Community Showcase…").clicked() {
@@ -1399,6 +1459,27 @@ impl eframe::App for EditorApp {
                 if let Some(cmd_id) = chosen_cmd {
                     self.execute_plugin_command(&cmd_id);
                 }
+
+                // S1 (Rust IDE): Herramientas de Rust y Cargo alineadas arriba a la derecha (right-up)
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let panel_toggle_label = if self.cargo_panel_open { "Console ▾" } else { "Console ▸" };
+                    if ui.button(panel_toggle_label).on_hover_text("Toggle Cargo Console (Ctrl+\\)").clicked() {
+                        self.cargo_panel_open = !self.cargo_panel_open;
+                    }
+                    if ui.button("▶ Run").on_hover_text("Run cargo run (F5)").clicked() {
+                        self.run_cargo(karkinos_core::cargo::CargoAction::Run);
+                    }
+                    if ui.button("Test").on_hover_text("Run cargo test").clicked() {
+                        self.run_cargo(karkinos_core::cargo::CargoAction::Test);
+                    }
+                    if ui.button("Clippy").on_hover_text("Run cargo clippy").clicked() {
+                        self.run_cargo(karkinos_core::cargo::CargoAction::Clippy);
+                    }
+                    if ui.button("Check").on_hover_text("Run cargo check (F7)").clicked() {
+                        self.run_cargo(karkinos_core::cargo::CargoAction::Check);
+                    }
+                    ui.label(egui::RichText::new("🦀 Rust:").strong().color(egui::Color32::from_rgb(222, 100, 50)));
+                });
             });
         });
 

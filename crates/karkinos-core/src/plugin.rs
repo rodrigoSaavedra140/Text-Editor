@@ -169,6 +169,23 @@ impl PluginManager {
             .collect()
     }
 
+    /// Unregisters and removes a plugin by its name. Returns true if removed.
+    pub fn uninstall(&mut self, plugin_name: &str) -> bool {
+        if let Some(pos) = self.plugins.iter().position(|p| p.name() == plugin_name) {
+            self.plugins.remove(pos);
+            // Rebuild command index mapping
+            self.command_map.clear();
+            for (idx, plugin) in self.plugins.iter().enumerate() {
+                for cmd in plugin.commands() {
+                    self.command_map.insert(cmd.id, idx);
+                }
+            }
+            true
+        } else {
+            false
+        }
+    }
+
     /// Dispatches `on_document_open` across all active plugins.
     pub fn dispatch_document_open(&mut self, doc: &mut Document, ctx: &mut PluginContext) {
         for plugin in &mut self.plugins {
@@ -401,5 +418,18 @@ mod tests {
         assert!(installed.iter().any(|p| p.name == "Word Counter" && !p.description.is_empty()));
         assert!(installed.iter().any(|p| p.name == "Case Transformer" && !p.description.is_empty()));
         assert!(installed.iter().any(|p| p.name == "Header Banner" && !p.description.is_empty()));
+    }
+
+    #[test]
+    fn test_uninstall_plugin() {
+        let mut manager = PluginManager::with_default_plugins();
+        assert_eq!(manager.len(), 3);
+        assert!(manager.available_commands().iter().any(|c| c.id == "word_count"));
+
+        let removed = manager.uninstall("Word Counter");
+        assert!(removed);
+        assert_eq!(manager.len(), 2);
+        assert!(!manager.available_commands().iter().any(|c| c.id == "word_count"));
+        assert!(!manager.uninstall("Nonexistent Plugin"));
     }
 }

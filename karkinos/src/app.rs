@@ -780,16 +780,70 @@ impl EditorApp {
         });
     }
 
-    /// S3 (Rust IDE): Downloads an extension .vsix package asynchronously
-    pub fn download_open_vsx_extension(&mut self, ext: &karkinos_core::open_vsx::OpenVsxExtension) {
-        let url = ext.download_url.clone();
-        let file_name = format!("{}-{}.vsix", ext.name, ext.version);
-        let dest = std::env::var_os("HOME")
+    /// Returns the directory where extensions and downloaded .vsix files are stored.
+    pub fn extensions_dir() -> PathBuf {
+        std::env::var_os("HOME")
             .map(PathBuf::from)
             .unwrap_or_else(std::env::temp_dir)
             .join(".karkinos")
             .join("extensions")
-            .join(&file_name);
+    }
+
+    /// Lists installed .vsix packages on disk. Returns list of (filename, file_size_bytes).
+    pub fn list_installed_vsix() -> Vec<(String, u64)> {
+        let dir = Self::extensions_dir();
+        let mut list = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|ext| ext.to_str()) == Some("vsix") {
+                    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+                    let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+                    list.push((name, size));
+                }
+            }
+        }
+        list.sort_by(|a, b| a.0.cmp(&b.0));
+        list
+    }
+
+    /// Checks if a .vsix package for an extension exists on disk.
+    pub fn is_vsix_installed(&self, ext: &karkinos_core::open_vsx::OpenVsxExtension) -> bool {
+        let file_name = format!("{}-{}.vsix", ext.name, ext.version);
+        Self::extensions_dir().join(&file_name).exists()
+    }
+
+    /// Uninstalls / deletes a downloaded .vsix package by filename.
+    pub fn uninstall_vsix(&mut self, filename: &str) -> bool {
+        let path = Self::extensions_dir().join(filename);
+        if path.exists() {
+            if std::fs::remove_file(&path).is_ok() {
+                self.status = format!("Uninstalled .vsix extension: {}", filename);
+                true
+            } else {
+                self.status = format!("Failed to delete: {}", filename);
+                false
+            }
+        } else {
+            false
+        }
+    }
+
+    /// Uninstalls an in-memory plugin from the plugin manager.
+    pub fn uninstall_plugin(&mut self, plugin_name: &str) -> bool {
+        if self.plugin_manager.uninstall(plugin_name) {
+            self.status = format!("Uninstalled plugin: {}", plugin_name);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// S3 (Rust IDE): Downloads an extension .vsix package asynchronously
+    pub fn download_open_vsx_extension(&mut self, ext: &karkinos_core::open_vsx::OpenVsxExtension) {
+        let url = ext.download_url.clone();
+        let file_name = format!("{}-{}.vsix", ext.name, ext.version);
+        let dest = Self::extensions_dir().join(&file_name);
         let id_name = ext.id();
 
         self.open_vsx_status = Some(format!("Downloading {}...", file_name));
@@ -2272,5 +2326,31 @@ mod tests {
         assert_eq!(app.open_vsx_results.len(), 1);
         assert_eq!(app.open_vsx_results[0].id(), "rust-lang.rust-analyzer");
         assert!(app.open_vsx_status.as_ref().unwrap().contains("Found 1 extensions"));
+    }
+
+    #[test]
+    fn test_editor_app_uninstall_extensions_and_vsix() {
+        let mut app = EditorApp::default();
+        assert_eq!(app.plugin_manager.len(), 3);
+
+        // Test uninstall plugin
+        let ok = app.uninstall_plugin("Case Transformer");
+        assert!(ok);
+        assert_eq!(app.plugin_manager.len(), 2);
+        assert!(app.status.contains("Uninstalled plugin: Case Transformer"));
+
+        // Test uninstall vsix file
+        let ext_dir = EditorApp::extensions_dir();
+        let _ = std::fs::create_dir_all(&ext_dir);
+        let test_vsix = ext_dir.join("test-ext-1.0.0.vsix");
+        std::fs::write(&test_vsix, "fake vsix content").unwrap();
+
+        let list = EditorApp::list_installed_vsix();
+        assert!(list.iter().any(|(name, _)| name == "test-ext-1.0.0.vsix"));
+
+        let uninstalled = app.uninstall_vsix("test-ext-1.0.0.vsix");
+        assert!(uninstalled);
+        assert!(!test_vsix.exists());
+        assert!(app.status.contains("Uninstalled .vsix extension: test-ext-1.0.0.vsix"));
     }
 }
