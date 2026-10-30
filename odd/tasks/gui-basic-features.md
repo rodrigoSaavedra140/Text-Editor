@@ -175,3 +175,15 @@ disjuntas).
   Suite 44/44 (RED observado: 2 tests del failure, luego GREEN),
   warnings 0. open_path/new_document conservan el reset (comportamiento
   deseado).
+- **L14** (2026-10-29) bugfix: usuario reportó (verbatim) "cuando en el
+  abrir el buscador de archivos cada vez que se cambiia de carpeta se
+  cierra la lista y no se actualiza ahi y hay que abrirlo cada vez que
+  se cambia". Root cause: egui::ComboBox cierra el popup con CUALQUIER
+  click que no sea el botón (popup.rs: widget_response.clicked_elsewhere
+  en popup_above_or_below_widget) — navegar una carpeta ES un click
+  adentro. Fix (commit 4bd2161): picker propio (botón "Abrir…" +
+  egui::Area Foreground bajo el botón), estado picker_open en EditorApp;
+  navegación de carpetas NO lo cierra, solo Esc / click completo afuera
+  (helper puro picker_should_stay_open, testado) / elegir un archivo.
+  El listado siempre re-dibuja con cached_list_dir de la carpeta
+  actual. Suite 45/45, warnings 0.
