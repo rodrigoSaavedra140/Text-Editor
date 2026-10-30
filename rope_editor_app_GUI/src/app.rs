@@ -72,6 +72,33 @@ pub fn picker_should_stay_open(
     inside(popup) || inside(button)
 }
 
+/// Nombre por defecto de un archivo nuevo sin nombre: `nuevo.txt`
+/// dentro de `dir`. Si la carpeta ya tiene algo con ese nombre, NO
+/// pisa datos nuevos: propone `nuevo (1).txt`, `nuevo (2).txt` …
+/// hasta el primero libre.
+/// `exists` va como inyección (en test es un HashSet, en la app es
+/// disco real) para que el nombre quede decidido por una función
+/// pura y el test no toque el disco.
+pub fn default_new_file_path(
+    dir: &std::path::Path,
+    exists: &dyn Fn(&std::path::Path) -> bool,
+) -> std::path::PathBuf {
+    for n in 0..1000u32 {
+        let nombre = if n == 0 {
+            "nuevo.txt".to_string()
+        } else {
+            format!("nuevo ({n}).txt")
+        };
+        let path = dir.join(nombre);
+        if !exists(&path) {
+            return path;
+        }
+    }
+    // Extremo improbable: 1000 copias ocupadas. Sale con un nombre
+    // fijo y legible en vez de ciclar o resolver por UUID raro.
+    dir.join("nuevo-sin-nombre-generado.txt")
+}
+
 /// Detecta si el archivo cambió en el disco respecto a lo que
 /// recordamos: mismo mtime = sin cambios; mtime distinto = alguien
 /// lo tocó por afuera; ya no existe en el disco = tocado/borrado;
@@ -603,6 +630,17 @@ impl EditorApp {
         self.snapshot_if_changed();
         let path = if let Some(p) = &self.current_file {
             p.clone()
+        } else if self.file_path_input.is_empty() {
+            // Archivo nuevo sin nombre: pide a default_new_file_path
+            // el primero libre "nuevo.txt"/"nuevo (N).txt" en la
+            // carpeta mostrada por el explorador. El path quedará ABSOLUTO
+            // (no a través del input, que muestra solo el nombre).
+            let exists = |p: &std::path::Path| std::fs::metadata(p).is_ok();
+            let p = default_new_file_path(&self.browse_dir, &exists);
+            if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
+                self.file_path_input = name.to_string();
+            }
+            p
         } else {
             PathBuf::from(&self.file_path_input)
         };
@@ -906,15 +944,27 @@ mod tests {
     // ---- S1: cierre pedido con cambios sin guardar ----
 
     #[test]
-    fn cerrar_guardando_sin_ruta_no_cierra_por_debajo() {
+    fn cerrar_guardando_sin_ruta_guarda_como_nuevo_txt_y_cierra()
+    -> std::io::Result<()> {
+        let dir = std::env::temp_dir()
+            .join(format!("karkinos_close_default_{}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+        let _ = std::fs::remove_file(dir.join("nuevo.txt"));
+
         let mut app = EditorApp::default();
+        app.browse_dir = dir.clone();
         app.dirty = true;
-        // Sin ruta y sin archivo: save() no puede arrancar → el
-        // diálogo NO debe "prometer" cerrar tras un guardado que
-        // nunca pasa; tiene que seguir abierto esperando decisión.
+        // Sin ruta y sin archivo: save() ELIGE "nuevo.txt" como
+        // nombre default (bugfix 2026-10-29), así que el diálogo
+        // ahora sí puede prometer el cierre: el guardado arranca
+        // sobre un destino concreto en vez de abortar.
         app.confirm_close_save();
-        assert!(app.close_pending);
-        assert!(!app.close_after_save);
+        assert!(!app.close_pending, "el diálogo sí puede cerrar: el save arrancó");
+        assert!(app.close_after_save);
+        // El destino queda fijado a dir/nuevo.txt antes del async.
+        assert_eq!(app.current_file, Some(dir.join("nuevo.txt")));
+        std::fs::remove_dir_all(&dir)?;
+        Ok(())
     }
 
     #[test]
@@ -1020,7 +1070,80 @@ mod tests {
     }
 
 
-    // ---- S2: Buscar y reemplazar (Ctrl+F) ----
+    // ---- Bugfix 2026-10-29: guardar archivo nuevo sin nombre ----
+
+    #[test]
+    fn nombre_default_nuevo_txt_y_sin_pisar_colisiones() {
+        use std::collections::HashSet;
+        use std::path::{Path, PathBuf};
+
+        let dir = Path::new("/tmp/karkinos_test");
+        fn mk_exists<'a>(
+            existentes: &'a HashSet<&'static str>,
+        ) -> impl Fn(&Path) -> bool + 'a {
+            move |p: &Path| existentes.contains(p.file_name().and_then(|n| n.to_str()).unwrap_or(""))
+        }
+
+        // Caso feliz: carpeta libre → dir/nuevo.txt
+        assert_eq!(
+            default_new_file_path(dir, &mk_exists(&HashSet::new())),
+            PathBuf::from("/tmp/karkinos_test/nuevo.txt")
+        );
+
+        // Colisión con nuevo.txt → nuevo (1).txt
+        let mut existentes = HashSet::new();
+        existentes.insert("nuevo.txt");
+        assert_eq!(
+            default_new_file_path(dir, &mk_exists(&existentes)),
+            PathBuf::from("/tmp/karkinos_test/nuevo (1).txt")
+        );
+
+        // Colisión en cadena → cuenta mientras el nombre exista.
+        existentes.insert("nuevo (1).txt");
+        existentes.insert("nuevo (2).txt");
+        assert_eq!(
+            default_new_file_path(dir, &mk_exists(&existentes)),
+            PathBuf::from("/tmp/karkinos_test/nuevo (3).txt")
+        );
+    }
+
+    #[test]
+    fn save_con_input_vacio_guarda_como_nuevo_txt() -> std::io::Result<()> {
+        let dir = std::env::temp_dir().join(format!("karkinos_save_default_{}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+        // limpio cualquier resto de corridas anteriores
+        let _ = std::fs::remove_file(dir.join("nuevo.txt"));
+
+        let mut app = EditorApp::default();
+        app.browse_dir = dir.clone();
+        app.set_text("contenido sin nombre");
+        app.dirty = true;
+        // current_file None y file_path_input vacío: el caso reportado.
+        app.file_path_input.clear();
+
+        assert!(app.save());
+        // Elige dir/nuevo.txt y muestra en el input el nombre elegido.
+        assert_eq!(app.current_file, Some(dir.join("nuevo.txt")));
+        assert_eq!(app.file_path_input, "nuevo.txt");
+        // Espera acotado al guardado asincrónico hasta que el disco
+        // tenga el contenido completo.
+        use std::io::Read;
+        let path = dir.join("nuevo.txt");
+        let mut contenido = String::new();
+        for _ in 0..200 {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+            if let Ok(mut f) = std::fs::File::open(&path) {
+                f.read_to_string(&mut contenido)?;
+                if contenido.contains("contenido sin nombre") {
+                    break;
+                }
+            }
+        }
+        assert!(contenido.contains("contenido sin nombre"), "el archivo necesita terminar el guardado async");
+        std::fs::remove_dir_all(&dir)?;
+        Ok(())
+    }
+
 
     #[test]
     fn picker_se_queda_abierto_solo_si_el_click_es_adentro() {
@@ -1038,6 +1161,8 @@ mod tests {
         // Sin rects conocidos aún: cerrar (estado seguro).
         assert!(!picker_should_stay_open(pos2(150.0, 200.0), None, None));
     }
+
+    // ---- S2: Buscar y reemplazar (Ctrl+F) ----
 
     #[test]
     fn buscar_coincidencias_case_sensitive_e_insensitive() {
