@@ -88,7 +88,7 @@ orden del prompt). El resto de la aceptación se marca como criterio, no como
 | T3 | S4 | inline | listo | 0e9a8d4 |
 | T4 | S5 | inline | listo | 307b523 |
 | T5 | S3 | inline | listo | 468ca3a |
-| T6 | S2 | inline | pendiente | — |
+| T6 | S2 | inline | listo | 74a4b92 |
 | T7 | S8 | inline | pendiente | — |
 | T8 | S10 | inline | pendiente | — |
 
@@ -142,3 +142,8 @@ disjuntas).
   request_repaint_after; pre_break_snapshot en Enter y Paste para aislar el tipeo
   previo de la mutación estructural; tope de 200 edits preservado; suite con 3
   tests puros de la política de chunking.
+- **L10** (2026-10-29): T6 terminado (commit 74a4b92, suite 37/37, warnings 0).
+  Buscar y reemplazar (Ctrl+F): barra inferior arriba del status bar con contador
+  de matches (X/Y), navegación prev/next con autoscroll al match seleccionado,
+  toggle sensible a mayúsculas (Aa), reemplazo individual y reemplazo global con
+  soporte de deshacer (Ctrl+Z), y cierre con Esc o botón ✕. Suite con 3 tests.
