@@ -385,6 +385,13 @@ impl EditorApp {
     /// siga viva mientras el usuario decide. Sin cambios: cierre de toda la vida.
     fn try_close(&mut self, ctx: &egui::Context) {
         self.sync_active_to_tab();
+
+        // Si el archivo está vacío o todas las pestañas sucias están vacías, salimos de inmediato sin diálogo
+        if self.all_dirty_tabs_are_empty() && self.save_progress.is_none() {
+            request_close(ctx, &mut self.closing_since);
+            return;
+        }
+
         if let Some(dirty_idx) = self.first_dirty_tab_index() {
             if dirty_idx != self.active_tab {
                 self.switch_tab(dirty_idx);

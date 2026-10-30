@@ -172,6 +172,10 @@ impl TabDocument {
         }
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.lines.is_empty() || (self.lines.len() == 1 && self.lines[0].trim().is_empty())
+    }
+
     pub fn display_title(&self) -> String {
         let name = if let Some(ref p) = self.current_file {
             p.file_name()
@@ -527,12 +531,23 @@ impl EditorApp {
         self.load_tab(self.active_tab);
     }
 
-    /// S8 (Etapa 2): Intenta cerrar una pestaña. Si tiene cambios sin guardar,
-    /// pide confirmación estableciendo `tab_close_pending`.
+    /// Retorna `true` si el buffer actual no contiene texto real (vacío o solo whitespace).
+    pub fn is_buffer_empty(&self) -> bool {
+        self.lines.is_empty() || (self.lines.len() == 1 && self.lines[0].trim().is_empty())
+    }
+
+    /// S8 (Etapa 2): Intenta cerrar una pestaña. Si tiene cambios sin guardar
+    /// y contenido real no vacío, pide confirmación estableciendo `tab_close_pending`.
     pub fn try_close_tab(&mut self, idx: usize) {
         if idx >= self.tabs.len() {
             return;
         }
+
+        let is_empty = if idx == self.active_tab {
+            self.is_buffer_empty()
+        } else {
+            self.tabs[idx].is_empty()
+        };
 
         let is_dirty = if idx == self.active_tab {
             self.dirty
@@ -540,7 +555,7 @@ impl EditorApp {
             self.tabs[idx].dirty
         };
 
-        if is_dirty {
+        if is_dirty && !is_empty {
             self.tab_close_pending = Some(idx);
         } else {
             self.close_tab(idx);
@@ -575,6 +590,15 @@ impl EditorApp {
                 }
             })
             .count()
+    }
+
+    /// Retorna `true` si todas las pestañas marcadas como sucias están vacías (sin contenido real).
+    pub fn all_dirty_tabs_are_empty(&self) -> bool {
+        self.tabs.iter().enumerate().all(|(idx, t)| {
+            let is_dirty = if idx == self.active_tab { self.dirty } else { t.dirty };
+            let is_empty = if idx == self.active_tab { self.is_buffer_empty() } else { t.is_empty() };
+            !is_dirty || is_empty
+        })
     }
     /// Reconstruye el texto completo a partir de `lines` — es O(n),
     /// así que solo se llama en momentos puntuales (snapshot, guardar),
@@ -1427,10 +1451,10 @@ impl EditorApp {
         self.sync_active_to_tab();
     }
 
-    /// S8: Intenta crear un nuevo documento. Si el buffer actual está sucio
+    /// S8: Intenta crear un nuevo documento. Si el buffer actual está sucio y con contenido
     /// o guardándose, pide confirmación previa en lugar de descartar datos.
     pub fn try_new_document(&mut self) {
-        if self.dirty || self.save_progress.is_some() {
+        if (self.dirty && !self.is_buffer_empty()) || self.save_progress.is_some() {
             self.new_doc_pending = true;
         } else {
             self.new_document();
@@ -1930,6 +1954,7 @@ mod tests {
     #[test]
     fn try_nuevo_documento_con_dirty_pide_confirmacion() {
         let mut app = EditorApp::default();
+        app.set_text("Some unsaved text");
         app.dirty = true;
         app.try_new_document();
         assert!(app.new_doc_pending);
@@ -1938,6 +1963,30 @@ mod tests {
         let mut app_clean = EditorApp::default();
         app_clean.try_new_document();
         assert!(!app_clean.new_doc_pending);
+
+        // Buffer vacío aunque esté dirty: no pide confirmación
+        let mut app_empty_dirty = EditorApp::default();
+        app_empty_dirty.dirty = true;
+        app_empty_dirty.try_new_document();
+        assert!(!app_empty_dirty.new_doc_pending);
+    }
+
+    #[test]
+    fn test_empty_file_exit_does_not_prompt_close() {
+        let mut app = EditorApp::default();
+        // Even if dirty is marked true, empty buffer means all dirty tabs are empty
+        app.dirty = true;
+        assert!(app.all_dirty_tabs_are_empty());
+
+        // Closing an empty dirty tab closes without pending confirmation
+        app.try_close_tab(0);
+        assert!(app.tab_close_pending.is_none());
+
+        // With text, all_dirty_tabs_are_empty is false
+        app.set_text("Actual content");
+        app.dirty = true;
+        assert!(!app.all_dirty_tabs_are_empty());
+        assert_eq!(app.first_dirty_tab_index(), Some(0));
     }
 
     // ---- S8 (Etapa 2): Pestañas / Múltiples documentos ----
