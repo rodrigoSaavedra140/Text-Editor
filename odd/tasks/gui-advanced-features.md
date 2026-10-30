@@ -50,7 +50,7 @@
 | T4 | S4 | inline | listo | 86f018c |
 | T5 | S5 | inline | listo | d3f429e |
 | T6 | S6 | inline | listo | 003ec3d |
-| T7 | S7 | inline | pendiente | - |
+| T7 | S7 | inline | listo | ce61b9c |
 | T8 | S8 | inline | pendiente | - |
 
 ## Log
@@ -83,3 +83,8 @@
   Markdown, JSON y fallback texto plano), tokenizadores lineales O(L) de palabras clave, tipos, literales
   de cadena, comentarios y números, y renderizado por sub-filas mediante `egui::text::LayoutJob`
   respetando la paleta del tema activo. Indicador de lenguaje activo en la barra de estado.
+- **L8** (2026-10-29): T7 terminado (commit ce61b9c, suite 61/61 pasando, 0 warnings).
+  Búsqueda rápida de archivos (Ctrl+P): módulo `quick_open.rs` con escaneo recursivo de archivos en
+  workspace (omitiendo `.git`, `target`, etc. con tope defensivo), algoritmo de coincidencia difusa
+  (fuzzy match) con puntuación por límites de palabra y cercanía, navegación por teclado (flechas
+  arriba/abajo, Enter para abrir, Esc para cancelar) y click directo. Integrado en toolbar y atajo global.
