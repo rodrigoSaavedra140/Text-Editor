@@ -962,6 +962,21 @@ impl eframe::App for EditorApp {
                             }
                         }
                     });
+                ui.separator();
+                // S4 (Etapa 5): Menú desplegable de plugins y comandos extensibles
+                let mut chosen_cmd: Option<String> = None;
+                ui.menu_button("🔌 Plugins", |ui| {
+                    let commands = self.plugin_manager.available_commands();
+                    for cmd in commands {
+                        if ui.button(&cmd.title).on_hover_text(&cmd.description).clicked() {
+                            chosen_cmd = Some(cmd.id);
+                            ui.close_menu();
+                        }
+                    }
+                });
+                if let Some(cmd_id) = chosen_cmd {
+                    self.execute_plugin_command(&cmd_id);
+                }
             });
         });
 

@@ -287,6 +287,8 @@ pub struct EditorApp {
     dir_cache: Option<(PathBuf, Option<SystemTime>, Vec<String>, Vec<String>)>,
     // S4 (Etapa 4): Cliente Language Server Protocol (LSP)
     pub lsp_client: Option<karkinos_core::lsp::LspClient>,
+    // S4 (Etapa 5): Gestor de extensiones y plugins
+    pub plugin_manager: karkinos_core::plugin::PluginManager,
 }
 
 impl Default for EditorApp {
@@ -337,6 +339,7 @@ impl Default for EditorApp {
             save_name_input: String::new(),
             dir_cache: None,
             lsp_client: None,
+            plugin_manager: karkinos_core::plugin::PluginManager::with_default_plugins(),
         }
     }
 }
@@ -628,6 +631,29 @@ impl EditorApp {
                 self.status = format!("LSP: {}", diag.message);
             }
         }
+    }
+
+    /// S4 (Etapa 5): Ejecuta un comando registrado por plugins sobre el documento activo.
+    pub fn execute_plugin_command(&mut self, cmd_id: &str) -> bool {
+        let mut doc = karkinos_core::Document::new(self.active_tab);
+        doc.file_path = self.current_file.clone();
+        doc.set_text(&self.current_text());
+
+        let mut ctx = karkinos_core::plugin::PluginContext::new();
+        ctx.active_file = self.current_file.clone();
+
+        let handled = self.plugin_manager.execute_command(cmd_id, &mut doc, &mut ctx);
+        if handled {
+            let new_text = doc.buffer.to_string();
+            if new_text != self.current_text() {
+                self.set_text(&new_text);
+                self.dirty = true;
+            }
+            if let Some(msg) = ctx.status_message {
+                self.status = msg;
+            }
+        }
+        handled
     }
 
     /// Listado de `self.browse_dir` con caché (ver el campo
@@ -1891,5 +1917,20 @@ mod tests {
         assert_eq!(app.editor_state.diagnostics.len(), 1);
         assert_eq!(app.editor_state.diagnostics[0].severity, Some(DiagnosticSeverity::Error));
         assert!(app.status.contains("failed to resolve"));
+    }
+
+    #[test]
+    fn test_editor_app_plugin_execution() {
+        let mut app = EditorApp::default();
+        app.set_text("rust programming language");
+
+        let handled = app.execute_plugin_command("uppercase_document");
+        assert!(handled);
+        assert_eq!(app.current_text(), "RUST PROGRAMMING LANGUAGE");
+        assert!(app.status.contains("UPPERCASE"));
+
+        let word_count_handled = app.execute_plugin_command("word_count");
+        assert!(word_count_handled);
+        assert!(app.status.contains("3 words"));
     }
 }

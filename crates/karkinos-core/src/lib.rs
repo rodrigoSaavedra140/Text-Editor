@@ -11,6 +11,7 @@ pub mod buffer;
 pub mod document;
 pub mod ending;
 pub mod lsp;
+pub mod plugin;
 pub mod syntax_ast;
 pub mod text_ops;
 pub mod undo;
@@ -22,6 +23,7 @@ pub use lsp::{
     DiagnosticSeverity, LspClient, LspCompletionItem, LspDiagnostic, LspHover, LspPosition,
     LspRange,
 };
+pub use plugin::{Plugin, PluginCommand, PluginContext, PluginManager};
 pub use syntax_ast::{
     AstEngine, AstHighlightSpan, AstLanguage, AstNodeInfo, FoldingKind, FoldingRange,
     SemanticTokenType,
