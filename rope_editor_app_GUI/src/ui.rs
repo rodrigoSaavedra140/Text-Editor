@@ -572,15 +572,15 @@ impl EditorApp {
     }
 
     /// Carga el logo como textura de egui, una sola vez (la primera
-    /// vez que hace falta dibujarlo).
+    /// vez que hace falta dibujarlo), aplicando recorte alfa para
+    /// que se fusione perfectamente con cualquier tema.
     fn ensure_logo_texture(&mut self, ctx: &egui::Context) {
         if self.logo_texture.is_some() {
             return;
         }
         if let Ok(img) = image::load_from_memory(LOGO_BYTES) {
             let img = img.to_rgba8();
-            let size = [img.width() as usize, img.height() as usize];
-            let color_image = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
+            let color_image = cutout_dark_background(&img);
             self.logo_texture =
                 Some(ctx.load_texture("karkinos_logo", color_image, egui::TextureOptions::default()));
         }
@@ -590,22 +590,78 @@ impl EditorApp {
     /// dibuja mientras el buffer está vacío, y queda "detrás" de
     /// donde vas a empezar a escribir. El nombre "Karkinos" ya se
     /// muestra en la barra de título propia, así que acá no hace
-    /// falta repetirlo.
-    fn draw_watermark(&self, ui: &egui::Ui, rect: egui::Rect) {
+    /// falta repetirlo. El tinte se adapta según el tema visual.
+    fn draw_watermark(&self, ui: &egui::Ui, rect: egui::Rect, theme: &crate::theme::Theme) {
         let painter = ui.painter();
         let center = rect.center();
 
         if let Some(tex) = &self.logo_texture {
             let logo_side = (rect.height() * 0.32).min(260.0);
             let logo_rect = egui::Rect::from_center_size(center, egui::vec2(logo_side, logo_side));
+            let tint = match theme.mode {
+                crate::theme::ThemeMode::Light => egui::Color32::from_white_alpha(50),
+                _ => egui::Color32::from_white_alpha(45),
+            };
             painter.image(
                 tex.id(),
                 logo_rect,
                 egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                egui::Color32::from_white_alpha(45), // bien tenue, no compite con el texto que escribas
+                tint,
             );
         }
     }
+}
+
+/// Procesa una imagen RGBA eliminando el fondo oscuro opaco y suavizando
+/// los bordes con transparencia alfa (feathering), para que el logo se
+/// mezcle de forma limpia sin contornos ni bordes cuadrados sobre
+/// cualquier tema visual o color de fondo.
+pub fn cutout_dark_background(img: &image::RgbaImage) -> egui::ColorImage {
+    let (w, h) = (img.width(), img.height());
+    let mut pixels = Vec::with_capacity((w * h) as usize);
+    for p in img.pixels() {
+        let max_c = p[0].max(p[1]).max(p[2]);
+        if max_c <= 5 {
+            // Fondo oscuro / negro: 100% transparente para eliminar cualquier contorno rectangular
+            pixels.push(egui::Color32::TRANSPARENT);
+        } else if max_c < 25 {
+            // Borde anti-alias del arte: desvanecimiento suave (feathering) respetando
+            // la premultiplicación nativa de Color32
+            let alpha = ((max_c as f32 - 5.0) / (25.0 - 5.0) * 255.0).round() as u8;
+            pixels.push(egui::Color32::from_rgba_premultiplied(
+                p[0], p[1], p[2], alpha,
+            ));
+        } else {
+            // Arte / cangrejo visible: opaco con su color original
+            pixels.push(egui::Color32::from_rgb(p[0], p[1], p[2]));
+        }
+    }
+    egui::ColorImage {
+        size: [w as usize, h as usize],
+        pixels,
+    }
+}
+
+/// Genera el `IconData` con fondo transparente recortado para la ventana del SO (taskbar / dock).
+pub fn load_window_icon() -> Option<egui::IconData> {
+    let img = image::load_from_memory(LOGO_BYTES).ok()?.to_rgba8();
+    let (width, height) = (img.width(), img.height());
+    let mut raw = img.into_raw();
+    for chunk in raw.chunks_exact_mut(4) {
+        let max_c = chunk[0].max(chunk[1]).max(chunk[2]);
+        if max_c <= 5 {
+            chunk[0] = 0;
+            chunk[1] = 0;
+            chunk[2] = 0;
+            chunk[3] = 0;
+        } else if max_c < 25 {
+            let alpha = ((max_c as f32 - 5.0) / (25.0 - 5.0) * 255.0).round() as u8;
+            chunk[3] = alpha;
+        } else {
+            chunk[3] = 255;
+        }
+    }
+    Some(egui::IconData { rgba: raw, width, height })
 }
 
 impl eframe::App for EditorApp {
@@ -973,7 +1029,7 @@ impl eframe::App for EditorApp {
                 // buffer está vacío — apenas empezás a escribir,
                 // desaparece (queda "detrás" del cursor).
                 if self.is_empty_buffer() {
-                    self.draw_watermark(ui, ui.max_rect());
+                    self.draw_watermark(ui, ui.max_rect(), &theme);
                 }
 
                 // Editor propio (ver editor_widget.rs): dibuja SOLO
@@ -1056,5 +1112,56 @@ impl eframe::App for EditorApp {
         self.show_quick_open(ctx);
         // Diálogo modal para nombrar archivo al guardar si no tiene nombre.
         self.show_save_name_dialog(ctx);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cutout_dark_background_removes_contours_and_preserves_artwork() {
+        let img = image::load_from_memory(LOGO_BYTES).expect("logo.png debe decodificar").to_rgba8();
+        let (w, h) = (img.width() as usize, img.height() as usize);
+        let color_img = cutout_dark_background(&img);
+
+        assert_eq!(color_img.size, [w, h]);
+        assert_eq!(color_img.pixels.len(), w * h);
+
+        // Las cuatro esquinas deben ser completamente transparentes
+        assert_eq!(color_img.pixels[0], egui::Color32::TRANSPARENT);
+        assert_eq!(color_img.pixels[w - 1], egui::Color32::TRANSPARENT);
+        assert_eq!(color_img.pixels[(h - 1) * w], egui::Color32::TRANSPARENT);
+        assert_eq!(color_img.pixels[h * w - 1], egui::Color32::TRANSPARENT);
+
+        // Todo el perímetro de la imagen debe ser transparente (sin recuadro)
+        for x in 0..w {
+            assert_eq!(color_img.pixels[x], egui::Color32::TRANSPARENT, "borde superior en x={x}");
+            assert_eq!(color_img.pixels[(h - 1) * w + x], egui::Color32::TRANSPARENT, "borde inferior en x={x}");
+        }
+        for y in 0..h {
+            assert_eq!(color_img.pixels[y * w], egui::Color32::TRANSPARENT, "borde izquierdo en y={y}");
+            assert_eq!(color_img.pixels[y * w + (w - 1)], egui::Color32::TRANSPARENT, "borde derecho en y={y}");
+        }
+
+        // El arte del centro debe conservar visibilidad y alfa
+        let mut visible_pixels = 0usize;
+        for p in &color_img.pixels {
+            if p.a() > 0 {
+                visible_pixels += 1;
+            }
+        }
+        assert!(visible_pixels > 350_000, "el logo debe conservar sus píxeles visibles");
+    }
+
+    #[test]
+    fn test_load_window_icon_has_transparency() {
+        let icon = load_window_icon().expect("el ícono de ventana debe cargarse correctamente");
+        assert!(icon.width > 0);
+        assert!(icon.height > 0);
+        assert_eq!(icon.rgba.len(), (icon.width * icon.height * 4) as usize);
+
+        // Esquina superior izquierda en RGBA (4 bytes): debe tener alpha = 0
+        assert_eq!(icon.rgba[3], 0, "alpha de la esquina superior izquierda debe ser 0");
     }
 }

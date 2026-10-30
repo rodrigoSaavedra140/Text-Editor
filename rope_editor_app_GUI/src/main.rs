@@ -35,13 +35,10 @@ fn main() -> eframe::Result<()> {
         .with_resizable(true)
         .with_decorations(false); // barra de título propia, ver custom_title_bar en ui.rs
 
-    // Ícono de la barra de título / taskbar, a partir del mismo logo
-    // embebido. Si por algún motivo el PNG no decodifica bien, seguimos
-    // sin ícono en vez de no abrir la app.
-    if let Ok(img) = image::load_from_memory(LOGO_BYTES) {
-        let img = img.to_rgba8();
-        let (width, height) = (img.width(), img.height());
-        viewport = viewport.with_icon(egui::IconData { rgba: img.into_raw(), width, height });
+    // Ícono de la barra de título / taskbar con transparencia alfa para
+    // que no quede un recuadro negro en el dock o panel del sistema.
+    if let Some(icon) = crate::ui::load_window_icon() {
+        viewport = viewport.with_icon(icon);
     }
 
     let options = eframe::NativeOptions { viewport, ..Default::default() };
