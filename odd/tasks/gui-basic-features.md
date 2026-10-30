@@ -164,3 +164,14 @@ disjuntas).
   el closure de main con clamp defensivo. Sin `Risk: none` directo — el
   touched compartido con T1–T7 es el hovered-scroll del widget: sigue
   scrolleando normal sin Ctrl.
+- **L13** (2026-10-29) bugfix: usuario reportó (verbatim) "cuando haago
+  undo vuelve al principio de la pagina y no se quda en el lugar". Root
+  cause: undo()/redo() restauraban el texto vía set_text(), que resetea
+  cursor (0,0) y scroll (0) — correcto para abrir archivo / nuevo
+  documento, regresivo para deshacer. Fix: helper
+  restore_text_keeping_view (commit bf27ad9) — conserva scroll tal cual
+  (la caché del widget lo recorta al nuevo máx) y cursor clampeado; si
+  la línea vieja ya no existe, aterriza al FIN de la última línea nueva.
+  Suite 44/44 (RED observado: 2 tests del failure, luego GREEN),
+  warnings 0. open_path/new_document conservan el reset (comportamiento
+  deseado).
