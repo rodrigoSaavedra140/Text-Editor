@@ -89,7 +89,7 @@ orden del prompt). El resto de la aceptación se marca como criterio, no como
 | T4 | S5 | inline | listo | 307b523 |
 | T5 | S3 | inline | listo | 468ca3a |
 | T6 | S2 | inline | listo | 74a4b92 |
-| T7 | S8 | inline | pendiente | — |
+| T7 | S8 | inline | listo | 478c1d4 |
 | T8 | S10 | inline | pendiente | — |
 
 Nota de ruta: los 10 features comparten edit surfaces (editor_widget.rs y
@@ -147,3 +147,8 @@ disjuntas).
   de matches (X/Y), navegación prev/next con autoscroll al match seleccionado,
   toggle sensible a mayúsculas (Aa), reemplazo individual y reemplazo global con
   soporte de deshacer (Ctrl+Z), y cierre con Esc o botón ✕. Suite con 3 tests.
+- **L11** (2026-10-29): T7 terminado (commit 478c1d4, suite 39/39, warnings 0).
+  Botón Nuevo documento: botón en toolbar y atajo global Ctrl+N. Si dirty == true
+  abre diálogo de confirmación (Guardar / Descartar / Cancelar) antes de limpiar
+  el buffer; buffer vacío, current_file = None, file_path_input vacío, dirty = false
+  y reset de pila de undo. Suite con 2 tests.
