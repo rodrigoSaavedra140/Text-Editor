@@ -219,6 +219,8 @@ pub struct EditorApp {
     pub font_size: f32,
     // S5 (Etapa 2): Tema visual activo (Dark, Light, Monokai, Dracula).
     pub theme_mode: crate::theme::ThemeMode,
+    // S7 (Etapa 2): Estado del modal de búsqueda rápida de archivos (Ctrl+P).
+    pub quick_open: crate::quick_open::QuickOpenState,
     dir_cache: Option<(PathBuf, Option<SystemTime>, Vec<String>, Vec<String>)>,
 }
 
@@ -259,6 +261,7 @@ impl Default for EditorApp {
             find_current: 0,
             font_size: 14.0,
             theme_mode: crate::theme::ThemeMode::Dark,
+            quick_open: crate::quick_open::QuickOpenState::default(),
             dir_cache: None,
         }
     }

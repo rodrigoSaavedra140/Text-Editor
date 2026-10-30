@@ -1,5 +1,6 @@
 mod app;
 mod editor_widget;
+mod quick_open;
 mod syntax;
 mod theme;
 mod title_bar;

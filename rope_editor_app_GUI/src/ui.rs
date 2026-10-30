@@ -368,6 +368,104 @@ impl EditorApp {
         }
     }
 
+    /// S7 (Etapa 2): Diálogo modal de búsqueda rápida de archivos (Ctrl+P / Quick Open).
+    fn show_quick_open(&mut self, ctx: &egui::Context) {
+        if !self.quick_open.open {
+            return;
+        }
+
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.quick_open.close();
+            return;
+        }
+
+        let mut is_open = true;
+        let mut query_changed = false;
+        let mut open_selected = false;
+
+        egui::Window::new("🔍 Búsqueda rápida (Ctrl+P)")
+            .open(&mut is_open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(520.0)
+            .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 50.0))
+            .show(ctx, |ui| {
+                ui.set_min_width(480.0);
+                ui.horizontal(|ui| {
+                    ui.label("🔍");
+                    let input_resp = ui.add_sized(
+                        [ui.available_width() - 8.0, 24.0],
+                        egui::TextEdit::singleline(&mut self.quick_open.query)
+                            .hint_text("Escribí para buscar archivos... (↑/↓ navegar, Enter abrir, Esc cerrar)"),
+                    );
+                    if self.quick_open.request_focus {
+                        input_resp.request_focus();
+                        self.quick_open.request_focus = false;
+                    }
+                    if input_resp.changed() {
+                        query_changed = true;
+                    }
+                });
+
+                if ctx.input(|i| i.key_pressed(egui::Key::ArrowUp)) {
+                    self.quick_open.select_prev();
+                }
+                if ctx.input(|i| i.key_pressed(egui::Key::ArrowDown)) {
+                    self.quick_open.select_next();
+                }
+                if ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    open_selected = true;
+                }
+
+                ui.separator();
+                let total = self.quick_open.filtered.len();
+                ui.label(format!("{} archivos encontrados", total));
+
+                egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
+                    let mut clicked_idx = None;
+                    for (idx, (path, _score)) in self.quick_open.filtered.iter().enumerate().take(50) {
+                        let is_selected = idx == self.quick_open.selected_idx;
+                        let path_str = path.display().to_string();
+                        let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or(&path_str);
+                        let parent = path.parent().and_then(|p| p.to_str()).unwrap_or("");
+
+                        let text = if parent.is_empty() {
+                            egui::RichText::new(file_name).strong()
+                        } else {
+                            egui::RichText::new(format!("{}  ({})", file_name, parent))
+                        };
+
+                        let row = ui.selectable_label(is_selected, text);
+                        if row.clicked() {
+                            clicked_idx = Some(idx);
+                        }
+                    }
+                    if let Some(idx) = clicked_idx {
+                        self.quick_open.selected_idx = idx;
+                        open_selected = true;
+                    }
+                });
+            });
+
+        if !is_open {
+            self.quick_open.close();
+            return;
+        }
+
+        if query_changed {
+            let q = self.quick_open.query.clone();
+            self.quick_open.set_query(q);
+        }
+
+        if open_selected {
+            if let Some(rel) = self.quick_open.selected_path() {
+                let full = self.browse_dir.join(rel);
+                self.quick_open.close();
+                self.open_path(full);
+            }
+        }
+    }
+
     /// Carga el logo como textura de egui, una sola vez (la primera
     /// vez que hace falta dibujarlo).
     fn ensure_logo_texture(&mut self, ctx: &egui::Context) {
@@ -428,7 +526,7 @@ impl eframe::App for EditorApp {
         }
 
         // Atajos de teclado globales
-        let (want_save, want_undo, want_redo, want_quit, want_goto, want_find, want_new) = ctx.input(|i| {
+        let (want_save, want_undo, want_redo, want_quit, want_goto, want_find, want_new, want_quick_open) = ctx.input(|i| {
             (
                 i.modifiers.ctrl && i.key_pressed(egui::Key::S),
                 i.modifiers.ctrl && i.key_pressed(egui::Key::Z),
@@ -437,10 +535,18 @@ impl eframe::App for EditorApp {
                 i.modifiers.ctrl && i.key_pressed(egui::Key::G),
                 i.modifiers.ctrl && i.key_pressed(egui::Key::F),
                 i.modifiers.ctrl && i.key_pressed(egui::Key::N),
+                i.modifiers.ctrl && i.key_pressed(egui::Key::P),
             )
         });
         if want_new {
             self.try_new_document();
+        }
+        if want_quick_open {
+            if self.quick_open.open {
+                self.quick_open.close();
+            } else {
+                self.quick_open.open(&self.browse_dir);
+            }
         }
         if want_save {
             self.save();
@@ -573,6 +679,10 @@ impl eframe::App for EditorApp {
                 // S8: Botón Nuevo documento
                 if ui.button("Nuevo").clicked() {
                     self.try_new_document();
+                }
+                // S7 (Etapa 2): Botón Búsqueda rápida de archivos
+                if ui.button("🔍 Buscar (Ctrl+P)").clicked() {
+                    self.quick_open.open(&self.browse_dir);
                 }
                 if ui.button("Guardar (Ctrl+S)").clicked() {
                     self.save();
@@ -739,5 +849,7 @@ impl eframe::App for EditorApp {
         // S4: igual que el confirm, arriba de todo (los paneles
         // dibujados antes no le pisan al campo de entrada).
         self.show_goto_line(ctx);
+        // S7: diálogo modal de búsqueda rápida de archivos (Ctrl+P).
+        self.show_quick_open(ctx);
     }
 }
