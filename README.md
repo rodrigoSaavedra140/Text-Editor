@@ -1,63 +1,73 @@
-# Rope Editor (GUI)
+# Karkinos Text Editor
 
-Editor de texto con interfaz gráfica (Rust + `eframe`/`egui`), modelo de
-buffer por líneas (`Vec<String>`) con wrap, portapapeles del sistema y
-deshacer/rehacer basado en snapshots del documento. Corre en Linux
-nativo (Wayland y X11) y bajo WSLg.
+Editor de texto ultra liviano y de alto rendimiento escrito en Rust con `eframe`/`egui`.
+Diseñado para iniciar en menos de 50 ms con un consumo de recursos mínimo, soporte nativo de multi-pestañas, búsqueda difusa de archivos, resaltado de sintaxis ligero y ergonomía de edición moderna. Corre en Linux nativo (Wayland y X11) y bajo WSLg.
 
-## 📦 Estructura
+## 📦 Estructura del proyecto
 
 ```text
 rope_editor_app_GUI/
-├── Cargo.toml           # dependencias + [profile.release] (LTO, strip)
+├── Cargo.toml           # Dependencias + [profile.release] (LTO thin, strip)
 ├── assets/
-│   └── logo.png         # Logo embebido en el binario
+│   └── logo.png         # Logo embebido con recorte de transparencia adaptativo
 └── src/
-    ├── main.rs          # Punto de entrada: detecta WSL, configura la ventana
-    ├── app.rs           # EditorApp: abrir, guardar async con progreso, undo/redo
-    ├── editor_widget.rs # El editor: dibujado por franja (wrap), teclado, portapapeles
-    ├── ui.rs            # Layout egui: fondo, toolbar, navegador, barras de estado
-    ├── title_bar.rs     # Barra de título propia + bordes para redimensionar
-    ├── util.rs          # Helpers: tamaño legible, cierre prolijo, detección de WSL
-    └── undo.rs          # UndoStack: cada Edit guarda el documento antes/después
+    ├── main.rs          # Entrada: inicialización de ventana custom y decoraciones
+    ├── app.rs           # EditorApp: buffers, pestañas, guardado async, zoom, confirmaciones
+    ├── editor_widget.rs # Widget de edición por franja (wrap), teclado, gutter, autoscroll
+    ├── ui.rs            # Layout egui: title bar personalizada, tabs, toolbar, diálogos modales
+    ├── title_bar.rs     # Barra de título sin bordes nativos con íconos vectoriales
+    ├── syntax.rs        # Tokenizador de sintaxis y coloreado LayoutJob (10 lenguajes)
+    ├── quick_open.rs    # Diálogo de búsqueda rápida de archivos (Ctrl+P) con fuzzy match
+    ├── theme.rs         # Paletas de temas (Dark, Light, Monokai, Dracula)
+    ├── util.rs          # Formateo de tamaños, cálculo de saltos y detección WSL
+    └── undo.rs          # UndoStack con agrupación por inactividad y punteros Arc compartidos
 ```
 
 ## ⚙️ Requisitos
 
-- [Rust y Cargo](https://rustup.rs/).
-- **Linux nativo** (Wayland o X11) o **WSL con WSLg** (Windows 11+): en
-  WSL se fuerza el render por software automáticamente
-  (`LIBGL_ALWAYS_SOFTWARE=1`), porque el GL de WSLg a veces falla en
-  silencio.
+- [Rust y Cargo](https://rustup.rs/) (edición 2021).
+- **Linux nativo** (Wayland o X11) o **Windows con WSL / WSLg**.
 
-## 🚀 Compilación y uso
+## 🚀 Compilación y ejecución
 
 ```bash
 cd rope_editor_app_GUI
-cargo run                 # modo debug
-cargo run -- archivo.txt  # abrir un archivo directamente
-cargo build --release     # binario optimizado en target/release/
+
+# Modo desarrollo
+cargo run
+
+# Abrir un archivo directamente
+cargo run -- mi_archivo.rs
+
+# Compilar binario de producción optimizado
+cargo build --release
 ```
 
-## ⌨️ Atajos
+El ejecutable resultante se ubicará en `target/release/rope_editor_gui`.
 
-### Globales
+## ⌨️ Atajos de teclado principales
 
-- `Ctrl+S` — Guardar · `Ctrl+Z` — Deshacer · `Ctrl+Y` — Rehacer · `Ctrl+Q` — Cerrar
+### Archivos y pestañas
+- `Ctrl+N` — Nuevo documento (con confirmación de cambios)
+- `Ctrl+T` — Nueva pestaña
+- `Ctrl+W` — Cerrar pestaña activa
+- `Ctrl+Tab` / `Ctrl+Shift+Tab` — Ciclar entre pestañas
+- `Ctrl+P` — Búsqueda rápida de archivos en el proyecto (*Quick Open*)
+- `Ctrl+S` — Guardar archivo
+- `Ctrl+Shift+S` — Guardar como...
+- `Ctrl+Q` — Salir (con resguardo multi-pestaña ante cambios sin guardar)
 
-### En el editor
-
-- `Ctrl+C / Ctrl+V / Ctrl+X` — Copiar / Pegar / Cortar (portapapeles del sistema)
-- `Ctrl+A` — Seleccionar todo
-- Flechas, `Home`, `End` — Navegar; `Shift` + movimiento para seleccionar
-- Click y arrastre con el mouse — selección por tramo
-
-## 🏗️ Arquitectura
-
-Diagrama de clases del diseño GUI (render generado con PlantUML):
-
-![Diagrama de clases — GUI](https://www.plantuml.com/plantuml/dpng/hLRDRjj64BxpAGOkq5A98gKz4geHDrLReu4Js4alHI6CoA6qo7A7tLqgTee2VOY-HawzzUetwPDqTqYjVkoSR9sMCz_Ep-mtCthXF5hVDJfpxvLfqM83fKRdphotQjbvEY_PNAcF1C_t85ePyZSj0Lk_vYpx2hvzm2zSXxEsXH_VdKDETN10euUQp2GBc5VAiut6PxFUSb64hzDJ-2C307W6dgvz0LVUAhCQHE6cNpY3hLlpiQup5I-Sn_9z0U_2-IeU1rsjD2rQzEk5CcrtVBFih2NZ5n5LmElMApQpDm7zNLUV3fXAMNzJm99P3nBdqNVkmDHJwDeAFUMblnv3Nwu2DgoguSusz8Mg5-KQpOggF25I5aSYItT4t98v4ZdSK1BzcMM6FO5LgxK7hdVL5dIiB903qh3iwfeid6pKXayAq0mKe2WmMdMgADu6SBmUIq2bnuQCfp5uAdKFQzdsNnEuv9RWuZMqQBqgLOj01WOOLK5o-u-9ekWD_llhRt2i6Hn1vp1Uwf6U6mmXrUpPdK1-Jz56Wlkz8q2jOa1eOZ9hvJnRXHegaafECZ8Ln58yHYTStFvRQk8-o_m7BB4YU0elkMdPAKyZIKcjEjGIc-GE6x9EyWvWJxPH1lKZzP04CflraUnrZkNO7PVbx8A3VA2ceGzvtr9VEcz7XTmUTBgdK-VKnwt8yy89iwFYWECbcn9zpdvDDXYBPWwjkLOhlmYGbbrlD0BoY1Y3m0UWCexiFcmCdukm8asUSXcA2Koc6iw7uC0I6_qhKz7r3Z5qTjHkYs9fYHfDIVbHGPIXOmj71IexwrZSS5qxyZlKIz749YJJDH0U8RvIeWbCOHxawRrU4TRv_h3hotDkF5c3Elz0iOjJqffgUTonTBSSHz6NK6BmdPXm4DeWQ_3wC9E6DxI8PdCpAD9esUd5sMS0afVY7OVk3g1Ksxa1SXu1stOiBS4LzfApD-So3mJMpmGZh1t1pJuT8T-G5L2QQaLntv2O2AYdwtHBocbFkcbFg2dvSh8T9XKQSCe4npASPB1HE9CMn1U_ejRy8Qy8gqN95Or-wqVGoj8A6tQFEsr-EXvcqxW87cbof0MPc39ipb-edCModkujdyKzEddspgrp2e82elYG4xB8KjCTtBDqLvKOBAP2kpXlkzAd9daAxvMfUaS_AtFCl4D2BwbcImSDZRKdEqY6naos1XVd5rVpoxTo_7x-QlvsBiVB-PjNPo_dzw_KEuoMAC4fQbfBGRnl0cvIk0dnF1AjfobM25iMWwMWr_WHWRJCH1OGnPd0Op0SyAtlB49dCArMmRITyN43bTpmtHKK8MaDGHxvwsu_WSFbxISCM0bnPuokiVG85VNnIU-8ThfaQx7YqUEI_f8qbeeDkGSJFGq7UFBi6PnyVR97-YAcIRI7cKnEXHn1LLhQlOJBidIjD_JafATeiVkx8NQIczxCGC9xLKB6B9Cl7bIo9GfPtP37aIu2qJwVJBv9W3YdOIeqx85YHkBlP_-GGVQ2JDKr-dy0)
+### Edición y navegación
+- `Ctrl+Z` / `Ctrl+Y` — Deshacer / Rehacer
+- `Ctrl+F` — Barra de búsqueda y reemplazo
+- `Ctrl+G` — Ir a número de línea
+- `Ctrl+/` — Comentar / descomentar línea o bloque seleccionado
+- `Ctrl+D` — Duplicar línea o bloque hacia abajo
+- `Tab` / `Shift+Tab` — Indentar / desindentar bloque o línea
+- `Ctrl+=` / `Ctrl+-` o `Ctrl+Rueda` — Zoom de tamaño de fuente
+- **Clic en el gutter (números de línea)** — Selecciona la línea completa
 
 ## 📄 Licencia
 
-Este proyecto está bajo la Licencia Pública General de GNU (GNU GPL).
+Este proyecto se distribuye bajo los términos de la [Business Source License 1.1 (BSL 1.1)](LICENSE).
+Permite el uso, copia, modificación y compilación gratuita para fines personales, educativos, de desarrollo y evaluación no comercial. Para cualquier uso o distribución comercial se requiere una licencia comercial emitida por el titular de los derechos.
