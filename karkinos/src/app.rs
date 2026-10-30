@@ -289,6 +289,15 @@ pub struct EditorApp {
     pub plugin_manager: karkinos_core::plugin::PluginManager,
     pub extensions_modal_open: bool,
     pub extensions_tab: usize,
+    // S3 (Rust IDE): Open VSX Marketplace
+    pub open_vsx_query_input: String,
+    pub open_vsx_results: Vec<karkinos_core::open_vsx::OpenVsxExtension>,
+    pub open_vsx_total: usize,
+    pub open_vsx_searching: bool,
+    pub open_vsx_error: Option<String>,
+    pub open_vsx_status: Option<String>,
+    open_vsx_rx: Option<std::sync::mpsc::Receiver<Result<karkinos_core::open_vsx::OpenVsxSearchResult, String>>>,
+    open_vsx_download_rx: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
     // S1 (Rust IDE): Ejecutor nativo de pipelines de Cargo
     pub cargo_runner: karkinos_core::cargo::CargoRunner,
     pub cargo_panel_open: bool,
@@ -346,6 +355,14 @@ impl Default for EditorApp {
             plugin_manager: karkinos_core::plugin::PluginManager::with_default_plugins(),
             extensions_modal_open: false,
             extensions_tab: 0,
+            open_vsx_query_input: "rust".to_string(),
+            open_vsx_results: Vec::new(),
+            open_vsx_total: 0,
+            open_vsx_searching: false,
+            open_vsx_error: None,
+            open_vsx_status: None,
+            open_vsx_rx: None,
+            open_vsx_download_rx: None,
             cargo_runner: karkinos_core::cargo::CargoRunner::new(),
             cargo_panel_open: false,
             cargo_active_tab: 0,
@@ -743,6 +760,87 @@ impl EditorApp {
             let first_line = hover.contents.lines().find(|l| !l.trim().is_empty()).unwrap_or(&hover.contents);
             self.status = format!("Docs: {}", first_line.trim());
             self.editor_state.hover_text = Some(hover.contents);
+        }
+    }
+
+    /// S3 (Rust IDE): Triggers an asynchronous search on Open VSX
+    pub fn search_open_vsx(&mut self, query: &str) {
+        let q = query.trim().to_string();
+        self.open_vsx_query_input = q.clone();
+        self.open_vsx_searching = true;
+        self.open_vsx_error = None;
+        self.open_vsx_status = Some("Searching Open VSX...".to_string());
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.open_vsx_rx = Some(rx);
+
+        std::thread::spawn(move || {
+            let res = karkinos_core::open_vsx::OpenVsxClient::search(&q, 25);
+            let _ = tx.send(res);
+        });
+    }
+
+    /// S3 (Rust IDE): Downloads an extension .vsix package asynchronously
+    pub fn download_open_vsx_extension(&mut self, ext: &karkinos_core::open_vsx::OpenVsxExtension) {
+        let url = ext.download_url.clone();
+        let file_name = format!("{}-{}.vsix", ext.name, ext.version);
+        let dest = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+            .join(".karkinos")
+            .join("extensions")
+            .join(&file_name);
+        let id_name = ext.id();
+
+        self.open_vsx_status = Some(format!("Downloading {}...", file_name));
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.open_vsx_download_rx = Some(rx);
+
+        std::thread::spawn(move || {
+            let res = karkinos_core::open_vsx::OpenVsxClient::download_vsix(&url, &dest);
+            let msg = match res {
+                Ok(_) => Ok(format!("Successfully downloaded {} to {}", id_name, dest.display())),
+                Err(e) => Err(format!("Download failed: {}", e)),
+            };
+            let _ = tx.send(msg);
+        });
+    }
+
+    /// S3 (Rust IDE): Polls pending Open VSX search and download background tasks
+    pub fn poll_open_vsx(&mut self) {
+        if let Some(ref rx) = self.open_vsx_rx {
+            if let Ok(result) = rx.try_recv() {
+                self.open_vsx_searching = false;
+                match result {
+                    Ok(data) => {
+                        self.open_vsx_total = data.total;
+                        self.open_vsx_results = data.extensions;
+                        self.open_vsx_status = Some(format!("Found {} extensions", self.open_vsx_total));
+                    }
+                    Err(err) => {
+                        self.open_vsx_error = Some(err);
+                        self.open_vsx_status = None;
+                    }
+                }
+                self.open_vsx_rx = None;
+            }
+        }
+
+        if let Some(ref rx) = self.open_vsx_download_rx {
+            if let Ok(result) = rx.try_recv() {
+                match result {
+                    Ok(msg) => {
+                        self.open_vsx_status = Some(msg.clone());
+                        self.status = msg;
+                    }
+                    Err(err) => {
+                        self.open_vsx_error = Some(err.clone());
+                        self.status = err;
+                    }
+                }
+                self.open_vsx_download_rx = None;
+            }
         }
     }
 
@@ -2144,5 +2242,35 @@ mod tests {
         assert_eq!(app.editor_state.hover_text.as_deref(), Some("fn target() -> ()"));
 
         let _ = std::fs::remove_file(target_file);
+    }
+
+    #[test]
+    fn test_editor_app_open_vsx_polling() {
+        use karkinos_core::open_vsx::{OpenVsxExtension, OpenVsxSearchResult};
+
+        let mut app = EditorApp::default();
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.open_vsx_rx = Some(rx);
+        app.open_vsx_searching = true;
+
+        tx.send(Ok(OpenVsxSearchResult {
+            total: 1,
+            extensions: vec![OpenVsxExtension {
+                namespace: "rust-lang".to_string(),
+                name: "rust-analyzer".to_string(),
+                version: "0.4.3101".to_string(),
+                display_name: "rust-analyzer".to_string(),
+                description: "Rust language support".to_string(),
+                download_url: "https://example.com/rust-analyzer.vsix".to_string(),
+                download_count: 5000,
+            }],
+        })).unwrap();
+
+        app.poll_open_vsx();
+        assert!(!app.open_vsx_searching);
+        assert_eq!(app.open_vsx_total, 1);
+        assert_eq!(app.open_vsx_results.len(), 1);
+        assert_eq!(app.open_vsx_results[0].id(), "rust-lang.rust-analyzer");
+        assert!(app.open_vsx_status.as_ref().unwrap().contains("Found 1 extensions"));
     }
 }

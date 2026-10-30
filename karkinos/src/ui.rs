@@ -826,6 +826,12 @@ impl EditorApp {
                     if ui.selectable_label(self.extensions_tab == 1, "🌐 Community Showcase").clicked() {
                         self.extensions_tab = 1;
                     }
+                    if ui.selectable_label(self.extensions_tab == 2, "🛒 Open VSX Registry").clicked() {
+                        self.extensions_tab = 2;
+                        if self.open_vsx_results.is_empty() && !self.open_vsx_searching {
+                            self.search_open_vsx("rust");
+                        }
+                    }
                 });
                 ui.separator();
 
@@ -871,7 +877,7 @@ impl EditorApp {
                             ui.add_space(4.0);
                         }
                     });
-                } else {
+                } else if self.extensions_tab == 1 {
                     ui.label(egui::RichText::new("Community Extensions & Contributions").strong());
                     ui.label(
                         egui::RichText::new("Discover and contribute community-created extensions for Karkinos.")
@@ -943,6 +949,87 @@ impl EditorApp {
                         .italics()
                         .color(egui::Color32::from_rgb(180, 200, 230)),
                     );
+                } else {
+                    ui.label(egui::RichText::new("🛒 Open VSX Registry (open-vsx.org)").strong());
+                    ui.label(
+                        egui::RichText::new("Search, browse, and download community extensions and themes (.vsix).")
+                            .color(egui::Color32::from_gray(160)),
+                    );
+                    ui.add_space(4.0);
+
+                    let mut do_search = false;
+                    let mut download_target: Option<karkinos_core::open_vsx::OpenVsxExtension> = None;
+
+                    ui.horizontal(|ui| {
+                        let resp = ui.add(
+                            egui::TextEdit::singleline(&mut self.open_vsx_query_input)
+                                .hint_text("Search Open VSX (e.g. rust, theme)...")
+                        );
+                        if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                            do_search = true;
+                        }
+                        if ui.button("Search").clicked() {
+                            do_search = true;
+                        }
+                        if self.open_vsx_searching {
+                            ui.label(egui::RichText::new("Searching…").italics().color(egui::Color32::from_rgb(255, 190, 60)));
+                        }
+                    });
+
+                    if let Some(ref st) = self.open_vsx_status {
+                        ui.label(egui::RichText::new(st).color(egui::Color32::from_rgb(100, 200, 130)).small());
+                    }
+                    if let Some(ref err) = self.open_vsx_error {
+                        ui.label(egui::RichText::new(format!("Error: {}", err)).color(egui::Color32::from_rgb(255, 90, 90)).small());
+                    }
+
+                    ui.add_space(4.0);
+                    egui::ScrollArea::vertical().max_height(240.0).show(ui, |ui| {
+                        if self.open_vsx_results.is_empty() && !self.open_vsx_searching {
+                            ui.label(egui::RichText::new("No extensions found. Try searching for 'rust' or 'theme'.").italics());
+                        }
+
+                        for ext in &self.open_vsx_results {
+                            ui.group(|ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(egui::RichText::new(&ext.display_name).strong());
+                                    ui.label(egui::RichText::new(format!("v{}", ext.version)).color(egui::Color32::from_gray(140)));
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        ui.label(
+                                            egui::RichText::new(format!("by {}", ext.namespace))
+                                                .color(egui::Color32::from_rgb(130, 170, 255)),
+                                        );
+                                    });
+                                });
+
+                                if !ext.description.is_empty() {
+                                    ui.label(egui::RichText::new(&ext.description).color(egui::Color32::from_gray(180)));
+                                }
+
+                                ui.horizontal(|ui| {
+                                    if ext.download_count > 0 {
+                                        ui.label(egui::RichText::new(format!("📥 {} downloads", ext.download_count)).small().color(egui::Color32::from_gray(140)));
+                                    }
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        if !ext.download_url.is_empty() {
+                                            if ui.small_button("📥 Download .vsix").clicked() {
+                                                download_target = Some(ext.clone());
+                                            }
+                                        }
+                                    });
+                                });
+                            });
+                            ui.add_space(4.0);
+                        }
+                    });
+
+                    if do_search {
+                        let q = self.open_vsx_query_input.clone();
+                        self.search_open_vsx(&q);
+                    }
+                    if let Some(target) = download_target {
+                        self.download_open_vsx_extension(&target);
+                    }
                 }
 
                 ui.add_space(8.0);
@@ -1034,6 +1121,8 @@ impl eframe::App for EditorApp {
         self.check_external_changes();
         // S2 (Rust IDE): Procesar respuestas pendientes del LSP (definición, hover)
         self.poll_lsp_results();
+        // S3 (Rust IDE): Procesar respuestas pendientes de Open VSX
+        self.poll_open_vsx();
 
         // S3: consolidación de chunks de undo por timeout de inactividad (~700ms).
         let now = std::time::Instant::now();

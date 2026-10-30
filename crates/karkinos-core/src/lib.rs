@@ -12,6 +12,7 @@ pub mod cargo;
 pub mod document;
 pub mod ending;
 pub mod lsp;
+pub mod open_vsx;
 pub mod plugin;
 pub mod syntax_ast;
 pub mod text_ops;
@@ -25,6 +26,7 @@ pub use lsp::{
     DiagnosticSeverity, LspClient, LspCompletionItem, LspDiagnostic, LspHover, LspLocation,
     LspPosition, LspRange,
 };
+pub use open_vsx::{OpenVsxClient, OpenVsxExtension, OpenVsxSearchResult};
 pub use plugin::{Plugin, PluginCommand, PluginContext, PluginManager};
 pub use syntax_ast::{
     AstEngine, AstHighlightSpan, AstLanguage, AstNodeInfo, FoldingKind, FoldingRange,
