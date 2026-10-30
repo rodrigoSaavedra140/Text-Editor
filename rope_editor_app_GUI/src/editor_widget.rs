@@ -433,6 +433,13 @@ fn visual_row_of(cum_rows: &[usize], line: usize, col: usize, wrap_chars: usize)
     cum_rows[line.min(cum_rows.len().saturating_sub(1))] + col / wrap_chars
 }
 
+/// S2 (Etapa 2): datos de coincidencias de búsqueda para resaltar en el viewport.
+pub struct SearchHighlight<'a> {
+    pub matches: &'a [(usize, usize)],
+    pub query_len: usize,
+    pub current_idx: usize,
+}
+
 /// Dibuja y maneja el editor de texto, mostrando SOLO las filas que
 /// entran en pantalla (a diferencia de egui::TextEdit, que relayoutea
 /// el texto entero en cada tecla). Ajusta de línea automáticamente:
@@ -443,6 +450,7 @@ pub fn show(
     lines: &mut Vec<String>,
     state: &mut EditorState,
     bg: egui::Color32,
+    search: Option<SearchHighlight<'_>>,
 ) -> EditorResponse {
     let mut changed = false;
     let mut force_snapshot = false;
@@ -958,6 +966,16 @@ pub fn show(
             .copied()
             .unwrap_or_else(|| line_char_count(line));
         let is_pure_ascii = line.len() == char_len;
+
+        // S2 (Etapa 2): Coincidencias de búsqueda en la línea i
+        let line_matches = if let Some(ref s) = search {
+            let start_idx = s.matches.partition_point(|&(line, _)| line < i);
+            let end_idx = s.matches.partition_point(|&(line, _)| line <= i);
+            Some((start_idx, &s.matches[start_idx..end_idx]))
+        } else {
+            None
+        };
+
         for sub in 0..rows_here {
             let y = line_top_y + sub as f32 * row_height;
             if y + row_height < rect.top() || y > rect.bottom() {
@@ -968,6 +986,30 @@ pub fn show(
             let sb = if is_pure_ascii { start } else { char_to_byte(line, start) };
             let eb = if is_pure_ascii { end } else { char_to_byte(line, end) };
             let chunk = &line[sb..eb];
+
+            // S2 (Etapa 2): Resaltado de todas las coincidencias de búsqueda visibles
+            if let (Some((global_start, matches_in_line)), Some(ref s)) = (line_matches, &search) {
+                for (local_idx, &(_ml, mc)) in matches_in_line.iter().enumerate() {
+                    let match_end = mc + s.query_len;
+                    let ov_start = mc.max(start);
+                    let ov_end = match_end.min(end);
+                    if ov_start < ov_end {
+                        let x0 = text_left + (ov_start - start) as f32 * char_width;
+                        let x1 = text_left + (ov_end - start) as f32 * char_width;
+                        let match_rect = egui::Rect::from_min_max(
+                            egui::pos2(x0, y),
+                            egui::pos2(x1, y + row_height),
+                        );
+                        let is_current = (global_start + local_idx) == s.current_idx;
+                        let match_color = if is_current {
+                            egui::Color32::from_rgba_unmultiplied(255, 140, 0, 180)
+                        } else {
+                            egui::Color32::from_rgba_unmultiplied(235, 200, 50, 90)
+                        };
+                        painter.rect_filled(match_rect, 2.0, match_color);
+                    }
+                }
+            }
 
             if let Some((s, e)) = sel {
                 if i >= s.0 && i <= e.0 {

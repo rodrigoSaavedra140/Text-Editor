@@ -665,11 +665,21 @@ impl eframe::App for EditorApp {
                 if (self.editor_state.font_size - self.font_size).abs() > f32::EPSILON {
                     self.editor_state.set_font_size(self.font_size);
                 }
+                let search = if self.find_open && !self.find_query.is_empty() && !self.find_matches.is_empty() {
+                    Some(crate::editor_widget::SearchHighlight {
+                        matches: &self.find_matches,
+                        query_len: self.find_query.chars().count(),
+                        current_idx: self.find_current,
+                    })
+                } else {
+                    None
+                };
                 let response = crate::editor_widget::show(
                     ui,
                     &mut self.lines,
                     &mut self.editor_state,
                     self.text_area_bg,
+                    search,
                 );
                 // S10: el Ctrl+Scroll zoomea DIRECTO en el EditorState
                 // mientras dibuja; escribo el resultado de vuelta en
