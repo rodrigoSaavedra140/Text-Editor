@@ -32,10 +32,10 @@ Decouple the text editing engine into a standalone, zero-GUI crate `karkinos-cor
 
 | ID | Specs | Route | Status | Commit |
 |----|-------|-------|--------|--------|
-| T1 | S1 | inline | listo | pending |
-| T2 | S2 | inline | listo | pending |
-| T3 | S3 | inline | listo | pending |
-| T4 | S4 | inline | listo | pending |
+| T1 | S1 | inline | listo | bb8d8f9 |
+| T2 | S2 | inline | listo | bb8d8f9 |
+| T3 | S3 | inline | listo | bb8d8f9 |
+| T4 | S4 | inline | listo | bb8d8f9 |
 
 ## Log
 
