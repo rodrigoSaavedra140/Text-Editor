@@ -49,7 +49,7 @@
 | T3 | S3 | inline | listo | 9f14c29 |
 | T4 | S4 | inline | listo | 86f018c |
 | T5 | S5 | inline | listo | d3f429e |
-| T6 | S6 | inline | pendiente | - |
+| T6 | S6 | inline | listo | 003ec3d |
 | T7 | S7 | inline | pendiente | - |
 | T8 | S8 | inline | pendiente | - |
 
@@ -78,3 +78,8 @@
   `Theme` fuertemente tipada (bg, text, gutter, active line, caret, selection, title bar, panels).
   Selector en barra superior, persistencia en eframe `Storage` ("editor_theme") y suite con tests de
   contraste y roundtrip de serialización.
+- **L7** (2026-10-29): T6 terminado (commit 003ec3d, suite 58/58 pasando, 0 warnings).
+  Resaltado de sintaxis ligero: módulo `syntax.rs` con detección de lenguaje por ruta/extensión (Rust,
+  Markdown, JSON y fallback texto plano), tokenizadores lineales O(L) de palabras clave, tipos, literales
+  de cadena, comentarios y números, y renderizado por sub-filas mediante `egui::text::LayoutJob`
+  respetando la paleta del tema activo. Indicador de lenguaje activo en la barra de estado.
