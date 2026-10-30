@@ -138,6 +138,9 @@ pub struct EditorApp {
     pub find_matches: Vec<(usize, usize)>,
     /// Índice del match actual dentro de find_matches.
     pub find_current: usize,
+    // S8: confirmación de creación de nuevo documento con cambios sin guardar.
+    pub new_doc_pending: bool,
+    pub new_after_save: bool,
     dir_cache: Option<(PathBuf, Option<SystemTime>, Vec<String>, Vec<String>)>,
 }
 
@@ -161,6 +164,8 @@ impl Default for EditorApp {
             last_disk_mtime: None,
             close_pending: false,
             close_after_save: false,
+            new_doc_pending: false,
+            new_after_save: false,
             last_mtime_check: None,
             external_changed: false,
             goto_pending: false,
@@ -579,19 +584,21 @@ impl EditorApp {
         };
         if had_error {
             self.close_after_save = false;
+            self.new_after_save = false;
         } else if let Some(path) = &self.current_file {
             self.last_disk_mtime = fs::metadata(path).ok().and_then(|m| m.modified().ok());
         }
     }
 
-    // ---- S1: cierre con cambios sin guardar ----
+    // ---- S1 / S8: confirmación con cambios sin guardar ----
 
-    /// El usuario pidió cerrar (X o Ctrl+Q) y el diálogo está abierto
-    /// pero quiere cerrarlo sin decidir nada todavía: lo usan el
-    /// botón "Cancelar" y la tecla Esc.
+    /// El usuario pidió cancelar el diálogo de confirmación: lo usan
+    /// el botón "Cancelar" y la tecla Esc.
     pub fn cancel_close(&mut self) {
         self.close_pending = false;
         self.close_after_save = false;
+        self.new_doc_pending = false;
+        self.new_after_save = false;
     }
 
     /// Botón "Descartar" del diálogo: tiran los cambios sin guardar;
@@ -612,6 +619,45 @@ impl EditorApp {
         if !self.save() {
             self.close_after_save = false;
             self.close_pending = true;
+        }
+    }
+
+    // ---- S8: nuevo documento ----
+
+    /// S8: Limpia el editor para trabajar en un nuevo documento: buffer
+    /// vacío, sin archivo asociado, sin cambios sin guardar, y resetea el
+    /// historial de deshacer.
+    pub fn new_document(&mut self) {
+        self.set_text("");
+        self.current_file = None;
+        self.file_path_input.clear();
+        self.dirty = false;
+        self.last_snapshot = String::new();
+        self.last_disk_mtime = None;
+        self.line_ending = LineEnding::Lf;
+        self.undo_stack = UndoStack::new();
+        self.chunk_tracker.reset();
+        self.find_matches.clear();
+        self.status = "Nuevo documento".to_string();
+    }
+
+    /// S8: Intenta crear un nuevo documento. Si el buffer actual está sucio
+    /// o guardándose, pide confirmación previa en lugar de descartar datos.
+    pub fn try_new_document(&mut self) {
+        if self.dirty || self.save_progress.is_some() {
+            self.new_doc_pending = true;
+        } else {
+            self.new_document();
+        }
+    }
+
+    /// Confirmación "Guardar" al intentar abrir un nuevo documento.
+    pub fn confirm_new_doc_save(&mut self) {
+        self.new_doc_pending = false;
+        self.new_after_save = true;
+        if !self.save() {
+            self.new_after_save = false;
+            self.new_doc_pending = true;
         }
     }
 
@@ -847,5 +893,37 @@ mod tests {
         // Undo revierte el replace individual
         app.undo();
         assert_eq!(app.current_text(), "gato y perro y gato");
+    }
+
+    // ---- S8: Botón Nuevo documento ----
+
+    #[test]
+    fn nuevo_documento_resetea_buffer_y_metadatos() {
+        let mut app = EditorApp::default();
+        app.set_text("texto previo");
+        app.current_file = Some(PathBuf::from("dummy.txt"));
+        app.file_path_input = "dummy.txt".to_string();
+        app.dirty = true;
+        app.new_document();
+
+        assert_eq!(app.current_text(), "");
+        assert_eq!(app.lines, vec![String::new()]);
+        assert_eq!(app.current_file, None);
+        assert_eq!(app.file_path_input, "");
+        assert!(!app.dirty);
+        assert_eq!(app.status, "Nuevo documento");
+    }
+
+    #[test]
+    fn try_nuevo_documento_con_dirty_pide_confirmacion() {
+        let mut app = EditorApp::default();
+        app.dirty = true;
+        app.try_new_document();
+        assert!(app.new_doc_pending);
+
+        // Sin cambios: crea de una sin pedir confirmación
+        let mut app_clean = EditorApp::default();
+        app_clean.try_new_document();
+        assert!(!app_clean.new_doc_pending);
     }
 }

@@ -64,15 +64,22 @@ impl EditorApp {
             self.close_after_save = false;
             request_close(ctx, &mut self.closing_since);
         }
+        // S8: si el usuario pidió guardar-Y-nuevo desde el diálogo y
+        // el guardado terminó bien, limpiamos el editor para el nuevo documento.
+        if self.new_after_save && self.save_progress.is_none() {
+            self.new_after_save = false;
+            self.new_document();
+        }
     }
 
-    /// S1: ventana de confirmación "¿cerrar con cambios sin
-    /// guardar?", visible mientras `close_pending`. Tres caminos:
-    /// Guardar (guarda y cierra al terminar), Descartar (cierra sin
+    /// S1 / S8: ventana de confirmación "¿cerrar con cambios sin
+    /// guardar?" o "¿nuevo con cambios sin guardar?", visible mientras
+    /// `close_pending` o `new_doc_pending`. Tres caminos:
+    /// Guardar (guarda y procede al terminar), Descartar (procede sin
     /// guardar) y Cancelar (vuelve al editor sin tocar nada). NADA
     /// mata el proceso mientras el diálogo esté abierto.
     fn show_close_confirm(&mut self, ctx: &egui::Context) {
-        if !self.close_pending {
+        if !self.close_pending && !self.new_doc_pending {
             return;
         }
         // Esc = Cancelar, convención universal de diálogos.
@@ -80,23 +87,39 @@ impl EditorApp {
             self.cancel_close();
             return;
         }
+        let is_new = self.new_doc_pending;
+        let title = if is_new { "Nuevo documento" } else { "Cambios sin guardar" };
+        let prompt = if is_new {
+            "Tenés cambios sin guardar. ¿Deseás guardar antes de crear un nuevo documento?"
+        } else {
+            "Tenés cambios sin guardar en este documento."
+        };
         let mut open = true;
-        egui::Window::new("Cambios sin guardar")
+        egui::Window::new(title)
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
             .show(ctx, |ui| {
                 ui.set_min_width(320.0);
-                ui.label("Tenés cambios sin guardar en este documento.");
+                ui.label(prompt);
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     if ui.button("Guardar").clicked() {
-                        self.confirm_close_save();
+                        if is_new {
+                            self.confirm_new_doc_save();
+                        } else {
+                            self.confirm_close_save();
+                        }
                     }
                     if ui.button("Descartar").clicked() {
-                        self.confirm_close_discard();
-                        request_close(ctx, &mut self.closing_since);
+                        if is_new {
+                            self.new_doc_pending = false;
+                            self.new_document();
+                        } else {
+                            self.confirm_close_discard();
+                            request_close(ctx, &mut self.closing_since);
+                        }
                     }
                     if ui.button("Cancelar").clicked() {
                         self.cancel_close();
@@ -306,7 +329,7 @@ impl eframe::App for EditorApp {
         }
 
         // Atajos de teclado globales
-        let (want_save, want_undo, want_redo, want_quit, want_goto, want_find) = ctx.input(|i| {
+        let (want_save, want_undo, want_redo, want_quit, want_goto, want_find, want_new) = ctx.input(|i| {
             (
                 i.modifiers.ctrl && i.key_pressed(egui::Key::S),
                 i.modifiers.ctrl && i.key_pressed(egui::Key::Z),
@@ -314,8 +337,12 @@ impl eframe::App for EditorApp {
                 i.modifiers.ctrl && i.key_pressed(egui::Key::Q),
                 i.modifiers.ctrl && i.key_pressed(egui::Key::G),
                 i.modifiers.ctrl && i.key_pressed(egui::Key::F),
+                i.modifiers.ctrl && i.key_pressed(egui::Key::N),
             )
         });
+        if want_new {
+            self.try_new_document();
+        }
         if want_save {
             self.save();
         }
@@ -458,6 +485,10 @@ impl eframe::App for EditorApp {
                     self.open_path(path);
                 }
 
+                // S8: Botón Nuevo documento
+                if ui.button("Nuevo").clicked() {
+                    self.try_new_document();
+                }
                 if ui.button("Guardar (Ctrl+S)").clicked() {
                     self.save();
                 }
