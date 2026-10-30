@@ -48,7 +48,7 @@
 | T2 | S2 | inline | listo | 2be1a15 |
 | T3 | S3 | inline | listo | 9f14c29 |
 | T4 | S4 | inline | listo | 86f018c |
-| T5 | S5 | inline | pendiente | - |
+| T5 | S5 | inline | listo | d3f429e |
 | T6 | S6 | inline | pendiente | - |
 | T7 | S7 | inline | pendiente | - |
 | T8 | S8 | inline | pendiente | - |
@@ -73,3 +73,8 @@
   Indentación de bloques: Tab en selección multilínea indenta todas las líneas seleccionadas y expande
   la selección para preservarla. Shift+Tab quita sangría (\t o hasta 4 espacios) tanto en bloque
   multilínea como en línea simple. Helpers puros `indent_line` y `dedent_line` con test unitario.
+- **L6** (2026-10-29): T5 terminado (commit d3f429e, suite 53/53 pasando, 0 warnings).
+  Temas visuales: módulo `theme.rs` con enum `ThemeMode` (Dark, Light, Monokai, Dracula) y estructura
+  `Theme` fuertemente tipada (bg, text, gutter, active line, caret, selection, title bar, panels).
+  Selector en barra superior, persistencia en eframe `Storage` ("editor_theme") y suite con tests de
+  contraste y roundtrip de serialización.
