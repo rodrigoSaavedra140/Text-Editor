@@ -17,6 +17,7 @@ image = { version = "0.24", default-features = false, features = ["png"] }
 # crate en el grafo y la de egui-winit tambien pasa a hablar el
 # protocolo wayland-data-control, con fallback X11 automatico.
 arboard = { version = "3.6", features = ["wayland-data-control"] }
+ropey = "1.6"
 
 # Binario más liviano y rápido sin cambiar el código: LTO entre crates,
 # una sola unidad de codegen y símbolos de debug fuera.

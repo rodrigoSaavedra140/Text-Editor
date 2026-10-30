@@ -1,4 +1,5 @@
 mod app;
+pub mod buffer;
 mod editor_widget;
 mod quick_open;
 mod syntax;
