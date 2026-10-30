@@ -187,3 +187,16 @@ disjuntas).
   (helper puro picker_should_stay_open, testado) / elegir un archivo.
   El listado siempre re-dibuja con cached_list_dir de la carpeta
   actual. Suite 45/45, warnings 0.
+- **L15** (2026-10-29) bugfix: usuario pidió verbatim "cuando guarda un
+  archivo nuevo, no le pone nombre... que cada vez que se intente
+  guardar un archivo nuevo que no tenga nombre, lo guarde como
+  nuevo.txt". Fix (commit 632b526): save() con current_file None y
+  file_path_input vacío elige "nuevo.txt" en browse_dir (helper puro
+  default_new_file_path con exists inyectado); si existe, NO pisa
+  datos: propone "nuevo (1).txt", (2), … El nombre vuela al input de
+  la toolbar y el path queda ABSOLUTO (una recursión via
+  file_path_input perdía el dir — reestructurado a una sola pasada).
+  El test del diálogo S1 cambió de semántica: ahora el diálogo SÍ
+  puede prometer el cierre porque el save arranca sobre un destino
+  concreto (antes abortaba y el diálogo quedaba esperando un
+  guardado imposible). Suite 47/47, warnings 0.
