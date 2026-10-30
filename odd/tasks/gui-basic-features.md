@@ -90,7 +90,7 @@ orden del prompt). El resto de la aceptación se marca como criterio, no como
 | T5 | S3 | inline | listo | 468ca3a |
 | T6 | S2 | inline | listo | 74a4b92 |
 | T7 | S8 | inline | listo | 478c1d4 |
-| T8 | S10 | inline | listo | (ver L12) |
+| T8 | S10 | inline | listo | dad8209 |
 
 Nota de ruta: los 10 features comparten edit surfaces (editor_widget.rs y
 ui.rs), así que NO hay writers paralelos — el padre escribe inline en serie.
