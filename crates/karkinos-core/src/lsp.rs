@@ -104,6 +104,13 @@ pub struct LspHover {
     pub range: Option<LspRange>,
 }
 
+/// A target location within a document (URI + Range) for Go to Definition.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct LspLocation {
+    pub uri: String,
+    pub range: LspRange,
+}
+
 /// Formats a JSON-RPC 2.0 request into raw LSP byte payload with `Content-Length`.
 pub fn format_request(id: u64, method: &str, params: Value) -> Vec<u8> {
     let msg = json!({
@@ -171,6 +178,8 @@ pub struct LspState {
     pub responses: HashMap<u64, Value>,
     /// Latest hover result
     pub latest_hover: Option<LspHover>,
+    /// Latest Go-to-Definition location
+    pub latest_definition: Option<LspLocation>,
     /// Latest completion list
     pub latest_completions: Vec<LspCompletionItem>,
     /// Server initialization status
@@ -388,6 +397,32 @@ impl LspClient {
         id
     }
 
+    /// Requests Go to Definition for a symbol at a given line and column.
+    pub fn request_definition(&self, file_uri: &str, line: usize, character: usize) -> u64 {
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let params = json!({
+            "textDocument": {
+                "uri": file_uri,
+            },
+            "position": {
+                "line": line,
+                "character": character,
+            }
+        });
+        self.send_raw(format_request(id, "textDocument/definition", params));
+        id
+    }
+
+    /// Retrieves latest Go to Definition location if available.
+    pub fn latest_definition(&self) -> Option<LspLocation> {
+        self.state.read().ok().and_then(|s| s.latest_definition.clone())
+    }
+
+    /// Consumes and returns the latest Go to Definition location.
+    pub fn take_latest_definition(&self) -> Option<LspLocation> {
+        self.state.write().ok().and_then(|mut s| s.latest_definition.take())
+    }
+
     /// Retrieves cached diagnostics for a file URI.
     pub fn diagnostics_for_file(&self, file_uri: &str) -> Vec<LspDiagnostic> {
         self.state
@@ -404,9 +439,28 @@ impl LspClient {
         }
     }
 
+    /// Injects definition location directly (used by mock tests and notifications).
+    pub fn set_mock_definition(&self, target: LspLocation) {
+        if let Ok(mut state) = self.state.write() {
+            state.latest_definition = Some(target);
+        }
+    }
+
+    /// Injects hover payload directly (used by mock tests and notifications).
+    pub fn set_mock_hover(&self, hover: LspHover) {
+        if let Ok(mut state) = self.state.write() {
+            state.latest_hover = Some(hover);
+        }
+    }
+
     /// Retrieves latest hover information if available.
     pub fn latest_hover(&self) -> Option<LspHover> {
         self.state.read().ok().and_then(|s| s.latest_hover.clone())
+    }
+
+    /// Consumes and returns the latest hover information if available.
+    pub fn take_latest_hover(&self) -> Option<LspHover> {
+        self.state.write().ok().and_then(|mut s| s.latest_hover.take())
     }
 
     /// Retrieves latest completion items if available.
@@ -506,11 +560,37 @@ impl LspClient {
                         state.latest_completions = parsed_items;
                     }
 
+                    // Check if it's definition response
+                    if let Some(target) = parse_definition_result(result) {
+                        state.latest_definition = Some(target);
+                    }
+
                     state.responses.insert(id, result.clone());
                 }
             }
         }
     }
+}
+
+fn parse_definition_result(result: &Value) -> Option<LspLocation> {
+    if let Some(arr) = result.as_array() {
+        let first = arr.first()?;
+        // Check for LocationLink (targetUri + targetSelectionRange or targetRange)
+        if let Some(target_uri) = first.get("targetUri").and_then(|u| u.as_str()) {
+            let range_val = first.get("targetSelectionRange").or_else(|| first.get("targetRange"))?;
+            let range = serde_json::from_value::<LspRange>(range_val.clone()).ok()?;
+            return Some(LspLocation { uri: target_uri.to_string(), range });
+        }
+        // Check for standard Location (uri + range)
+        if let Some(uri) = first.get("uri").and_then(|u| u.as_str()) {
+            let range = serde_json::from_value::<LspRange>(first.get("range")?.clone()).ok()?;
+            return Some(LspLocation { uri: uri.to_string(), range });
+        }
+    } else if let Some(uri) = result.get("uri").and_then(|u| u.as_str()) {
+        let range = serde_json::from_value::<LspRange>(result.get("range")?.clone()).ok()?;
+        return Some(LspLocation { uri: uri.to_string(), range });
+    }
+    None
 }
 
 impl Drop for LspClient {
@@ -630,5 +710,31 @@ mod tests {
         assert_eq!(completions.len(), 1);
         assert_eq!(completions[0].label, "compute");
         assert_eq!(completions[0].insert_text.as_deref(), Some("compute()"));
+    }
+
+    #[test]
+    fn test_inbound_definition_dispatch() {
+        let client = LspClient::mock();
+
+        let def_resp = json!({
+            "jsonrpc": "2.0",
+            "id": 12,
+            "result": [
+                {
+                    "uri": "file:///path/to/target.rs",
+                    "range": {
+                        "start": { "line": 42, "character": 7 },
+                        "end": { "line": 42, "character": 15 }
+                    }
+                }
+            ]
+        });
+
+        LspClient::handle_inbound_message(&client.state, &def_resp.to_string());
+        let def = client.take_latest_definition().expect("should have definition target");
+        assert_eq!(def.uri, "file:///path/to/target.rs");
+        assert_eq!(def.range.start.line, 42);
+        assert_eq!(def.range.start.character, 7);
+        assert!(client.latest_definition().is_none(), "take should consume it");
     }
 }

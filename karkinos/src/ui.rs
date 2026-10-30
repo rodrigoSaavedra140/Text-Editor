@@ -1032,6 +1032,8 @@ impl eframe::App for EditorApp {
         // S1: comprobación externa de disco (limitada a 1 stat/seg
         // dentro del método; aquí solo es invocarla por frame).
         self.check_external_changes();
+        // S2 (Rust IDE): Procesar respuestas pendientes del LSP (definición, hover)
+        self.poll_lsp_results();
 
         // S3: consolidación de chunks de undo por timeout de inactividad (~700ms).
         let now = std::time::Instant::now();
@@ -1108,11 +1110,13 @@ impl eframe::App for EditorApp {
         if want_redo {
             self.redo();
         }
-        let (want_cargo_check, want_cargo_run, want_cargo_toggle) = ctx.input(|i| {
+        let (want_cargo_check, want_cargo_run, want_cargo_toggle, want_goto_def, want_hover) = ctx.input(|i| {
             (
                 i.key_pressed(egui::Key::F7),
                 i.key_pressed(egui::Key::F5),
                 i.modifiers.ctrl && i.key_pressed(egui::Key::Backslash),
+                i.key_pressed(egui::Key::F12),
+                i.key_pressed(egui::Key::F1) || (i.modifiers.ctrl && i.key_pressed(egui::Key::K)),
             )
         });
         if want_cargo_check {
@@ -1123,6 +1127,12 @@ impl eframe::App for EditorApp {
         }
         if want_cargo_toggle {
             self.cargo_panel_open = !self.cargo_panel_open;
+        }
+        if want_goto_def {
+            self.goto_definition();
+        }
+        if want_hover {
+            self.request_hover();
         }
         if want_quit {
             self.try_close(ctx);

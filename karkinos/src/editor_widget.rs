@@ -821,6 +821,9 @@ pub fn show(
         if has_events {
             cursor_moved = true;
             let events = ui.input(|i| i.events.clone());
+            if events.iter().any(|e| matches!(e, egui::Event::Key { .. } | egui::Event::Text(_) | egui::Event::PointerButton { .. })) {
+                state.hover_text = None;
+            }
             for event in events {
             match event {
                 egui::Event::Text(t) => {
@@ -1508,6 +1511,42 @@ pub fn show(
                     theme.gutter_text,
                 );
             }
+        }
+    }
+
+    // S2 (Rust IDE): Popup flotante de documentación / hover LSP
+    if !state.show_completions {
+        if let Some(ref text) = state.hover_text {
+            let cursor_vrow = visual_row_of(&state.cum_rows, state.cursor_line, state.cursor_col, wrap_chars);
+            let cur_y = rect.top() + PAD_Y + cursor_vrow as f32 * row_height - state.scroll + row_height;
+            let cur_x = text_left + (state.cursor_col % wrap_chars.max(1)) as f32 * char_width;
+
+            let sample_lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).take(6).collect();
+            let display_text = sample_lines.join("\n");
+            let line_count = sample_lines.len().max(1);
+
+            let popup_w = 360.0_f32;
+            let popup_h = line_count as f32 * 18.0 + 16.0;
+
+            let popup_rect = egui::Rect::from_min_size(
+                egui::pos2(
+                    cur_x.min(rect.right() - popup_w - 10.0).max(rect.left()),
+                    cur_y.min(rect.bottom() - popup_h - 10.0).max(rect.top()),
+                ),
+                egui::vec2(popup_w, popup_h),
+            );
+
+            let popup_painter = ui.painter();
+            popup_painter.rect_filled(popup_rect, 4.0, egui::Color32::from_rgb(26, 28, 34));
+            popup_painter.rect_stroke(popup_rect, 4.0, egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(70, 85, 115)));
+
+            popup_painter.text(
+                egui::pos2(popup_rect.left() + 8.0, popup_rect.top() + 8.0),
+                egui::Align2::LEFT_TOP,
+                &display_text,
+                egui::FontId::monospace(state.font_size * 0.85),
+                egui::Color32::from_rgb(220, 230, 245),
+            );
         }
     }
 

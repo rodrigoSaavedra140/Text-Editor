@@ -699,6 +699,53 @@ impl EditorApp {
         }
     }
 
+    /// S2 (Rust IDE): Solicita saltar a la definición del símbolo bajo el cursor (F12)
+    pub fn goto_definition(&mut self) {
+        if self.current_language() != crate::syntax::Language::Rust {
+            return;
+        }
+        if let (Some(ref client), Some(ref path)) = (&self.lsp_client, &self.current_file) {
+            let uri = format!("file://{}", path.display());
+            client.request_definition(&uri, self.editor_state.cursor_line, self.editor_state.cursor_col);
+            self.status = "Resolving definition (F12)…".to_string();
+        }
+    }
+
+    /// S2 (Rust IDE): Solicita información de hover / documentación para el símbolo bajo el cursor
+    pub fn request_hover(&mut self) {
+        if self.current_language() != crate::syntax::Language::Rust {
+            return;
+        }
+        if let (Some(ref client), Some(ref path)) = (&self.lsp_client, &self.current_file) {
+            let uri = format!("file://{}", path.display());
+            client.request_hover(&uri, self.editor_state.cursor_line, self.editor_state.cursor_col);
+        }
+    }
+
+    /// S2 (Rust IDE): Chequea y procesa respuestas entrantes de Go to Definition y Hover
+    pub fn poll_lsp_results(&mut self) {
+        let (target, hover) = if let Some(ref client) = self.lsp_client {
+            (client.take_latest_definition(), client.take_latest_hover())
+        } else {
+            (None, None)
+        };
+
+        if let Some(target) = target {
+            let file_path = PathBuf::from(target.uri.trim_start_matches("file://"));
+            self.open_path(file_path);
+            self.editor_state.cursor_line = target.range.start.line;
+            self.editor_state.cursor_col = target.range.start.character;
+            self.editor_state.needs_autoscroll = true;
+            self.status = format!("Jumped to definition at line {}", target.range.start.line + 1);
+        }
+
+        if let Some(hover) = hover {
+            let first_line = hover.contents.lines().find(|l| !l.trim().is_empty()).unwrap_or(&hover.contents);
+            self.status = format!("Docs: {}", first_line.trim());
+            self.editor_state.hover_text = Some(hover.contents);
+        }
+    }
+
     /// Listado de `self.browse_dir` con caché (ver el campo
     /// `dir_cache`): mismo estado que antes, salvo que en frames
     /// repetidos con el desplegable abierto no hay I/O de disco.
@@ -2062,5 +2109,40 @@ mod tests {
         assert_eq!(app.editor_state.cursor_col, 4);
         assert!(app.editor_state.needs_autoscroll);
         assert!(app.status.contains("Jumped to error: line 8"));
+    }
+
+    #[test]
+    fn test_editor_app_goto_definition_and_hover() {
+        use karkinos_core::lsp::{LspClient, LspHover, LspLocation, LspPosition, LspRange};
+
+        let mut app = EditorApp::default();
+        let client = LspClient::mock();
+        let target_file = std::env::temp_dir().join("karkinos_def_test.rs");
+        std::fs::write(&target_file, "fn target() {}\n").unwrap();
+
+        // Simulate incoming definition result
+        client.set_mock_definition(LspLocation {
+            uri: format!("file://{}", target_file.display()),
+            range: LspRange {
+                start: LspPosition { line: 0, character: 3 },
+                end: LspPosition { line: 0, character: 9 },
+            },
+        });
+        client.set_mock_hover(LspHover {
+            contents: "fn target() -> ()".to_string(),
+            range: None,
+        });
+        app.lsp_client = Some(client);
+
+        // Poll LSP results
+        app.poll_lsp_results();
+
+        assert_eq!(app.editor_state.cursor_line, 0);
+        assert_eq!(app.editor_state.cursor_col, 3);
+        assert!(app.editor_state.needs_autoscroll);
+        assert!(app.status.contains("Docs: fn target() -> ()"));
+        assert_eq!(app.editor_state.hover_text.as_deref(), Some("fn target() -> ()"));
+
+        let _ = std::fs::remove_file(target_file);
     }
 }
