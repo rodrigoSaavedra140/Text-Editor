@@ -5,7 +5,9 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use eframe::egui;
+use ropey::Rope;
 
+use crate::buffer::TextBuffer;
 use crate::editor_widget::EditorState;
 use crate::undo::{ChunkTracker, Edit, UndoStack};
 
@@ -144,8 +146,9 @@ pub struct TabDocument {
     #[allow(dead_code)]
     pub id: usize,
     pub lines: Vec<String>,
+    pub buffer: TextBuffer,
     pub editor_state: EditorState,
-    pub last_snapshot: Arc<str>,
+    pub last_snapshot: Rope,
     pub undo_stack: UndoStack,
     pub file_path_input: String,
     pub current_file: Option<PathBuf>,
@@ -162,8 +165,9 @@ impl TabDocument {
         Self {
             id,
             lines: vec![String::new()],
+            buffer: TextBuffer::new(),
             editor_state: EditorState::default(),
-            last_snapshot: Arc::from(""),
+            last_snapshot: Rope::from_str(""),
             undo_stack: UndoStack::new(),
             file_path_input: String::new(),
             current_file: None,
@@ -197,13 +201,11 @@ impl TabDocument {
 }
 
 pub struct EditorApp {
-    // Buffer "vivo", partido en líneas — así el widget de edición
-    // solo tiene que tocar la línea que cambió, no reconstruir todo
-    // el texto en cada tecla (eso era lo que volvía lento a
-    // egui::TextEdit con archivos grandes).
+    // Buffer "vivo", partido en líneas para render y edición por franjas.
     pub lines: Vec<String>,
+    pub buffer: TextBuffer,
     pub editor_state: EditorState,
-    pub last_snapshot: Arc<str>, // texto en el último snapshot guardado (Arc compartido con UndoStack)
+    pub last_snapshot: Rope, // snapshot del buffer en Rope (Copy-On-Write O(1) con UndoStack)
     pub undo_stack: UndoStack,
     pub file_path_input: String,
     pub current_file: Option<PathBuf>,
@@ -295,8 +297,9 @@ impl Default for EditorApp {
     fn default() -> Self {
         EditorApp {
             lines: vec![String::new()],
+            buffer: TextBuffer::new(),
             editor_state: EditorState::default(),
-            last_snapshot: Arc::from(""),
+            last_snapshot: Rope::from_str(""),
             undo_stack: UndoStack::new(),
             file_path_input: String::new(),
             current_file: None,
@@ -365,8 +368,9 @@ impl EditorApp {
     pub fn sync_active_to_tab(&mut self) {
         if let Some(tab) = self.tabs.get_mut(self.active_tab) {
             tab.lines = self.lines.clone();
+            tab.buffer = self.buffer.clone();
             tab.editor_state = self.editor_state.clone();
-            tab.last_snapshot = Arc::clone(&self.last_snapshot);
+            tab.last_snapshot = self.last_snapshot.clone();
             tab.undo_stack = self.undo_stack.clone();
             tab.file_path_input = self.file_path_input.clone();
             tab.current_file = self.current_file.clone();
@@ -418,8 +422,9 @@ impl EditorApp {
         if let Some(tab) = self.tabs.get(idx) {
             self.active_tab = idx;
             self.lines = tab.lines.clone();
+            self.buffer = tab.buffer.clone();
             self.editor_state = tab.editor_state.clone();
-            self.last_snapshot = Arc::clone(&tab.last_snapshot);
+            self.last_snapshot = tab.last_snapshot.clone();
             self.undo_stack = tab.undo_stack.clone();
             self.file_path_input = tab.file_path_input.clone();
             self.current_file = tab.current_file.clone();
@@ -553,6 +558,7 @@ impl EditorApp {
     /// conserva: es contenido del texto, no un salto).
     pub fn set_text(&mut self, text: &str) {
         let text = text.replace("\r\n", "\n");
+        self.buffer.set_text(&text);
         self.lines = if text.is_empty() {
             vec![String::new()]
         } else {
@@ -603,11 +609,11 @@ impl EditorApp {
     /// S3: Registra un snapshot explícito para un texto dado. Si coincide
     /// con el último snapshot, no hace nada (evita pasos vacíos).
     pub fn snapshot_text(&mut self, text: &str) {
-        if text != &*self.last_snapshot {
-            let next_snapshot: Arc<str> = Arc::from(text);
+        let next_snapshot = Rope::from_str(text);
+        if next_snapshot != self.last_snapshot {
             self.undo_stack.push(Edit {
-                before: Arc::clone(&self.last_snapshot),
-                after: Arc::clone(&next_snapshot),
+                before: self.last_snapshot.clone(),
+                after: next_snapshot.clone(),
             });
             self.last_snapshot = next_snapshot;
             self.dirty = true;
@@ -654,9 +660,10 @@ impl EditorApp {
         self.snapshot_if_changed();
         self.chunk_tracker.reset();
         if let Some(edit) = self.undo_stack.undo() {
-            let text = Arc::clone(&edit.before);
+            let snap = edit.before.clone();
+            let text = snap.to_string();
             self.restore_text_keeping_view(&text);
-            self.last_snapshot = text;
+            self.last_snapshot = snap;
             self.status = "Deshecho".to_string();
         } else {
             self.status = "Nada para deshacer".to_string();
@@ -666,9 +673,10 @@ impl EditorApp {
     pub fn redo(&mut self) {
         self.chunk_tracker.reset();
         if let Some(edit) = self.undo_stack.redo() {
-            let text = Arc::clone(&edit.after);
+            let snap = edit.after.clone();
+            let text = snap.to_string();
             self.restore_text_keeping_view(&text);
-            self.last_snapshot = text;
+            self.last_snapshot = snap;
             self.status = "Rehecho".to_string();
         } else {
             self.status = "Nada para rehacer".to_string();
@@ -815,7 +823,7 @@ impl EditorApp {
         match Self::read_file(&path) {
             Ok((content, ending, mtime)) => {
                 self.set_text(&content);
-                self.last_snapshot = Arc::from(content.as_str());
+                self.last_snapshot = Rope::from_str(&content);
                 self.line_ending = ending;
                 self.last_disk_mtime = mtime;
                 self.external_changed = false;
@@ -1086,7 +1094,7 @@ impl EditorApp {
         self.current_file = None;
         self.file_path_input.clear();
         self.dirty = false;
-        self.last_snapshot = Arc::from("");
+        self.last_snapshot = Rope::from_str("");
         self.last_disk_mtime = None;
         self.line_ending = LineEnding::Lf;
         self.undo_stack = UndoStack::new();

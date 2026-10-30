@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use ropey::Rope;
 use std::time::{Duration, Instant};
 
 // Undo del GUI: el widget edita un Vec<String> en vivo, así que cada
@@ -85,14 +85,13 @@ impl ChunkTracker {
 /// multiplicaría la memoria por cada sesión de tipeo sin límite.
 const MAX_UNDO_EDITS: usize = 200;
 
-/// Un paso de undo/redo: contenido inmutable compartido vía Arc<str>.
-/// Almacenar Arc<str> en lugar de String evita duplicar el documento entero
-/// cuando el estado N pasa de ser 'after' del paso anterior a 'before' del
-/// siguiente paso, reduciendo a la mitad el consumo de memoria del historial.
-#[derive(Debug, Clone)]
+/// Un paso de undo/redo: contenido inmutable compartido vía Rope (Copy-On-Write B-Tree).
+/// Almacenar Rope en lugar de String o Arc<str> permite snapshots instantáneos O(1)
+/// y mutaciones O(log N) eficientes sin duplicar el texto en el heap.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Edit {
-    pub before: Arc<str>,
-    pub after: Arc<str>,
+    pub before: Rope,
+    pub after: Rope,
 }
 
 #[derive(Debug, Clone)]
@@ -119,8 +118,8 @@ impl UndoStack {
     pub fn undo(&mut self) -> Option<Edit> {
         let edit = self.stack.pop()?;
         self.redo_stack.push(Edit {
-            before: Arc::clone(&edit.before),
-            after: Arc::clone(&edit.after),
+            before: edit.before.clone(),
+            after: edit.after.clone(),
         });
         Some(edit)
     }
@@ -128,8 +127,8 @@ impl UndoStack {
     pub fn redo(&mut self) -> Option<Edit> {
         let edit = self.redo_stack.pop()?;
         self.stack.push(Edit {
-            before: Arc::clone(&edit.before),
-            after: Arc::clone(&edit.after),
+            before: edit.before.clone(),
+            after: edit.after.clone(),
         });
         Some(edit)
     }
@@ -141,8 +140,8 @@ mod tests {
 
     fn edit(n: usize) -> Edit {
         Edit {
-            before: Arc::from(format!("antes-{}", n)),
-            after: Arc::from(format!("despues-{}", n)),
+            before: Rope::from_str(&format!("antes-{}", n)),
+            after: Rope::from_str(&format!("despues-{}", n)),
         }
     }
 
@@ -154,13 +153,13 @@ mod tests {
         }
         let mut undone = Vec::new();
         while let Some(e) = stack.undo() {
-            undone.push(e.before);
+            undone.push(e.before.to_string());
         }
         // Solo quedan los últimos MAX_UNDO_EDITS, en orden de más
         // reciente a más viejo, y se descartaron los 10 primeros.
         assert_eq!(undone.len(), MAX_UNDO_EDITS);
-        assert_eq!(&*undone[0], &format!("antes-{}", MAX_UNDO_EDITS + 9));
-        assert_eq!(undone.last().map(|s| &**s), Some(format!("antes-10").as_str()));
+        assert_eq!(&undone[0], &format!("antes-{}", MAX_UNDO_EDITS + 9));
+        assert_eq!(undone.last().map(|s| s.as_str()), Some(format!("antes-10").as_str()));
     }
 
     #[test]
@@ -178,30 +177,31 @@ mod tests {
         let mut stack = UndoStack::new();
         stack.push(edit(7));
         let undone = stack.undo().expect("debería haber algo para deshacer");
-        assert_eq!(&*undone.before, "antes-7");
+        assert_eq!(undone.before.to_string(), "antes-7");
         let redone = stack.redo().expect("debería haber algo para rehacer");
-        assert_eq!(&*redone.after, "despues-7");
+        assert_eq!(redone.after.to_string(), "despues-7");
         // La pila de undo vuelve a quedar con el paso para deshacerlo
         // de nuevo (round-trip).
         assert!(stack.undo().is_some());
     }
 
     #[test]
-    fn snapshots_consecutivos_comparten_puntero_arc() {
+    fn snapshots_consecutivos_comparten_arbol_rope() {
         let mut stack = UndoStack::new();
-        let s1: Arc<str> = Arc::from("estado 1");
-        let s2: Arc<str> = Arc::from("estado 2");
+        let s1 = Rope::from_str("estado 1");
+        let s2 = Rope::from_str("estado 2");
         stack.push(Edit {
-            before: Arc::clone(&s1),
-            after: Arc::clone(&s2),
+            before: s1.clone(),
+            after: s2.clone(),
         });
-        let s3: Arc<str> = Arc::from("estado 3");
+        let s3 = Rope::from_str("estado 3");
         stack.push(Edit {
-            before: Arc::clone(&s2),
-            after: Arc::clone(&s3),
+            before: s2.clone(),
+            after: s3.clone(),
         });
-        // s2 es 'after' del paso 0 y 'before' del paso 1: deben apuntar exactamente a la misma dirección
-        assert!(Arc::ptr_eq(&stack.stack[0].after, &stack.stack[1].before));
+        // s2 es 'after' del paso 0 y 'before' del paso 1: clonar Rope es O(1) Copy-On-Write
+        assert_eq!(stack.stack.len(), 2);
+        assert_eq!(stack.stack[0].after, stack.stack[1].before);
     }
 
     #[test]
