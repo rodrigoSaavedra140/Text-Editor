@@ -111,6 +111,85 @@ pub struct LspLocation {
     pub range: LspRange,
 }
 
+/// A single text edit replacement in a document.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LspTextEdit {
+    pub range: LspRange,
+    #[serde(rename = "newText")]
+    pub new_text: String,
+}
+
+/// A workspace-wide edit across multiple documents.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct LspWorkspaceEdit {
+    pub changes: Option<HashMap<String, Vec<LspTextEdit>>>,
+    #[serde(rename = "documentChanges")]
+    pub document_changes: Option<Vec<Value>>,
+}
+
+impl LspWorkspaceEdit {
+    /// Extracts all file URI -> text edits mappings from `changes` and `documentChanges`.
+    pub fn all_changes(&self) -> HashMap<String, Vec<LspTextEdit>> {
+        let mut map = HashMap::new();
+        if let Some(ref changes) = self.changes {
+            for (uri, edits) in changes {
+                map.entry(uri.clone())
+                    .or_insert_with(Vec::new)
+                    .extend(edits.clone());
+            }
+        }
+        if let Some(ref doc_changes) = self.document_changes {
+            for doc_change in doc_changes {
+                if let Some(uri) = doc_change
+                    .get("textDocument")
+                    .and_then(|td| td.get("uri"))
+                    .and_then(|u| u.as_str())
+                {
+                    if let Some(edits_val) = doc_change.get("edits").and_then(|e| e.as_array()) {
+                        let parsed: Vec<LspTextEdit> = edits_val
+                            .iter()
+                            .filter_map(|e| serde_json::from_value::<LspTextEdit>(e.clone()).ok())
+                            .collect();
+                        map.entry(uri.to_string())
+                            .or_insert_with(Vec::new)
+                            .extend(parsed);
+                    }
+                }
+            }
+        }
+        map
+    }
+}
+
+/// A code action (quick-fix, refactoring, assist) returned by the language server.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LspCodeAction {
+    pub title: String,
+    pub kind: Option<String>,
+    pub edit: Option<LspWorkspaceEdit>,
+    #[serde(rename = "isPreferred")]
+    pub is_preferred: Option<bool>,
+}
+
+/// Kind of an inlay hint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum InlayHintKind {
+    Type = 1,
+    Parameter = 2,
+}
+
+/// An inlay hint displaying ghost annotations for types or parameter names.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LspInlayHint {
+    pub position: LspPosition,
+    pub label: String,
+    pub kind: Option<InlayHintKind>,
+    #[serde(rename = "paddingLeft")]
+    pub padding_left: Option<bool>,
+    #[serde(rename = "paddingRight")]
+    pub padding_right: Option<bool>,
+}
+
 /// Formats a JSON-RPC 2.0 request into raw LSP byte payload with `Content-Length`.
 pub fn format_request(id: u64, method: &str, params: Value) -> Vec<u8> {
     let msg = json!({
@@ -174,6 +253,8 @@ pub fn read_lsp_message<R: Read>(reader: &mut BufReader<R>) -> std::io::Result<O
 pub struct LspState {
     /// File URI -> diagnostics list
     pub diagnostics: HashMap<String, Vec<LspDiagnostic>>,
+    /// Pending requests mapping request ID -> method name
+    pub pending_requests: HashMap<u64, &'static str>,
     /// Pending responses keyed by request ID
     pub responses: HashMap<u64, Value>,
     /// Latest hover result
@@ -182,6 +263,12 @@ pub struct LspState {
     pub latest_definition: Option<LspLocation>,
     /// Latest completion list
     pub latest_completions: Vec<LspCompletionItem>,
+    /// Latest code actions
+    pub latest_code_actions: Vec<LspCodeAction>,
+    /// Latest inlay hints
+    pub latest_inlay_hints: Vec<LspInlayHint>,
+    /// Latest rename workspace edit
+    pub latest_rename_edit: Option<LspWorkspaceEdit>,
     /// Server initialization status
     pub is_initialized: bool,
 }
@@ -319,6 +406,29 @@ impl LspClient {
                     },
                     "publishDiagnostics": {
                         "relatedInformation": true
+                    },
+                    "codeAction": {
+                        "codeActionLiteralSupport": {
+                            "codeActionKind": {
+                                "valueSet": [
+                                    "",
+                                    "quickfix",
+                                    "refactor",
+                                    "refactor.extract",
+                                    "refactor.inline",
+                                    "refactor.rewrite",
+                                    "source",
+                                    "source.organizeImports"
+                                ]
+                            }
+                        },
+                        "isPreferredSupport": true
+                    },
+                    "inlayHint": {
+                        "dynamicRegistration": true
+                    },
+                    "rename": {
+                        "prepareSupport": false
                     }
                 }
             }
@@ -368,6 +478,9 @@ impl LspClient {
     /// Requests code completion at a given line and column.
     pub fn request_completion(&self, file_uri: &str, line: usize, character: usize) -> u64 {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        if let Ok(mut state) = self.state.write() {
+            state.pending_requests.insert(id, "completion");
+        }
         let params = json!({
             "textDocument": {
                 "uri": file_uri,
@@ -384,6 +497,9 @@ impl LspClient {
     /// Requests hover tooltip information at a given line and column.
     pub fn request_hover(&self, file_uri: &str, line: usize, character: usize) -> u64 {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        if let Ok(mut state) = self.state.write() {
+            state.pending_requests.insert(id, "hover");
+        }
         let params = json!({
             "textDocument": {
                 "uri": file_uri,
@@ -400,6 +516,9 @@ impl LspClient {
     /// Requests Go to Definition for a symbol at a given line and column.
     pub fn request_definition(&self, file_uri: &str, line: usize, character: usize) -> u64 {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        if let Ok(mut state) = self.state.write() {
+            state.pending_requests.insert(id, "definition");
+        }
         let params = json!({
             "textDocument": {
                 "uri": file_uri,
@@ -411,6 +530,111 @@ impl LspClient {
         });
         self.send_raw(format_request(id, "textDocument/definition", params));
         id
+    }
+
+    /// Requests code actions for a file URI, range, and diagnostics context.
+    pub fn request_code_actions(
+        &self,
+        file_uri: &str,
+        range: LspRange,
+        diagnostics: &[LspDiagnostic],
+    ) -> u64 {
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        if let Ok(mut state) = self.state.write() {
+            state.pending_requests.insert(id, "code_action");
+        }
+        let diags_val = serde_json::to_value(diagnostics).unwrap_or_else(|_| json!([]));
+        let params = json!({
+            "textDocument": {
+                "uri": file_uri,
+            },
+            "range": range,
+            "context": {
+                "diagnostics": diags_val,
+            }
+        });
+        self.send_raw(format_request(id, "textDocument/codeAction", params));
+        id
+    }
+
+    /// Consumes and returns the latest code actions list if available.
+    pub fn take_latest_code_actions(&self) -> Vec<LspCodeAction> {
+        self.state
+            .write()
+            .ok()
+            .map(|mut s| std::mem::take(&mut s.latest_code_actions))
+            .unwrap_or_default()
+    }
+
+    /// Injects mock code actions directly (used by unit tests).
+    pub fn set_mock_code_actions(&self, actions: Vec<LspCodeAction>) {
+        if let Ok(mut state) = self.state.write() {
+            state.latest_code_actions = actions;
+        }
+    }
+
+    /// Requests inlay hints for a given file URI and visible line range.
+    pub fn request_inlay_hints(&self, file_uri: &str, range: LspRange) -> u64 {
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        if let Ok(mut state) = self.state.write() {
+            state.pending_requests.insert(id, "inlay_hint");
+        }
+        let params = json!({
+            "textDocument": {
+                "uri": file_uri,
+            },
+            "range": range,
+        });
+        self.send_raw(format_request(id, "textDocument/inlayHint", params));
+        id
+    }
+
+    /// Consumes and returns the latest inlay hints if available.
+    pub fn take_latest_inlay_hints(&self) -> Vec<LspInlayHint> {
+        self.state
+            .write()
+            .ok()
+            .map(|mut s| std::mem::take(&mut s.latest_inlay_hints))
+            .unwrap_or_default()
+    }
+
+    /// Injects mock inlay hints directly (used by unit tests).
+    pub fn set_mock_inlay_hints(&self, hints: Vec<LspInlayHint>) {
+        if let Ok(mut state) = self.state.write() {
+            state.latest_inlay_hints = hints;
+        }
+    }
+
+    /// Requests workspace rename of a symbol at the given position.
+    pub fn request_rename(&self, file_uri: &str, position: LspPosition, new_name: &str) -> u64 {
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        if let Ok(mut state) = self.state.write() {
+            state.pending_requests.insert(id, "rename");
+        }
+        let params = json!({
+            "textDocument": {
+                "uri": file_uri,
+            },
+            "position": position,
+            "newName": new_name,
+        });
+        self.send_raw(format_request(id, "textDocument/rename", params));
+        id
+    }
+
+    /// Consumes and returns the latest rename workspace edit if available.
+    pub fn take_latest_rename(&self) -> Option<LspWorkspaceEdit> {
+        self.state
+            .write()
+            .ok()
+            .and_then(|mut s| s.latest_rename_edit.take())
+    }
+
+    /// Injects mock rename workspace edit directly (used by unit tests).
+    pub fn set_mock_rename(&self, edit: LspWorkspaceEdit) {
+        if let Ok(mut state) = self.state.write() {
+            state.latest_rename_edit = Some(edit);
+        }
     }
 
     /// Retrieves latest Go to Definition location if available.
@@ -503,66 +727,67 @@ impl LspClient {
         if let Some(id) = val.get("id").and_then(|i| i.as_u64()) {
             if let Some(result) = val.get("result") {
                 if let Ok(mut state) = state_lock.write() {
-                    // Check if it's hover response
-                    if let Some(contents) = result.get("contents") {
-                        let text = if let Some(s) = contents.as_str() {
-                            s.to_string()
-                        } else if let Some(val_str) = contents.get("value").and_then(|v| v.as_str()) {
-                            val_str.to_string()
-                        } else {
-                            contents.to_string()
-                        };
-                        state.latest_hover = Some(LspHover {
-                            contents: text,
-                            range: result
-                                .get("range")
-                                .and_then(|r| serde_json::from_value::<LspRange>(r.clone()).ok()),
-                        });
-                    }
+                    let req_type = state.pending_requests.remove(&id);
 
-                    // Check if it's completion response
-                    let items_opt = if let Some(arr) = result.as_array() {
-                        Some(arr)
-                    } else {
-                        result.get("items").and_then(|i| i.as_array())
-                    };
-
-                    if let Some(items) = items_opt {
-                        let parsed_items: Vec<LspCompletionItem> = items
-                            .iter()
-                            .filter_map(|item| {
-                                let label = item.get("label")?.as_str()?.to_string();
-                                let kind = item.get("kind").and_then(|k| k.as_u64()).map(|k| k as usize);
-                                let detail = item.get("detail").and_then(|d| d.as_str()).map(|d| d.to_string());
-                                let documentation = item
-                                    .get("documentation")
-                                    .and_then(|d| {
-                                        if let Some(s) = d.as_str() {
-                                            Some(s.to_string())
-                                        } else {
-                                            d.get("value").and_then(|v| v.as_str()).map(|s| s.to_string())
-                                        }
-                                    });
-                                let insert_text = item
-                                    .get("insertText")
-                                    .and_then(|it| it.as_str())
-                                    .map(|it| it.to_string());
-
-                                Some(LspCompletionItem {
-                                    label,
-                                    kind,
-                                    detail,
-                                    documentation,
-                                    insert_text,
-                                })
-                            })
-                            .collect();
-                        state.latest_completions = parsed_items;
-                    }
-
-                    // Check if it's definition response
-                    if let Some(target) = parse_definition_result(result) {
-                        state.latest_definition = Some(target);
+                    match req_type {
+                        Some("code_action") => {
+                            if let Some(arr) = result.as_array() {
+                                state.latest_code_actions = parse_code_actions_result(arr);
+                            }
+                        }
+                        Some("inlay_hint") => {
+                            if let Some(arr) = result.as_array() {
+                                state.latest_inlay_hints = parse_inlay_hints_result(arr);
+                            }
+                        }
+                        Some("rename") => {
+                            if let Ok(edit) =
+                                serde_json::from_value::<LspWorkspaceEdit>(result.clone())
+                            {
+                                state.latest_rename_edit = Some(edit);
+                            }
+                        }
+                        Some("hover") => {
+                            if let Some(hover) = parse_hover_result(result) {
+                                state.latest_hover = Some(hover);
+                            }
+                        }
+                        Some("definition") => {
+                            if let Some(target) = parse_definition_result(result) {
+                                state.latest_definition = Some(target);
+                            }
+                        }
+                        Some("completion") => {
+                            if let Some(items) = parse_completion_result(result) {
+                                state.latest_completions = items;
+                            }
+                        }
+                        _ => {
+                            // Fallback heuristic for untracked requests / tests
+                            if let Some(hover) = parse_hover_result(result) {
+                                state.latest_hover = Some(hover);
+                            } else if let Some(target) = parse_definition_result(result) {
+                                state.latest_definition = Some(target);
+                            } else if let Ok(edit) =
+                                serde_json::from_value::<LspWorkspaceEdit>(result.clone())
+                            {
+                                if edit.changes.is_some() || edit.document_changes.is_some() {
+                                    state.latest_rename_edit = Some(edit);
+                                }
+                            } else if let Some(arr) = result.as_array() {
+                                if arr.first().and_then(|x| x.get("title")).is_some() {
+                                    state.latest_code_actions = parse_code_actions_result(arr);
+                                } else if arr.first().and_then(|x| x.get("label")).is_some()
+                                    && arr.first().and_then(|x| x.get("position")).is_some()
+                                {
+                                    state.latest_inlay_hints = parse_inlay_hints_result(arr);
+                                } else if let Some(items) = parse_completion_result(result) {
+                                    state.latest_completions = items;
+                                }
+                            } else if let Some(items) = parse_completion_result(result) {
+                                state.latest_completions = items;
+                            }
+                        }
                     }
 
                     state.responses.insert(id, result.clone());
@@ -570,6 +795,126 @@ impl LspClient {
             }
         }
     }
+}
+
+fn parse_code_actions_result(arr: &[Value]) -> Vec<LspCodeAction> {
+    arr.iter()
+        .filter_map(|item| {
+            let title = item.get("title")?.as_str()?.to_string();
+            let kind = item
+                .get("kind")
+                .and_then(|k| k.as_str())
+                .map(|k| k.to_string());
+            let is_preferred = item.get("isPreferred").and_then(|p| p.as_bool());
+            let edit = item
+                .get("edit")
+                .and_then(|e| serde_json::from_value::<LspWorkspaceEdit>(e.clone()).ok());
+            Some(LspCodeAction {
+                title,
+                kind,
+                edit,
+                is_preferred,
+            })
+        })
+        .collect()
+}
+
+fn parse_inlay_hints_result(arr: &[Value]) -> Vec<LspInlayHint> {
+    arr.iter()
+        .filter_map(|item| {
+            let pos_val = item.get("position")?;
+            let position = serde_json::from_value::<LspPosition>(pos_val.clone()).ok()?;
+            let label = if let Some(s) = item.get("label").and_then(|l| l.as_str()) {
+                s.to_string()
+            } else if let Some(parts) = item.get("label").and_then(|l| l.as_array()) {
+                parts
+                    .iter()
+                    .filter_map(|p| p.get("value").and_then(|v| v.as_str()))
+                    .collect::<Vec<_>>()
+                    .join("")
+            } else {
+                return None;
+            };
+            let kind = item.get("kind").and_then(|k| k.as_u64()).map(|k| match k {
+                1 => InlayHintKind::Type,
+                2 => InlayHintKind::Parameter,
+                _ => InlayHintKind::Type,
+            });
+            let padding_left = item.get("paddingLeft").and_then(|p| p.as_bool());
+            let padding_right = item.get("paddingRight").and_then(|p| p.as_bool());
+
+            Some(LspInlayHint {
+                position,
+                label,
+                kind,
+                padding_left,
+                padding_right,
+            })
+        })
+        .collect()
+}
+
+fn parse_hover_result(result: &Value) -> Option<LspHover> {
+    let contents = result.get("contents")?;
+    let text = if let Some(s) = contents.as_str() {
+        s.to_string()
+    } else if let Some(val_str) = contents.get("value").and_then(|v| v.as_str()) {
+        val_str.to_string()
+    } else {
+        contents.to_string()
+    };
+    let range = result
+        .get("range")
+        .and_then(|r| serde_json::from_value::<LspRange>(r.clone()).ok());
+    Some(LspHover {
+        contents: text,
+        range,
+    })
+}
+
+fn parse_completion_result(result: &Value) -> Option<Vec<LspCompletionItem>> {
+    let items_opt = if let Some(arr) = result.as_array() {
+        Some(arr)
+    } else {
+        result.get("items").and_then(|i| i.as_array())
+    }?;
+
+    let parsed_items: Vec<LspCompletionItem> = items_opt
+        .iter()
+        .filter_map(|item| {
+            let label = item.get("label")?.as_str()?.to_string();
+            let kind = item
+                .get("kind")
+                .and_then(|k| k.as_u64())
+                .map(|k| k as usize);
+            let detail = item
+                .get("detail")
+                .and_then(|d| d.as_str())
+                .map(|d| d.to_string());
+            let documentation = item.get("documentation").and_then(|d| {
+                if let Some(s) = d.as_str() {
+                    Some(s.to_string())
+                } else {
+                    d.get("value")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                }
+            });
+            let insert_text = item
+                .get("insertText")
+                .and_then(|it| it.as_str())
+                .map(|it| it.to_string());
+
+            Some(LspCompletionItem {
+                label,
+                kind,
+                detail,
+                documentation,
+                insert_text,
+            })
+        })
+        .collect();
+    Some(parsed_items)
 }
 
 fn parse_definition_result(result: &Value) -> Option<LspLocation> {
@@ -736,5 +1081,120 @@ mod tests {
         assert_eq!(def.range.start.line, 42);
         assert_eq!(def.range.start.character, 7);
         assert!(client.latest_definition().is_none(), "take should consume it");
+    }
+
+    #[test]
+    fn test_inbound_code_action_and_workspace_edit() {
+        let client = LspClient::mock();
+
+        let req_id = client.request_code_actions(
+            "file:///src/main.rs",
+            LspRange {
+                start: LspPosition { line: 10, character: 5 },
+                end: LspPosition { line: 10, character: 15 },
+            },
+            &[],
+        );
+
+        let code_action_resp = json!({
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": [
+                {
+                    "title": "Import `std::collections::HashMap`",
+                    "kind": "quickfix",
+                    "isPreferred": true,
+                    "edit": {
+                        "changes": {
+                            "file:///src/main.rs": [
+                                {
+                                    "range": {
+                                        "start": { "line": 0, "character": 0 },
+                                        "end": { "line": 0, "character": 0 }
+                                    },
+                                    "newText": "use std::collections::HashMap;\n"
+                                }
+                            ]
+                        }
+                    }
+                }
+            ]
+        });
+
+        LspClient::handle_inbound_message(&client.state, &code_action_resp.to_string());
+        let actions = client.take_latest_code_actions();
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].title, "Import `std::collections::HashMap`");
+        assert_eq!(actions[0].kind.as_deref(), Some("quickfix"));
+        assert_eq!(actions[0].is_preferred, Some(true));
+
+        let edit = actions[0].edit.as_ref().expect("should have workspace edit");
+        let all_changes = edit.all_changes();
+        let main_edits = all_changes.get("file:///src/main.rs").expect("should have edits for file");
+        assert_eq!(main_edits.len(), 1);
+        assert_eq!(main_edits[0].new_text, "use std::collections::HashMap;\n");
+    }
+
+    #[test]
+    fn test_inbound_inlay_hint_and_rename() {
+        let client = LspClient::mock();
+
+        let hint_id = client.request_inlay_hints(
+            "file:///src/main.rs",
+            LspRange {
+                start: LspPosition { line: 0, character: 0 },
+                end: LspPosition { line: 50, character: 0 },
+            },
+        );
+
+        let hint_resp = json!({
+            "jsonrpc": "2.0",
+            "id": hint_id,
+            "result": [
+                {
+                    "position": { "line": 5, "character": 12 },
+                    "label": ": i32",
+                    "kind": 1,
+                    "paddingLeft": true,
+                    "paddingRight": false
+                }
+            ]
+        });
+
+        LspClient::handle_inbound_message(&client.state, &hint_resp.to_string());
+        let hints = client.take_latest_inlay_hints();
+        assert_eq!(hints.len(), 1);
+        assert_eq!(hints[0].label, ": i32");
+        assert_eq!(hints[0].kind, Some(InlayHintKind::Type));
+        assert_eq!(hints[0].padding_left, Some(true));
+
+        let rename_id = client.request_rename(
+            "file:///src/main.rs",
+            LspPosition { line: 5, character: 10 },
+            "new_identifier",
+        );
+
+        let rename_resp = json!({
+            "jsonrpc": "2.0",
+            "id": rename_id,
+            "result": {
+                "changes": {
+                    "file:///src/main.rs": [
+                        {
+                            "range": {
+                                "start": { "line": 5, "character": 8 },
+                                "end": { "line": 5, "character": 12 }
+                            },
+                            "newText": "new_identifier"
+                        }
+                    ]
+                }
+            }
+        });
+
+        LspClient::handle_inbound_message(&client.state, &rename_resp.to_string());
+        let rename_edit = client.take_latest_rename().expect("should have rename edit");
+        let changes = rename_edit.all_changes();
+        assert_eq!(changes["file:///src/main.rs"][0].new_text, "new_identifier");
     }
 }

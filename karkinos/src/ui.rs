@@ -378,6 +378,118 @@ impl EditorApp {
         }
     }
 
+    /// S4 (Rust IDE): Modal popup for Quick Fixes & Code Actions (Ctrl+. / Alt+Enter)
+    fn show_code_actions_modal(&mut self, ctx: &egui::Context) {
+        if !self.code_actions_menu_open {
+            return;
+        }
+
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.code_actions_menu_open = false;
+            return;
+        }
+
+        let mut applied_action = None;
+        let mut close_modal = false;
+
+        egui::Window::new("💡 Quick Fix / Code Actions (Ctrl+.)")
+            .collapsible(false)
+            .resizable(false)
+            .default_width(420.0)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                if self.code_actions.is_empty() {
+                    ui.label("No quick fixes or assists available at cursor.");
+                    ui.add_space(8.0);
+                    if ui.button("Close (Esc)").clicked() {
+                        close_modal = true;
+                    }
+                } else {
+                    ui.label(egui::RichText::new("Select an assist to apply:").small());
+                    ui.add_space(4.0);
+
+                    egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
+                        for (idx, action) in self.code_actions.iter().enumerate() {
+                            let is_pref = if action.is_preferred == Some(true) { "★ " } else { "" };
+                            let kind_badge = action.kind.as_deref().unwrap_or("assist");
+                            let text = format!("{}[{}] {}", is_pref, kind_badge, action.title);
+
+                            if ui
+                                .add_sized([ui.available_width(), 26.0], egui::Button::new(text))
+                                .clicked()
+                            {
+                                applied_action = Some(idx);
+                            }
+                        }
+                    });
+
+                    ui.separator();
+                    if ui.button("Cancel (Esc)").clicked() {
+                        close_modal = true;
+                    }
+                }
+            });
+
+        if let Some(idx) = applied_action {
+            self.apply_code_action(idx);
+        } else if close_modal {
+            self.code_actions_menu_open = false;
+        }
+    }
+
+    /// S4 (Rust IDE): Modal dialog for symbol renaming (F2)
+    fn show_rename_dialog(&mut self, ctx: &egui::Context) {
+        if !self.rename_dialog_open {
+            return;
+        }
+
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.rename_dialog_open = false;
+            return;
+        }
+
+        let mut apply = false;
+        let mut cancel = false;
+
+        egui::Window::new("✏ Rename Symbol (F2)")
+            .collapsible(false)
+            .resizable(false)
+            .default_width(380.0)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.label("Enter new name for symbol:");
+                ui.add_space(4.0);
+
+                let field = ui.add_sized(
+                    [ui.available_width(), 24.0],
+                    egui::TextEdit::singleline(&mut self.rename_input).hint_text("New symbol name"),
+                );
+                field.request_focus();
+
+                if field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    apply = true;
+                }
+
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Rename").clicked() {
+                        apply = true;
+                    }
+                    if ui.button("Cancel (Esc)").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+
+        if cancel {
+            self.rename_dialog_open = false;
+        } else if apply {
+            let name = self.rename_input.clone();
+            self.rename_dialog_open = false;
+            self.request_rename(&name);
+        }
+    }
+
     /// Cierre de ventana con puertas de datos: si hay cambios sin
     /// guardar (en la pestaña activa o en cualquier otra) o un guardado
     /// en pleno vuelo, NO cierra nada — planta el diálogo S1 y, si el cierre
@@ -1274,13 +1386,24 @@ impl eframe::App for EditorApp {
         if want_redo {
             self.redo();
         }
-        let (want_cargo_check, want_cargo_run, want_cargo_toggle, want_goto_def, want_hover) = ctx.input(|i| {
+        let (
+            want_cargo_check,
+            want_cargo_run,
+            want_cargo_toggle,
+            want_goto_def,
+            want_hover,
+            want_code_action,
+            want_rename,
+        ) = ctx.input(|i| {
             (
                 i.key_pressed(egui::Key::F7),
                 i.key_pressed(egui::Key::F5),
                 i.modifiers.ctrl && i.key_pressed(egui::Key::Backslash),
                 i.key_pressed(egui::Key::F12),
                 i.key_pressed(egui::Key::F1) || (i.modifiers.ctrl && i.key_pressed(egui::Key::K)),
+                (i.modifiers.ctrl && i.key_pressed(egui::Key::Period))
+                    || (i.modifiers.alt && i.key_pressed(egui::Key::Enter)),
+                i.key_pressed(egui::Key::F2),
             )
         });
         if want_cargo_check {
@@ -1297,6 +1420,13 @@ impl eframe::App for EditorApp {
         }
         if want_hover {
             self.request_hover();
+        }
+        if want_code_action {
+            self.request_code_actions();
+        }
+        if want_rename {
+            self.rename_input.clear();
+            self.rename_dialog_open = true;
         }
         if want_quit {
             self.try_close(ctx);
@@ -1724,6 +1854,10 @@ impl eframe::App for EditorApp {
         self.show_save_name_dialog(ctx);
         // Diálogo modal para explorar y gestionar extensiones para la comunidad.
         self.show_extensions_dialog(ctx);
+        // S4 (Rust IDE): Quick Fix / Code Actions (Ctrl+.)
+        self.show_code_actions_modal(ctx);
+        // S4 (Rust IDE): Symbol Rename (F2)
+        self.show_rename_dialog(ctx);
     }
 }
 

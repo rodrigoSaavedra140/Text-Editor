@@ -154,6 +154,46 @@ impl Document {
         Some(self.buffer.to_string())
     }
 
+    /// Applies a set of LSP text edits transactionally with undo support.
+    /// Edits are sorted in descending document position order before application.
+    pub fn apply_text_edits(&mut self, edits: &[crate::lsp::LspTextEdit]) {
+        if edits.is_empty() {
+            return;
+        }
+        self.snapshot_if_changed();
+        let mut sorted = edits.to_vec();
+        sorted.sort_by(|a, b| {
+            (b.range.start.line, b.range.start.character)
+                .cmp(&(a.range.start.line, a.range.start.character))
+        });
+
+        for edit in sorted {
+            let start_char = self
+                .buffer
+                .line_col_to_char(edit.range.start.line, edit.range.start.character);
+            let end_char = self
+                .buffer
+                .line_col_to_char(edit.range.end.line, edit.range.end.character);
+
+            if start_char < end_char {
+                self.buffer.remove(start_char..end_char);
+            }
+            if !edit.new_text.is_empty() {
+                self.buffer.insert(start_char, &edit.new_text);
+            }
+        }
+
+        self.recalc_view_bytes();
+        self.update_ast();
+        self.dirty = true;
+        self.snapshot_if_changed();
+
+        if let (Some(client), Some(path)) = (&self.lsp_client, &self.file_path) {
+            let uri = format!("file://{}", path.display());
+            client.did_change(&uri, 2, &self.buffer.to_string());
+        }
+    }
+
     /// Returns a user-friendly display title for tabs and window titles.
     pub fn display_title(&self) -> String {
         let name = if let Some(ref p) = self.file_path {
@@ -261,5 +301,42 @@ mod tests {
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].message, "cannot find value `x` in this scope");
         assert_eq!(diags[0].severity, Some(DiagnosticSeverity::Error));
+    }
+
+    #[test]
+    fn test_document_apply_text_edits() {
+        use crate::lsp::{LspPosition, LspRange, LspTextEdit};
+
+        let mut doc = Document::new(4);
+        doc.set_text("fn main() {\n    let a = 1;\n    let b = 2;\n}\n");
+
+        // Apply two edits: add an import at the top, and change `let b = 2` to `let b = 42`
+        let edits = vec![
+            LspTextEdit {
+                range: LspRange {
+                    start: LspPosition { line: 0, character: 0 },
+                    end: LspPosition { line: 0, character: 0 },
+                },
+                new_text: "use std::io;\n".to_string(),
+            },
+            LspTextEdit {
+                range: LspRange {
+                    start: LspPosition { line: 2, character: 12 },
+                    end: LspPosition { line: 2, character: 13 },
+                },
+                new_text: "42".to_string(),
+            },
+        ];
+
+        doc.apply_text_edits(&edits);
+        let text = doc.buffer.to_string();
+        assert!(text.starts_with("use std::io;\nfn main()"));
+        assert!(text.contains("let b = 42;"));
+        assert!(doc.dirty);
+
+        // Undo should restore previous state
+        doc.undo();
+        let restored = doc.buffer.to_string();
+        assert_eq!(restored, "fn main() {\n    let a = 1;\n    let b = 2;\n}\n");
     }
 }

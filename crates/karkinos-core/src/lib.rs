@@ -23,8 +23,8 @@ pub use cargo::{CargoAction, CargoDiagnostic, CargoOutputLine, CargoRunner, Carg
 pub use document::Document;
 pub use ending::{default_new_file_path, detect_line_ending, serialize_line_ending, LineEnding};
 pub use lsp::{
-    DiagnosticSeverity, LspClient, LspCompletionItem, LspDiagnostic, LspHover, LspLocation,
-    LspPosition, LspRange,
+    DiagnosticSeverity, InlayHintKind, LspClient, LspCodeAction, LspCompletionItem, LspDiagnostic,
+    LspHover, LspInlayHint, LspLocation, LspPosition, LspRange, LspTextEdit, LspWorkspaceEdit,
 };
 pub use open_vsx::{OpenVsxClient, OpenVsxExtension, OpenVsxSearchResult};
 pub use plugin::{Plugin, PluginCommand, PluginContext, PluginManager};

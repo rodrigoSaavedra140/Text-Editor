@@ -306,6 +306,11 @@ pub struct EditorApp {
     pub cargo_runner: karkinos_core::cargo::CargoRunner,
     pub cargo_panel_open: bool,
     pub cargo_active_tab: usize,
+    // S4 (Rust IDE): Code Actions, Inlay Hints & Rename
+    pub code_actions: Vec<karkinos_core::lsp::LspCodeAction>,
+    pub code_actions_menu_open: bool,
+    pub rename_dialog_open: bool,
+    pub rename_input: String,
 }
 
 impl Default for EditorApp {
@@ -370,6 +375,10 @@ impl Default for EditorApp {
             cargo_runner: karkinos_core::cargo::CargoRunner::new(),
             cargo_panel_open: false,
             cargo_active_tab: 0,
+            code_actions: Vec::new(),
+            code_actions_menu_open: false,
+            rename_dialog_open: false,
+            rename_input: String::new(),
         }
     }
 }
@@ -692,6 +701,15 @@ impl EditorApp {
                 self.editor_state.hover_text = Some(diag.message.clone());
                 self.status = format!("LSP: {}", diag.message);
             }
+
+            let line_count = self.lines.len();
+            client.request_inlay_hints(
+                &uri,
+                karkinos_core::lsp::LspRange {
+                    start: karkinos_core::lsp::LspPosition { line: 0, character: 0 },
+                    end: karkinos_core::lsp::LspPosition { line: line_count, character: 0 },
+                },
+            );
         }
     }
 
@@ -768,12 +786,18 @@ impl EditorApp {
         }
     }
 
-    /// S2 (Rust IDE): Chequea y procesa respuestas entrantes de Go to Definition y Hover
+    /// S2 (Rust IDE): Chequea y procesa respuestas entrantes de Go to Definition, Hover, Code Actions, Inlay Hints y Rename
     pub fn poll_lsp_results(&mut self) {
-        let (target, hover) = if let Some(ref client) = self.lsp_client {
-            (client.take_latest_definition(), client.take_latest_hover())
+        let (target, hover, actions, hints, rename) = if let Some(ref client) = self.lsp_client {
+            (
+                client.take_latest_definition(),
+                client.take_latest_hover(),
+                client.take_latest_code_actions(),
+                client.take_latest_inlay_hints(),
+                client.take_latest_rename(),
+            )
         } else {
-            (None, None)
+            (None, None, Vec::new(), Vec::new(), None)
         };
 
         if let Some(target) = target {
@@ -790,6 +814,202 @@ impl EditorApp {
             self.status = format!("Docs: {}", first_line.trim());
             self.editor_state.hover_text = Some(hover.contents);
         }
+
+        if !actions.is_empty() {
+            self.code_actions = actions;
+            self.code_actions_menu_open = true;
+            self.status = format!("Found {} code actions (Ctrl+.)", self.code_actions.len());
+        }
+
+        if !hints.is_empty() {
+            self.editor_state.inlay_hints = hints;
+        }
+
+        if let Some(rename_edit) = rename {
+            self.apply_workspace_edit(&rename_edit);
+        }
+    }
+
+    /// Requests code actions (quick-fixes, auto-imports) for current cursor position and diagnostics.
+    pub fn request_code_actions(&mut self) {
+        if self.current_language() != crate::syntax::Language::Rust {
+            return;
+        }
+        if let (Some(ref client), Some(ref path)) = (&self.lsp_client, &self.current_file) {
+            let uri = format!("file://{}", path.display());
+            let range = karkinos_core::lsp::LspRange {
+                start: karkinos_core::lsp::LspPosition {
+                    line: self.editor_state.cursor_line,
+                    character: self.editor_state.cursor_col,
+                },
+                end: karkinos_core::lsp::LspPosition {
+                    line: self.editor_state.cursor_line,
+                    character: self.editor_state.cursor_col,
+                },
+            };
+            let diags = self.editor_state.diagnostics.clone();
+            client.request_code_actions(&uri, range, &diags);
+            self.status = "Querying code actions (Ctrl+.)…".to_string();
+        }
+    }
+
+    /// Applies the code action at the specified index.
+    pub fn apply_code_action(&mut self, action_idx: usize) {
+        if action_idx >= self.code_actions.len() {
+            return;
+        }
+        let action = self.code_actions[action_idx].clone();
+        if let Some(ref edit) = action.edit {
+            self.apply_workspace_edit(edit);
+            self.status = format!("Applied: {}", action.title);
+        }
+        self.code_actions_menu_open = false;
+        self.code_actions.clear();
+    }
+
+    /// Requests inlay hints for the current buffer.
+    #[allow(dead_code)]
+    pub fn request_inlay_hints(&mut self) {
+        if self.current_language() != crate::syntax::Language::Rust {
+            return;
+        }
+        if let (Some(ref client), Some(ref path)) = (&self.lsp_client, &self.current_file) {
+            let uri = format!("file://{}", path.display());
+            let line_count = self.lines.len();
+            let range = karkinos_core::lsp::LspRange {
+                start: karkinos_core::lsp::LspPosition { line: 0, character: 0 },
+                end: karkinos_core::lsp::LspPosition { line: line_count, character: 0 },
+            };
+            client.request_inlay_hints(&uri, range);
+        }
+    }
+
+    /// Requests workspace rename of symbol at cursor.
+    pub fn request_rename(&mut self, new_name: &str) {
+        if self.current_language() != crate::syntax::Language::Rust || new_name.trim().is_empty() {
+            return;
+        }
+        if let (Some(ref client), Some(ref path)) = (&self.lsp_client, &self.current_file) {
+            let uri = format!("file://{}", path.display());
+            let pos = karkinos_core::lsp::LspPosition {
+                line: self.editor_state.cursor_line,
+                character: self.editor_state.cursor_col,
+            };
+            client.request_rename(&uri, pos, new_name.trim());
+            self.status = format!("Renaming symbol to '{}'...", new_name.trim());
+        }
+    }
+
+    /// Applies LSP text edits to the active editor buffer and updates lines and AST.
+    pub fn apply_text_edits_to_active(&mut self, edits: &[karkinos_core::lsp::LspTextEdit]) {
+        if edits.is_empty() {
+            return;
+        }
+        self.snapshot_if_changed();
+        let mut sorted = edits.to_vec();
+        sorted.sort_by(|a, b| {
+            (b.range.start.line, b.range.start.character)
+                .cmp(&(a.range.start.line, a.range.start.character))
+        });
+
+        for edit in sorted {
+            let start_char = self
+                .buffer
+                .line_col_to_char(edit.range.start.line, edit.range.start.character);
+            let end_char = self
+                .buffer
+                .line_col_to_char(edit.range.end.line, edit.range.end.character);
+
+            if start_char < end_char {
+                self.buffer.remove(start_char..end_char);
+            }
+            if !edit.new_text.is_empty() {
+                self.buffer.insert(start_char, &edit.new_text);
+            }
+        }
+
+        let full_text = self.buffer.to_string();
+        self.lines = full_text.split('\n').map(|s| s.to_string()).collect();
+        if self.lines.is_empty() {
+            self.lines.push(String::new());
+        }
+        self.recalc_view_bytes();
+        self.dirty = true;
+        self.snapshot_if_changed();
+        self.update_ast();
+        self.update_lsp();
+    }
+
+    /// Applies LSP text edits to a specific open tab.
+    pub fn apply_text_edits_to_tab(&mut self, tab_idx: usize, edits: &[karkinos_core::lsp::LspTextEdit]) {
+        if let Some(tab) = self.tabs.get_mut(tab_idx) {
+            let mut sorted = edits.to_vec();
+            sorted.sort_by(|a, b| {
+                (b.range.start.line, b.range.start.character)
+                    .cmp(&(a.range.start.line, a.range.start.character))
+            });
+
+            for edit in sorted {
+                let start_char = tab
+                    .buffer
+                    .line_col_to_char(edit.range.start.line, edit.range.start.character);
+                let end_char = tab
+                    .buffer
+                    .line_col_to_char(edit.range.end.line, edit.range.end.character);
+
+                if start_char < end_char {
+                    tab.buffer.remove(start_char..end_char);
+                }
+                if !edit.new_text.is_empty() {
+                    tab.buffer.insert(start_char, &edit.new_text);
+                }
+            }
+            let full_text = tab.buffer.to_string();
+            tab.lines = full_text.split('\n').map(|s| s.to_string()).collect();
+            if tab.lines.is_empty() {
+                tab.lines.push(String::new());
+            }
+            tab.dirty = true;
+            tab.view_bytes = tab.buffer.len_bytes();
+        }
+    }
+
+    /// Applies a workspace edit across open tabs and/or disk files.
+    pub fn apply_workspace_edit(&mut self, edit: &karkinos_core::lsp::LspWorkspaceEdit) {
+        let changes = edit.all_changes();
+        let mut affected_files = 0;
+        for (uri, edits) in changes {
+            let file_path = PathBuf::from(uri.trim_start_matches("file://"));
+
+            // Check if it's the current file
+            let is_current = self.current_file.as_ref().map(|p| p == &file_path).unwrap_or(false);
+            if is_current {
+                self.apply_text_edits_to_active(&edits);
+                affected_files += 1;
+                continue;
+            }
+
+            // Check if it matches an open tab
+            let mut found_tab = false;
+            for (idx, tab) in self.tabs.iter().enumerate() {
+                if tab.current_file.as_ref().map(|p| p == &file_path).unwrap_or(false) {
+                    self.apply_text_edits_to_tab(idx, &edits);
+                    found_tab = true;
+                    affected_files += 1;
+                    break;
+                }
+            }
+
+            // If not open, apply to file on disk
+            if !found_tab && file_path.exists() {
+                if let Ok(mut doc) = karkinos_core::Document::load_from_file(999, &file_path) {
+                    doc.apply_text_edits(&edits);
+                    let _ = std::fs::write(&file_path, doc.text_with_line_ending());
+                    affected_files += 1;
+                }
+            }
+        }
+        self.status = format!("Applied edits across {} file(s)", affected_files);
     }
 
     /// S3 (Rust IDE): Triggers an asynchronous search on Open VSX
@@ -2428,5 +2648,104 @@ mod tests {
         // Buffer with HTML -> Autodetects Html
         app.set_text("<!DOCTYPE html>\n<html><body></body></html>");
         assert_eq!(app.current_language(), crate::syntax::Language::Html);
+    }
+
+    #[test]
+    fn test_editor_app_code_actions_and_inlay_hints() {
+        use karkinos_core::lsp::{
+            InlayHintKind, LspClient, LspCodeAction, LspInlayHint, LspPosition, LspRange,
+            LspTextEdit, LspWorkspaceEdit,
+        };
+        use std::collections::HashMap;
+
+        let mut app = EditorApp::default();
+        app.current_file = Some(PathBuf::from("main.rs"));
+        app.set_text("fn main() {\n    let m = HashMap::new();\n}\n");
+
+        let client = LspClient::mock();
+        let mut changes = HashMap::new();
+        changes.insert(
+            "file://main.rs".to_string(),
+            vec![LspTextEdit {
+                range: LspRange {
+                    start: LspPosition { line: 0, character: 0 },
+                    end: LspPosition { line: 0, character: 0 },
+                },
+                new_text: "use std::collections::HashMap;\n".to_string(),
+            }],
+        );
+
+        client.set_mock_code_actions(vec![LspCodeAction {
+            title: "Import `HashMap`".to_string(),
+            kind: Some("quickfix".to_string()),
+            edit: Some(LspWorkspaceEdit {
+                changes: Some(changes),
+                document_changes: None,
+            }),
+            is_preferred: Some(true),
+        }]);
+
+        client.set_mock_inlay_hints(vec![LspInlayHint {
+            position: LspPosition { line: 1, character: 9 },
+            label: ": HashMap<_, _>".to_string(),
+            kind: Some(InlayHintKind::Type),
+            padding_left: Some(true),
+            padding_right: None,
+        }]);
+
+        app.lsp_client = Some(client);
+        app.poll_lsp_results();
+
+        assert!(app.code_actions_menu_open);
+        assert_eq!(app.code_actions.len(), 1);
+        assert_eq!(app.code_actions[0].title, "Import `HashMap`");
+        assert_eq!(app.editor_state.inlay_hints.len(), 1);
+        assert_eq!(app.editor_state.inlay_hints[0].label, ": HashMap<_, _>");
+
+        // Apply code action
+        app.apply_code_action(0);
+        assert!(!app.code_actions_menu_open);
+        let text = app.current_text();
+        assert!(text.starts_with("use std::collections::HashMap;\nfn main()"));
+        assert!(app.dirty);
+        assert!(app.status.contains("Applied: Import `HashMap`"));
+    }
+
+    #[test]
+    fn test_editor_app_workspace_rename() {
+        use karkinos_core::lsp::{
+            LspClient, LspPosition, LspRange, LspTextEdit, LspWorkspaceEdit,
+        };
+        use std::collections::HashMap;
+
+        let mut app = EditorApp::default();
+        app.current_file = Some(PathBuf::from("lib.rs"));
+        app.set_text("pub fn calculate() -> i32 { 42 }\n");
+
+        let client = LspClient::mock();
+        let mut changes = HashMap::new();
+        changes.insert(
+            "file://lib.rs".to_string(),
+            vec![LspTextEdit {
+                range: LspRange {
+                    start: LspPosition { line: 0, character: 7 },
+                    end: LspPosition { line: 0, character: 16 },
+                },
+                new_text: "compute_result".to_string(),
+            }],
+        );
+
+        client.set_mock_rename(LspWorkspaceEdit {
+            changes: Some(changes),
+            document_changes: None,
+        });
+
+        app.lsp_client = Some(client);
+        app.poll_lsp_results();
+
+        let text = app.current_text();
+        assert_eq!(text, "pub fn compute_result() -> i32 { 42 }\n");
+        assert!(app.dirty);
+        assert!(app.status.contains("Applied edits across 1 file(s)"));
     }
 }

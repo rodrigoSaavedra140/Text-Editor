@@ -59,6 +59,7 @@ pub struct EditorState {
     pub completions: Vec<karkinos_core::lsp::LspCompletionItem>,
     pub show_completions: bool,
     pub selected_completion: usize,
+    pub inlay_hints: Vec<karkinos_core::lsp::LspInlayHint>,
 }
 
 impl Default for EditorState {
@@ -84,6 +85,7 @@ impl Default for EditorState {
             completions: Vec::new(),
             show_completions: false,
             selected_completion: 0,
+            inlay_hints: Vec::new(),
         }
     }
 }
@@ -1388,6 +1390,30 @@ pub fn show(
                     ui.fonts(|f| f.layout_job(job))
                 };
                 painter.galley(egui::pos2(text_left, y), galley, text_color);
+            }
+
+            // S2 (Rust IDE): Render Inlay Hints (types, parameter names)
+            for hint in &state.inlay_hints {
+                if hint.position.line == i
+                    && hint.position.character >= start
+                    && hint.position.character <= end
+                {
+                    let hx = text_left + (hint.position.character - start) as f32 * char_width;
+                    let hint_font = egui::FontId::monospace(state.font_size * 0.78);
+                    let hint_color = egui::Color32::from_rgb(130, 155, 195);
+                    let hint_bg = egui::Color32::from_rgba_unmultiplied(35, 45, 65, 140);
+
+                    let hint_galley =
+                        ui.fonts(|f| f.layout_no_wrap(hint.label.clone(), hint_font, hint_color));
+                    let hint_size = hint_galley.size();
+                    let hint_rect = egui::Rect::from_min_size(
+                        egui::pos2(hx, y + 2.0),
+                        egui::vec2(hint_size.x + 4.0, row_height - 4.0),
+                    );
+
+                    painter.rect_filled(hint_rect, 2.0, hint_bg);
+                    painter.galley(egui::pos2(hx + 2.0, y + 2.0), hint_galley, hint_color);
+                }
             }
 
             // S3 (Etapa 2): Resaltado de delimitadores coincidentes
