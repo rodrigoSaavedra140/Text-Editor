@@ -200,3 +200,15 @@ disjuntas).
   puede prometer el cierre porque el save arranca sobre un destino
   concreto (antes abortaba y el diálogo quedaba esperando un
   guardado imposible). Suite 47/47, warnings 0.
+- **L16** (2026-10-29) bugfix: usuario reportó "el zoom no funciona" y
+  aclaró "solo el ctrl++ pero el boton de la ui no funciona". Root cause:
+  doble sync en el frame — el mirror state→app (post-editor, del
+  Ctrl+Scroll) corría DESPUÉS del click del botón y REVERTÍA el
+  app.font_size nuevo al valor viejo del state; los atajos se salvaban
+  porque su sync state←app corría antes del editor. Fix (dd13d06): el
+  sync state←app se movió a dentro de CentralPanel, justo antes de
+  editor_widget::show() — atajos Y botones del mismo frame aplican en
+  el mismo frame; el mirror post-editor queda solo para Ctrl+Scroll
+  (cambia dentro de show()). No testable headless (orden de frames del
+  UI) — verificación interactiva pendiente del usuario. Suite 47/47,
+  warnings 0.
