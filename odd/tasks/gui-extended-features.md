@@ -18,9 +18,14 @@
 
 | ID | Specs | Route | Status | Commit |
 |----|-------|-------|--------|--------|
-| T1 | S1 | inline | pendiente | - |
+| T1 | S1 | inline | listo | f5f3ad9 |
 | T2 | S2 | inline | pendiente | - |
 
 ## Log
 
 - **L1** (2026-10-30): Planificación de la ventana de guardado para archivos sin nombre y extensión de sintaxis a C, C++, Java, JS/TS, SQL, HTML, CSS.
+- **L2** (2026-10-30): T1 terminado (commit f5f3ad9, suite 64/64 pasando, 0 warnings).
+  Ventana modal al guardar archivos sin nombre: método `try_save` intercepta guardados de buffers
+  sin ruta ni nombre, desplegando `show_save_name_dialog`. Permite ingresar un nombre con confirmación
+  vía Enter o botón "Guardar", y si se deja en blanco o se omiten caracteres, recurre de forma segura a
+  `nuevo.txt` (o correlativo disponible) en `browse_dir`.
