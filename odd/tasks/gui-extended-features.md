@@ -19,7 +19,7 @@
 | ID | Specs | Route | Status | Commit |
 |----|-------|-------|--------|--------|
 | T1 | S1 | inline | listo | f5f3ad9 |
-| T2 | S2 | inline | pendiente | - |
+| T2 | S2 | inline | listo | 696fc8d |
 
 ## Log
 
@@ -29,3 +29,7 @@
   sin ruta ni nombre, desplegando `show_save_name_dialog`. Permite ingresar un nombre con confirmación
   vía Enter o botón "Guardar", y si se deja en blanco o se omiten caracteres, recurre de forma segura a
   `nuevo.txt` (o correlativo disponible) en `browse_dir`.
+- **L3** (2026-10-30): T2 terminado (commit 696fc8d, suite 68/68 pasando, 0 warnings).
+  Resaltado de sintaxis extendido: módulo `syntax.rs` ampliado con soporte completo para C, C++, Java,
+  JavaScript/TypeScript, SQL, HTML y CSS. Tokenización $O(L)$ optimizada, formateo `LayoutJob`
+  con paletas del tema activo y pruebas unitarias dedicadas para cada nuevo lenguaje.
