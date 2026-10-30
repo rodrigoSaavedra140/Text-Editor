@@ -15,6 +15,15 @@ pub struct PluginCommand {
     pub description: String,
 }
 
+/// Metadata summary of an installed plugin for UI and community extension managers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginMetadata {
+    pub name: String,
+    pub version: String,
+    pub description: String,
+    pub commands: Vec<PluginCommand>,
+}
+
 /// Execution context passed to plugins during event dispatch.
 #[derive(Debug, Default)]
 pub struct PluginContext {
@@ -42,6 +51,11 @@ pub trait Plugin: Send {
 
     /// Semantic version of the plugin.
     fn version(&self) -> &str;
+
+    /// Short description of the plugin's purpose and functionality.
+    fn description(&self) -> &str {
+        ""
+    }
 
     /// List of commands provided by this plugin.
     fn commands(&self) -> Vec<PluginCommand> {
@@ -142,6 +156,19 @@ impl PluginManager {
         commands
     }
 
+    /// Returns metadata for all registered plugins.
+    pub fn installed_plugins(&self) -> Vec<PluginMetadata> {
+        self.plugins
+            .iter()
+            .map(|p| PluginMetadata {
+                name: p.name().to_string(),
+                version: p.version().to_string(),
+                description: p.description().to_string(),
+                commands: p.commands(),
+            })
+            .collect()
+    }
+
     /// Dispatches `on_document_open` across all active plugins.
     pub fn dispatch_document_open(&mut self, doc: &mut Document, ctx: &mut PluginContext) {
         for plugin in &mut self.plugins {
@@ -195,6 +222,10 @@ impl Plugin for WordCountPlugin {
         "1.0.0"
     }
 
+    fn description(&self) -> &str {
+        "Computes document metrics: line, word, and character counts."
+    }
+
     fn commands(&self) -> Vec<PluginCommand> {
         vec![PluginCommand {
             id: "word_count".to_string(),
@@ -226,6 +257,10 @@ impl Plugin for CaseTransformPlugin {
 
     fn version(&self) -> &str {
         "1.0.0"
+    }
+
+    fn description(&self) -> &str {
+        "Text transformation utility for UPPERCASE and lowercase formatting."
     }
 
     fn commands(&self) -> Vec<PluginCommand> {
@@ -272,6 +307,10 @@ impl Plugin for HeaderBannerPlugin {
 
     fn version(&self) -> &str {
         "1.0.0"
+    }
+
+    fn description(&self) -> &str {
+        "Inserts standardized file header banners and docstring boilerplate."
     }
 
     fn commands(&self) -> Vec<PluginCommand> {
@@ -352,5 +391,15 @@ mod tests {
         assert!(ok);
         assert!(doc.buffer.to_string().starts_with("// ==="));
         assert!(doc.buffer.to_string().ends_with("fn main() {}"));
+    }
+
+    #[test]
+    fn test_installed_plugins_metadata() {
+        let manager = PluginManager::with_default_plugins();
+        let installed = manager.installed_plugins();
+        assert_eq!(installed.len(), 3);
+        assert!(installed.iter().any(|p| p.name == "Word Counter" && !p.description.is_empty()));
+        assert!(installed.iter().any(|p| p.name == "Case Transformer" && !p.description.is_empty()));
+        assert!(installed.iter().any(|p| p.name == "Header Banner" && !p.description.is_empty()));
     }
 }

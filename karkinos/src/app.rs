@@ -287,6 +287,8 @@ pub struct EditorApp {
     pub lsp_client: Option<karkinos_core::lsp::LspClient>,
     // S4 (Etapa 5): Gestor de extensiones y plugins
     pub plugin_manager: karkinos_core::plugin::PluginManager,
+    pub extensions_modal_open: bool,
+    pub extensions_tab: usize,
 }
 
 impl Default for EditorApp {
@@ -338,6 +340,8 @@ impl Default for EditorApp {
             dir_cache: None,
             lsp_client: None,
             plugin_manager: karkinos_core::plugin::PluginManager::with_default_plugins(),
+            extensions_modal_open: false,
+            extensions_tab: 0,
         }
     }
 }
@@ -943,6 +947,7 @@ impl EditorApp {
     /// Abre lo que haya escrito en el campo "Archivo" (botón "Abrir"
     /// o Enter). Interpreta ese texto como ruta relativa a la carpeta
     /// desde donde se lanzó el programa.
+    #[allow(dead_code)]
     pub fn open(&mut self) {
         self.open_path(PathBuf::from(&self.file_path_input));
     }

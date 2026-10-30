@@ -662,6 +662,176 @@ impl EditorApp {
             );
         }
     }
+
+    /// Diálogo modal para explorar extensiones de la comunidad y plugins instalados.
+    fn show_extensions_dialog(&mut self, ctx: &egui::Context) {
+        if !self.extensions_modal_open {
+            return;
+        }
+
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.extensions_modal_open = false;
+            return;
+        }
+
+        let mut cmd_to_execute: Option<String> = None;
+        let mut open = self.extensions_modal_open;
+        let mut close_clicked = false;
+
+        egui::Window::new("🧩 Community Extensions & Plugins")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(520.0)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    if ui.selectable_label(self.extensions_tab == 0, "📦 Installed Extensions").clicked() {
+                        self.extensions_tab = 0;
+                    }
+                    if ui.selectable_label(self.extensions_tab == 1, "🌐 Community Showcase").clicked() {
+                        self.extensions_tab = 1;
+                    }
+                });
+                ui.separator();
+
+                if self.extensions_tab == 0 {
+                    ui.label(egui::RichText::new("Installed Extensions & Active Plugins").strong());
+                    ui.add_space(4.0);
+
+                    let plugins = self.plugin_manager.installed_plugins();
+                    egui::ScrollArea::vertical().max_height(280.0).show(ui, |ui| {
+                        for plugin in &plugins {
+                            ui.group(|ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(egui::RichText::new(&plugin.name).strong());
+                                    ui.label(
+                                        egui::RichText::new(format!("v{}", plugin.version))
+                                            .color(egui::Color32::from_gray(140)),
+                                    );
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        ui.label(
+                                            egui::RichText::new("● Active")
+                                                .color(egui::Color32::from_rgb(80, 200, 120)),
+                                        );
+                                    });
+                                });
+                                if !plugin.description.is_empty() {
+                                    ui.label(
+                                        egui::RichText::new(&plugin.description)
+                                            .color(egui::Color32::from_gray(180)),
+                                    );
+                                }
+                                if !plugin.commands.is_empty() {
+                                    ui.add_space(3.0);
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.label("Commands:");
+                                        for cmd in &plugin.commands {
+                                            if ui.small_button(format!("⚡ {}", cmd.title)).clicked() {
+                                                cmd_to_execute = Some(cmd.id.clone());
+                                            }
+                                        }
+                                    });
+                                }
+                            });
+                            ui.add_space(4.0);
+                        }
+                    });
+                } else {
+                    ui.label(egui::RichText::new("Community Extensions & Contributions").strong());
+                    ui.label(
+                        egui::RichText::new("Discover and contribute community-created extensions for Karkinos.")
+                            .color(egui::Color32::from_gray(160)),
+                    );
+                    ui.add_space(4.0);
+
+                    let showcase = [
+                        (
+                            "Git Lens & Blame",
+                            "v0.3.0",
+                            "Inline git blame annotations, commit diff inspection, and file history.",
+                            "Community",
+                        ),
+                        (
+                            "Markdown Live Preview",
+                            "v0.4.1",
+                            "Real-time side-by-side formatted preview for Markdown and CommonMark files.",
+                            "Community",
+                        ),
+                        (
+                            "Code Formatter & Linter",
+                            "v0.2.5",
+                            "Automated code formatting for Rust, C/C++, Python, JS/TS, and Go on save.",
+                            "Community",
+                        ),
+                        (
+                            "Snippet Expansion Pack",
+                            "v1.1.0",
+                            "Fast boilerplate expansion and productivity snippets for popular languages.",
+                            "Community",
+                        ),
+                    ];
+
+                    egui::ScrollArea::vertical().max_height(240.0).show(ui, |ui| {
+                        for (name, ver, desc, author) in &showcase {
+                            ui.group(|ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(egui::RichText::new(*name).strong());
+                                    ui.label(
+                                        egui::RichText::new(*ver).color(egui::Color32::from_gray(140)),
+                                    );
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        ui.label(
+                                            egui::RichText::new(format!("by {}", author))
+                                                .color(egui::Color32::from_rgb(130, 170, 255)),
+                                        );
+                                    });
+                                });
+                                ui.label(
+                                    egui::RichText::new(*desc).color(egui::Color32::from_gray(180)),
+                                );
+                                ui.label(
+                                    egui::RichText::new("Coming Soon / In Review")
+                                        .italics()
+                                        .color(egui::Color32::from_gray(130)),
+                                );
+                            });
+                            ui.add_space(4.0);
+                        }
+                    });
+
+                    ui.add_space(6.0);
+                    ui.separator();
+                    ui.label(
+                        egui::RichText::new(
+                            "💡 Want to contribute an extension? Implement `karkinos_core::plugin::Plugin` and submit a PR!",
+                        )
+                        .italics()
+                        .color(egui::Color32::from_rgb(180, 200, 230)),
+                    );
+                }
+
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Close").clicked() {
+                            close_clicked = true;
+                        }
+                    });
+                });
+            });
+
+        if close_clicked {
+            open = false;
+        }
+
+        self.extensions_modal_open = open;
+
+        if let Some(cmd_id) = cmd_to_execute {
+            self.execute_plugin_command(&cmd_id);
+            self.extensions_modal_open = false;
+        }
+    }
 }
 
 /// Procesa una imagen RGBA eliminando el fondo oscuro opaco y suavizando
@@ -901,55 +1071,26 @@ impl eframe::App for EditorApp {
 
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                let file_input_response = ui.add(
-                    egui::TextEdit::singleline(&mut self.file_path_input)
-                        .hint_text("Enter file path or new file name"),
-                );
-                // Sin botón "Abrir": escribir el nombre y apretar
-                // Enter abre ese archivo directamente.
-                if file_input_response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    self.open();
-                }
-
-                // Dropdown del selector de carpetas: botón + popup propio
-                let open_picker_btn = ui.button("Open…");
+                // Selector de archivos y explorador de carpetas
+                let open_picker_btn = ui.button("📂 Open…");
                 if open_picker_btn.clicked() {
                     self.picker_open = !self.picker_open;
                 }
                 self.picker_button_rect = Some(open_picker_btn.interact_rect);
 
-                // S8: Botón Nuevo documento
-                if ui.button("New").clicked() {
-                    self.try_new_document();
-                }
-                // S7 (Etapa 2): Botón Búsqueda rápida de archivos
+                // Búsqueda rápida de archivos (Ctrl+P)
                 if ui.button("🔍 Search (Ctrl+P)").clicked() {
                     self.quick_open.open(&self.browse_dir);
                 }
-                if ui.button("Save (Ctrl+S)").clicked() {
+
+                // Guardado rápido
+                if ui.button("💾 Save (Ctrl+S)").clicked() {
                     self.try_save();
                 }
-                if ui.button("Save As…").on_hover_text("Save As… (Ctrl+Shift+S)").clicked() {
-                    self.save_as();
-                }
+
                 ui.separator();
-                if ui.button("Undo (Ctrl+Z)").clicked() {
-                    self.undo();
-                }
-                if ui.button("Redo (Ctrl+Y)").clicked() {
-                    self.redo();
-                }
-                ui.separator();
-                // S10: zoom de la fuente del editor (también con
-                // Ctrl+Scroll sobre el editor y Ctrl+= / Ctrl+-).
-                if ui.button("−").clicked() {
-                    self.zoom(false);
-                }
-                if ui.button("+").clicked() {
-                    self.zoom(true);
-                }
-                ui.separator();
-                // S5 (Etapa 2): selector de temas visuales
+
+                // Selector de temas visuales
                 egui::ComboBox::from_id_source("theme_picker")
                     .selected_text(format!("🎨 {}", self.theme_mode.name()))
                     .show_ui(ui, |ui| {
@@ -959,13 +1100,27 @@ impl eframe::App for EditorApp {
                             }
                         }
                     });
+
                 ui.separator();
-                // S4 (Etapa 5): Menú desplegable de plugins y comandos extensibles
+
+                // Menú de extensiones para la comunidad y plugins activos
                 let mut chosen_cmd: Option<String> = None;
-                ui.menu_button("🔌 Plugins", |ui| {
+                ui.menu_button("🧩 Extensions", |ui| {
+                    if ui.button("📦 Community Extensions Manager…").clicked() {
+                        self.extensions_modal_open = true;
+                        self.extensions_tab = 0;
+                        ui.close_menu();
+                    }
+                    if ui.button("🌐 Browse Community Showcase…").clicked() {
+                        self.extensions_modal_open = true;
+                        self.extensions_tab = 1;
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    ui.label(egui::RichText::new("Quick Commands:").strong());
                     let commands = self.plugin_manager.available_commands();
                     for cmd in commands {
-                        if ui.button(&cmd.title).on_hover_text(&cmd.description).clicked() {
+                        if ui.button(format!("⚡ {}", cmd.title)).on_hover_text(&cmd.description).clicked() {
                             chosen_cmd = Some(cmd.id);
                             ui.close_menu();
                         }
@@ -1207,6 +1362,8 @@ impl eframe::App for EditorApp {
         self.show_quick_open(ctx);
         // Diálogo modal para nombrar archivo al guardar si no tiene nombre.
         self.show_save_name_dialog(ctx);
+        // Diálogo modal para explorar y gestionar extensiones para la comunidad.
+        self.show_extensions_dialog(ctx);
     }
 }
 
