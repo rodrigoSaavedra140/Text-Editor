@@ -1,3 +1,5 @@
 target/
 *:Zone.Identifier
 *.txt
+.atl/
+.engram/

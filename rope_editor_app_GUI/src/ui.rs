@@ -152,10 +152,22 @@ impl EditorApp {
         }
 
         // S1: si el usuario pidió guardar-Y-cerrar desde el diálogo y
-        // el guardado terminó bien, recién acá se cierra la ventana.
+        // el guardado terminó bien, se revisa si quedan pestañas sucias antes de cerrar.
         if self.close_after_save && self.save_progress.is_none() {
             self.close_after_save = false;
-            request_close(ctx, &mut self.closing_since);
+            if let Some(next_dirty) = self.first_dirty_tab_index() {
+                self.switch_tab(next_dirty);
+                self.close_pending = true;
+            } else {
+                request_close(ctx, &mut self.closing_since);
+            }
+        }
+        // S3: si se pidió guardar y cerrar una pestaña puntual
+        if let Some(target_idx) = self.tab_close_after_save {
+            if self.save_progress.is_none() {
+                self.tab_close_after_save = None;
+                self.close_tab(target_idx);
+            }
         }
         // S8: si el usuario pidió guardar-Y-nuevo desde el diálogo y
         // el guardado terminó bien, limpiamos el editor para el nuevo documento.
@@ -181,12 +193,28 @@ impl EditorApp {
             return;
         }
         let is_new = self.new_doc_pending;
+        let dirty_count = self.dirty_tabs_count();
         let title = if is_new { "Nuevo documento" } else { "Cambios sin guardar" };
+        let doc_name = self
+            .tabs
+            .get(self.active_tab)
+            .map(|t| t.display_title())
+            .unwrap_or_else(|| "este documento".to_string());
+
         let prompt = if is_new {
-            "Tenés cambios sin guardar. ¿Deseás guardar antes de crear un nuevo documento?"
+            "Tenés cambios sin guardar. ¿Deseás guardar antes de crear un nuevo documento?".to_string()
+        } else if dirty_count > 1 {
+            format!(
+                "Tenés {} pestañas con cambios sin guardar.\n¿Deseás guardar \"{}\" antes de salir?",
+                dirty_count, doc_name
+            )
         } else {
-            "Tenés cambios sin guardar en este documento."
+            format!(
+                "Tenés cambios sin guardar en \"{}\".\n¿Deseás guardar antes de salir?",
+                doc_name
+            )
         };
+
         let mut open = true;
         egui::Window::new(title)
             .open(&mut open)
@@ -211,7 +239,16 @@ impl EditorApp {
                             self.new_document();
                         } else {
                             self.confirm_close_discard();
-                            request_close(ctx, &mut self.closing_since);
+                            self.dirty = false;
+                            if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+                                tab.dirty = false;
+                            }
+                            if let Some(next_dirty) = self.first_dirty_tab_index() {
+                                self.switch_tab(next_dirty);
+                                self.close_pending = true;
+                            } else {
+                                request_close(ctx, &mut self.closing_since);
+                            }
                         }
                     }
                     if ui.button("Cancelar").clicked() {
@@ -225,11 +262,12 @@ impl EditorApp {
         }
     }
 
-    /// S8 (Etapa 2): Diálogo de confirmación para cerrar pestaña con cambios sin guardar.
+    /// S8 (Etapa 2) / S3: Diálogo de confirmación para cerrar pestaña con cambios sin guardar.
     fn show_tab_close_confirm(&mut self, ctx: &egui::Context) {
         let Some(idx) = self.tab_close_pending else {
             return;
         };
+        let mut save_and_close = false;
         let mut discard = false;
         let mut cancel = false;
 
@@ -245,10 +283,13 @@ impl EditorApp {
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
             .show(ctx, |ui| {
                 ui.label(format!("La pestaña \"{}\" tiene cambios sin guardar.", title));
-                ui.label("¿Deseás descartar los cambios y cerrarla?");
+                ui.label("¿Deseás guardar los cambios antes de cerrarla?");
                 ui.separator();
                 ui.horizontal(|ui| {
-                    if ui.button("Descartar y cerrar").clicked() {
+                    if ui.button("Guardar").clicked() {
+                        save_and_close = true;
+                    }
+                    if ui.button("Descartar").clicked() {
                         discard = true;
                     }
                     if ui.button("Cancelar").clicked() {
@@ -257,7 +298,14 @@ impl EditorApp {
                 });
             });
 
-        if discard {
+        if save_and_close {
+            self.tab_close_pending = None;
+            if idx != self.active_tab {
+                self.switch_tab(idx);
+            }
+            self.tab_close_after_save = Some(idx);
+            self.try_save();
+        } else if discard {
             self.tab_close_pending = None;
             if idx == self.active_tab {
                 self.dirty = false;
@@ -331,12 +379,19 @@ impl EditorApp {
     }
 
     /// Cierre de ventana con puertas de datos: si hay cambios sin
-    /// guardar (o un guardado en pleno vuelo) NO cierra nada — planta
-    /// el diálogo S1 y, si el cierre vino del sistema (X/Alt+F4 del
-    /// WM), lo cancela para que la ventana siga viva mientras el
-    /// usuario decide. Sin cambios: cierre de toda la vida.
+    /// guardar (en la pestaña activa o en cualquier otra) o un guardado
+    /// en pleno vuelo, NO cierra nada — planta el diálogo S1 y, si el cierre
+    /// vino del sistema (X/Alt+F4 del WM), lo cancela para que la ventana
+    /// siga viva mientras el usuario decide. Sin cambios: cierre de toda la vida.
     fn try_close(&mut self, ctx: &egui::Context) {
-        if self.dirty || self.save_progress.is_some() {
+        self.sync_active_to_tab();
+        if let Some(dirty_idx) = self.first_dirty_tab_index() {
+            if dirty_idx != self.active_tab {
+                self.switch_tab(dirty_idx);
+            }
+            self.close_pending = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        } else if self.save_progress.is_some() {
             self.close_pending = true;
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         } else {
@@ -687,9 +742,24 @@ impl eframe::App for EditorApp {
         }
 
         // Atajos de teclado globales
-        let (want_save, want_undo, want_redo, want_quit, want_goto, want_find, want_new, want_quick_open, want_new_tab, want_close_tab) = ctx.input(|i| {
+        let (
+            want_save,
+            want_save_as,
+            want_undo,
+            want_redo,
+            want_quit,
+            want_goto,
+            want_find,
+            want_new,
+            want_quick_open,
+            want_new_tab,
+            want_close_tab,
+            want_next_tab,
+            want_prev_tab,
+        ) = ctx.input(|i| {
             (
-                i.modifiers.ctrl && i.key_pressed(egui::Key::S),
+                i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(egui::Key::S),
+                i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(egui::Key::S),
                 i.modifiers.ctrl && i.key_pressed(egui::Key::Z),
                 i.modifiers.ctrl && i.key_pressed(egui::Key::Y),
                 i.modifiers.ctrl && i.key_pressed(egui::Key::Q),
@@ -699,6 +769,8 @@ impl eframe::App for EditorApp {
                 i.modifiers.ctrl && i.key_pressed(egui::Key::P),
                 i.modifiers.ctrl && i.key_pressed(egui::Key::T),
                 i.modifiers.ctrl && i.key_pressed(egui::Key::W),
+                i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(egui::Key::Tab),
+                i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(egui::Key::Tab),
             )
         });
         if want_new {
@@ -710,6 +782,12 @@ impl eframe::App for EditorApp {
         if want_close_tab {
             self.try_close_tab(self.active_tab);
         }
+        if want_next_tab {
+            self.next_tab();
+        }
+        if want_prev_tab {
+            self.prev_tab();
+        }
         if want_quick_open {
             if self.quick_open.open {
                 self.quick_open.close();
@@ -719,6 +797,9 @@ impl eframe::App for EditorApp {
         }
         if want_save {
             self.try_save();
+        }
+        if want_save_as {
+            self.save_as();
         }
         if want_undo {
             self.undo();
@@ -855,6 +936,9 @@ impl eframe::App for EditorApp {
                 }
                 if ui.button("Guardar (Ctrl+S)").clicked() {
                     self.try_save();
+                }
+                if ui.button("Guardar como…").on_hover_text("Guardar como… (Ctrl+Shift+S)").clicked() {
+                    self.save_as();
                 }
                 ui.separator();
                 if ui.button("Deshacer (Ctrl+Z)").clicked() {
@@ -1096,8 +1180,13 @@ impl eframe::App for EditorApp {
                 if response.lost_focus {
                     self.snapshot_if_changed();
                 }
-                // S8: sincronizar estado con la pestaña activa
-                self.sync_active_to_tab();
+                // S2: Sincronizar estado completo solo si hubo edición real;
+                // si no, solo sincronizar metadatos ligeros para no clonar líneas ni undo_stack en cada frame.
+                if response.changed {
+                    self.sync_active_to_tab();
+                } else {
+                    self.sync_active_metadata_to_tab();
+                }
             });
 
         // S1: al final, para que el diálogo SIEMPRE pinte por encima

@@ -226,6 +226,50 @@ fn indent_line(line: &mut String) {
     line.insert(0, '\t');
 }
 
+/// S6: Comenta o descomenta el rango de líneas [start_line..=end_line] usando el prefijo indicado.
+pub fn toggle_comment_range(
+    lines: &mut Vec<String>,
+    start_line: usize,
+    end_line: usize,
+    prefix: &str,
+) {
+    if lines.is_empty() {
+        return;
+    }
+    let end_l = end_line.min(lines.len() - 1);
+    let start_l = start_line.min(end_l);
+
+    let all_commented = (start_l..=end_l).all(|l| {
+        let trimmed = lines[l].trim_start();
+        trimmed.is_empty() || trimmed.starts_with(prefix)
+    });
+
+    for l in start_l..=end_l {
+        let line = &lines[l];
+        if line.trim().is_empty() {
+            continue;
+        }
+        if all_commented {
+            let indent_len = line.chars().take_while(|c| c.is_whitespace()).count();
+            let indent_bytes = char_to_byte(line, indent_len);
+            let rest = &line[indent_bytes..];
+            if rest.starts_with(prefix) {
+                let strip_len = if rest[prefix.len()..].starts_with(' ') {
+                    prefix.len() + 1
+                } else {
+                    prefix.len()
+                };
+                lines[l].replace_range(indent_bytes..indent_bytes + strip_len, "");
+            }
+        } else {
+            let indent_len = line.chars().take_while(|c| c.is_whitespace()).count();
+            let indent_bytes = char_to_byte(line, indent_len);
+            let insert = format!("{} ", prefix);
+            lines[l].insert_str(indent_bytes, &insert);
+        }
+    }
+}
+
 /// Texto que Ctrl+C/Ctrl+X copiarian: la selección si hay, y si no
 /// la línea LÓGICA completa bajo el cursor (convención de editores
 /// tipo VS Code). egui-winit consume Ctrl+C/X y solo emite
@@ -665,29 +709,38 @@ pub fn show(
                 let doc_y = pos.y - rect.top() - PAD_Y + state.scroll;
                 let (clicked_line, sub_row) =
                     line_and_subrow_at_doc_y(&state.cum_rows, doc_y.max(0.0), row_height);
-                let rel_x = (pos.x - text_left).max(0.0);
-                let col_in_row = (rel_x / char_width).round() as usize;
-                let clicked_col =
-                    (sub_row * wrap_chars + col_in_row).min(line_char_count(&lines[clicked_line]));
 
-                // S5: doble click selecciona palabra, triple click selecciona línea lógica
-                if response.triple_clicked() {
+                if pos.x < text_left {
+                    // S8: Clic en el gutter (banda de números) selecciona la línea completa
+                    let line_end = line_char_count(&lines[clicked_line]);
                     state.sel_anchor = Some((clicked_line, 0));
                     state.cursor_line = clicked_line;
-                    state.cursor_col = line_char_count(&lines[clicked_line]);
-                } else if response.double_clicked() {
-                    let (ws, we) = word_range_at(&lines[clicked_line], clicked_col);
-                    state.sel_anchor = Some((clicked_line, ws));
-                    state.cursor_line = clicked_line;
-                    state.cursor_col = we;
+                    state.cursor_col = line_end;
                 } else {
-                    if response.clicked() && !response.dragged() {
-                        state.sel_anchor = Some((clicked_line, clicked_col));
-                    } else if response.drag_started() {
-                        state.sel_anchor = Some((clicked_line, clicked_col));
+                    let rel_x = (pos.x - text_left).max(0.0);
+                    let col_in_row = (rel_x / char_width).round() as usize;
+                    let clicked_col =
+                        (sub_row * wrap_chars + col_in_row).min(line_char_count(&lines[clicked_line]));
+
+                    // S5: doble click selecciona palabra, triple click selecciona línea lógica
+                    if response.triple_clicked() {
+                        state.sel_anchor = Some((clicked_line, 0));
+                        state.cursor_line = clicked_line;
+                        state.cursor_col = line_char_count(&lines[clicked_line]);
+                    } else if response.double_clicked() {
+                        let (ws, we) = word_range_at(&lines[clicked_line], clicked_col);
+                        state.sel_anchor = Some((clicked_line, ws));
+                        state.cursor_line = clicked_line;
+                        state.cursor_col = we;
+                    } else {
+                        if response.clicked() && !response.dragged() {
+                            state.sel_anchor = Some((clicked_line, clicked_col));
+                        } else if response.drag_started() {
+                            state.sel_anchor = Some((clicked_line, clicked_col));
+                        }
+                        state.cursor_line = clicked_line;
+                        state.cursor_col = clicked_col;
                     }
-                    state.cursor_line = clicked_line;
-                    state.cursor_col = clicked_col;
                 }
                 cursor_moved = true;
             }
@@ -1015,10 +1068,53 @@ pub fn show(
                             state.sel_anchor = Some((state.cursor_line, state.cursor_col));
                         }
                     }
-                    egui::Key::A if modifiers.command => {
+                    egui::Key::A if modifiers.command || modifiers.ctrl => {
                         state.sel_anchor = Some((0, 0));
                         state.cursor_line = lines.len() - 1;
                         state.cursor_col = line_char_count(&lines[state.cursor_line]);
+                    }
+                    egui::Key::D if (modifiers.command || modifiers.ctrl) && !modifiers.shift => {
+                        // S7: Duplicar línea o bloque seleccionado
+                        let sel = selection_range(state);
+                        if let Some((s, e)) = sel {
+                            let from_l = s.0;
+                            let to_l = if e.1 == 0 && e.0 > s.0 { e.0 - 1 } else { e.0 };
+                            let cloned_lines: Vec<String> = lines[from_l..=to_l].to_vec();
+                            let insert_idx = to_l + 1;
+                            let num_cloned = cloned_lines.len();
+                            for (offset, line) in cloned_lines.into_iter().enumerate() {
+                                lines.insert(insert_idx + offset, line);
+                            }
+                            state.cursor_line += num_cloned;
+                            state.sel_anchor = Some((s.0 + num_cloned, s.1));
+                        } else {
+                            let cur_line = lines[state.cursor_line].clone();
+                            lines.insert(state.cursor_line + 1, cur_line);
+                            state.cursor_line += 1;
+                            state.sel_anchor = Some((state.cursor_line, state.cursor_col));
+                        }
+                        changed = true;
+                        force_snapshot = true;
+                        state.row_counts = rebuild_row_counts(lines, wrap_chars);
+                        state.char_lens = rebuild_char_lens(lines);
+                        state.cum_rows = build_cum_rows(&state.row_counts);
+                    }
+                    egui::Key::Slash if modifiers.command || modifiers.ctrl => {
+                        // S6: Comentar / Descomentar
+                        if let Some(prefix) = language.line_comment_prefix() {
+                            let sel = selection_range(state);
+                            let (start_l, end_l) = if let Some((s, e)) = sel {
+                                (s.0, if e.1 == 0 && e.0 > s.0 { e.0 - 1 } else { e.0 })
+                            } else {
+                                (state.cursor_line, state.cursor_line)
+                            };
+                            toggle_comment_range(lines, start_l, end_l, prefix);
+                            changed = true;
+                            force_snapshot = true;
+                            state.row_counts = rebuild_row_counts(lines, wrap_chars);
+                            state.char_lens = rebuild_char_lens(lines);
+                            state.cum_rows = build_cum_rows(&state.row_counts);
+                        }
                     }
                     // NOTA: Ctrl+C y Ctrl+X NO llegan como Key::C/Key::X
                     // (egui-winit los consume y los reenvia como
@@ -1655,5 +1751,32 @@ mod tests {
         assert_eq!(line_clean, "\tcodigo");
         assert_eq!(dedent_line(&mut line_clean), 1);
         assert_eq!(line_clean, "codigo");
+    }
+
+    #[test]
+    fn test_toggle_comment_range_lineas_y_bloques() {
+        let mut lines = vec![
+            "fn main() {".to_string(),
+            "    let x = 10;".to_string(),
+            "    println!(\"{}\", x);".to_string(),
+            "}".to_string(),
+        ];
+
+        // Comentar líneas 1..=2 con "//"
+        toggle_comment_range(&mut lines, 1, 2, "//");
+        assert_eq!(lines[1], "    // let x = 10;");
+        assert_eq!(lines[2], "    // println!(\"{}\", x);");
+
+        // Descomentar líneas 1..=2 con "//"
+        toggle_comment_range(&mut lines, 1, 2, "//");
+        assert_eq!(lines[1], "    let x = 10;");
+        assert_eq!(lines[2], "    println!(\"{}\", x);");
+
+        // Comentar línea SQL con "--"
+        let mut sql_lines = vec!["SELECT * FROM users;".to_string()];
+        toggle_comment_range(&mut sql_lines, 0, 0, "--");
+        assert_eq!(sql_lines[0], "-- SELECT * FROM users;");
+        toggle_comment_range(&mut sql_lines, 0, 0, "--");
+        assert_eq!(sql_lines[0], "SELECT * FROM users;");
     }
 }

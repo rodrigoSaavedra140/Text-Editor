@@ -284,6 +284,7 @@ pub struct EditorApp {
     pub active_tab: usize,
     pub next_tab_id: usize,
     pub tab_close_pending: Option<usize>,
+    pub tab_close_after_save: Option<usize>,
     // Modal para nombrar archivo sin nombre al guardar.
     pub save_name_pending: bool,
     pub save_name_input: String,
@@ -332,6 +333,7 @@ impl Default for EditorApp {
             active_tab: 0,
             next_tab_id: 2,
             tab_close_pending: None,
+            tab_close_after_save: None,
             save_name_pending: false,
             save_name_input: String::new(),
             dir_cache: None,
@@ -374,6 +376,40 @@ impl EditorApp {
             tab.external_changed = self.external_changed;
             tab.last_mtime_check = self.last_mtime_check;
             tab.view_bytes = self.view_bytes;
+        }
+    }
+
+    /// S2: Sincronización ligera de metadatos (dirty, view_bytes, cursor) sin clonar lines ni undo_stack.
+    pub fn sync_active_metadata_to_tab(&mut self) {
+        if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+            tab.dirty = self.dirty;
+            tab.view_bytes = self.view_bytes;
+            tab.current_file = self.current_file.clone();
+            tab.file_path_input = self.file_path_input.clone();
+            tab.external_changed = self.external_changed;
+            tab.editor_state.cursor_line = self.editor_state.cursor_line;
+            tab.editor_state.cursor_col = self.editor_state.cursor_col;
+            tab.editor_state.scroll = self.editor_state.scroll;
+        }
+    }
+
+    /// S4: Avanza a la siguiente pestaña de manera cíclica.
+    pub fn next_tab(&mut self) {
+        if self.tabs.len() > 1 {
+            let next = (self.active_tab + 1) % self.tabs.len();
+            self.switch_tab(next);
+        }
+    }
+
+    /// S4: Retrocede a la pestaña anterior de manera cíclica.
+    pub fn prev_tab(&mut self) {
+        if self.tabs.len() > 1 {
+            let prev = if self.active_tab == 0 {
+                self.tabs.len() - 1
+            } else {
+                self.active_tab - 1
+            };
+            self.switch_tab(prev);
         }
     }
 
@@ -462,6 +498,36 @@ impl EditorApp {
         } else {
             self.close_tab(idx);
         }
+    }
+
+    /// S1/S8: Retorna el índice de la primera pestaña que tenga cambios sin guardar.
+    /// Prioriza la pestaña activa si está sucia para atender primero lo que ve el usuario.
+    pub fn first_dirty_tab_index(&self) -> Option<usize> {
+        if self.dirty {
+            return Some(self.active_tab);
+        }
+        self.tabs.iter().enumerate().position(|(idx, t)| {
+            if idx == self.active_tab {
+                self.dirty
+            } else {
+                t.dirty
+            }
+        })
+    }
+
+    /// S1/S8: Retorna la cantidad total de pestañas con cambios sin guardar.
+    pub fn dirty_tabs_count(&self) -> usize {
+        self.tabs
+            .iter()
+            .enumerate()
+            .filter(|(idx, t)| {
+                if *idx == self.active_tab {
+                    self.dirty
+                } else {
+                    t.dirty
+                }
+            })
+            .count()
     }
     /// Reconstruye el texto completo a partir de `lines` — es O(n),
     /// así que solo se llama en momentos puntuales (snapshot, guardar),
@@ -854,8 +920,24 @@ impl EditorApp {
         let name = self.save_name_input.trim();
         if !name.is_empty() {
             self.file_path_input = name.to_string();
+            self.current_file = None;
         }
         self.save()
+    }
+
+    /// S5: Abre el diálogo modal para guardar el documento actual con un nombre nuevo ("Guardar como...").
+    pub fn save_as(&mut self) {
+        if let Some(name) = self
+            .current_file
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+        {
+            self.save_name_input = name.to_string();
+        } else {
+            self.save_name_input = self.file_path_input.clone();
+        }
+        self.save_name_pending = true;
     }
 
     /// Cancela el diálogo de guardado con nombre sin modificar el estado.
@@ -1642,6 +1724,71 @@ mod tests {
 
         let _ = std::fs::remove_file(dir.join("mi_programa.rs"));
         let _ = std::fs::remove_file(dir.join("nuevo.txt"));
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn test_tabs_cycling_and_dirty_detection() {
+        let mut app = EditorApp::default();
+        app.new_tab();
+        app.new_tab();
+        assert_eq!(app.tabs.len(), 3);
+        assert_eq!(app.active_tab, 2);
+
+        // Ciclar adelante
+        app.next_tab();
+        assert_eq!(app.active_tab, 0);
+        app.next_tab();
+        assert_eq!(app.active_tab, 1);
+
+        // Ciclar atrás
+        app.prev_tab();
+        assert_eq!(app.active_tab, 0);
+        app.prev_tab();
+        assert_eq!(app.active_tab, 2);
+
+        // Detección de pestañas sucias
+        assert_eq!(app.dirty_tabs_count(), 0);
+        assert_eq!(app.first_dirty_tab_index(), None);
+
+        // Marcar pestaña 1 como sucia
+        app.tabs[1].dirty = true;
+        assert_eq!(app.dirty_tabs_count(), 1);
+        assert_eq!(app.first_dirty_tab_index(), Some(1));
+
+        // Si la activa (2) también está sucia, first_dirty_tab_index debe priorizar la activa
+        app.dirty = true;
+        assert_eq!(app.dirty_tabs_count(), 2);
+        assert_eq!(app.first_dirty_tab_index(), Some(2));
+    }
+
+    #[test]
+    fn test_save_as_changes_target_file() -> std::io::Result<()> {
+        let dir = std::env::temp_dir().join(format!("karkinos_save_as_{}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+
+        let mut app = EditorApp::default();
+        app.browse_dir = dir.clone();
+        app.set_text("codigo inicial");
+        app.current_file = Some(dir.join("archivo_original.txt"));
+        app.file_path_input = "archivo_original.txt".to_string();
+
+        app.save_as();
+        assert!(app.save_name_pending);
+        assert_eq!(app.save_name_input, "archivo_original.txt");
+
+        app.save_name_input = "archivo_copia.txt".to_string();
+        assert!(app.confirm_save_name());
+        assert_eq!(app.current_file, Some(dir.join("archivo_copia.txt")));
+
+        if let Some(progress) = &app.save_progress {
+            while !progress.lock().unwrap().done {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
+
+        let _ = std::fs::remove_file(dir.join("archivo_copia.txt"));
         let _ = std::fs::remove_dir_all(&dir);
         Ok(())
     }

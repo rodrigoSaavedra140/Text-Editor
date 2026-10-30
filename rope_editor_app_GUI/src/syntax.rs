@@ -78,6 +78,23 @@ impl Language {
             Language::Css => "CSS",
         }
     }
+
+    /// Prefijo de comentario de línea (por ejemplo `//` o `--`).
+    pub fn line_comment_prefix(&self) -> Option<&'static str> {
+        match self {
+            Language::Rust
+            | Language::C
+            | Language::Cpp
+            | Language::Java
+            | Language::JavaScript
+            | Language::Css
+            | Language::Markdown
+            | Language::PlainText => Some("//"),
+            Language::Sql => Some("--"),
+            Language::Json => None,
+            Language::Html => None,
+        }
+    }
 }
 
 /// Categoría semántica de un token para la asignación de color.
