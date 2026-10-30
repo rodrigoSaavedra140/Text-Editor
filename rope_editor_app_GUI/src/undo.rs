@@ -89,12 +89,13 @@ const MAX_UNDO_EDITS: usize = 200;
 /// Almacenar Arc<str> en lugar de String evita duplicar el documento entero
 /// cuando el estado N pasa de ser 'after' del paso anterior a 'before' del
 /// siguiente paso, reduciendo a la mitad el consumo de memoria del historial.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Edit {
     pub before: Arc<str>,
     pub after: Arc<str>,
 }
 
+#[derive(Debug, Clone)]
 pub struct UndoStack {
     pub stack: Vec<Edit>,
     pub redo_stack: Vec<Edit>,

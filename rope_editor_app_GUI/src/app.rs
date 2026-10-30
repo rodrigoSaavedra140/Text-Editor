@@ -138,6 +138,64 @@ pub fn mtime_is_stale(
     }
 }
 
+/// S8 (Etapa 2): Representación de un documento abierto en una pestaña.
+#[derive(Debug, Clone)]
+pub struct TabDocument {
+    #[allow(dead_code)]
+    pub id: usize,
+    pub lines: Vec<String>,
+    pub editor_state: EditorState,
+    pub last_snapshot: Arc<str>,
+    pub undo_stack: UndoStack,
+    pub file_path_input: String,
+    pub current_file: Option<PathBuf>,
+    pub dirty: bool,
+    pub line_ending: LineEnding,
+    pub last_disk_mtime: Option<SystemTime>,
+    pub external_changed: bool,
+    pub last_mtime_check: Option<Instant>,
+    pub view_bytes: usize,
+}
+
+impl TabDocument {
+    pub fn new(id: usize) -> Self {
+        Self {
+            id,
+            lines: vec![String::new()],
+            editor_state: EditorState::default(),
+            last_snapshot: Arc::from(""),
+            undo_stack: UndoStack::new(),
+            file_path_input: String::new(),
+            current_file: None,
+            dirty: false,
+            line_ending: LineEnding::Lf,
+            last_disk_mtime: None,
+            external_changed: false,
+            last_mtime_check: None,
+            view_bytes: 0,
+        }
+    }
+
+    pub fn display_title(&self) -> String {
+        let name = if let Some(ref p) = self.current_file {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("archivo")
+                .to_string()
+        } else if !self.file_path_input.is_empty() {
+            self.file_path_input.clone()
+        } else {
+            "Sin título".to_string()
+        };
+
+        if self.dirty {
+            format!("{} •", name)
+        } else {
+            name
+        }
+    }
+}
+
 pub struct EditorApp {
     // Buffer "vivo", partido en líneas — así el widget de edición
     // solo tiene que tocar la línea que cambió, no reconstruir todo
@@ -221,6 +279,11 @@ pub struct EditorApp {
     pub theme_mode: crate::theme::ThemeMode,
     // S7 (Etapa 2): Estado del modal de búsqueda rápida de archivos (Ctrl+P).
     pub quick_open: crate::quick_open::QuickOpenState,
+    // S8 (Etapa 2): Pestañas / Múltiples documentos abiertos simultáneamente.
+    pub tabs: Vec<TabDocument>,
+    pub active_tab: usize,
+    pub next_tab_id: usize,
+    pub tab_close_pending: Option<usize>,
     dir_cache: Option<(PathBuf, Option<SystemTime>, Vec<String>, Vec<String>)>,
 }
 
@@ -262,6 +325,10 @@ impl Default for EditorApp {
             font_size: 14.0,
             theme_mode: crate::theme::ThemeMode::Dark,
             quick_open: crate::quick_open::QuickOpenState::default(),
+            tabs: vec![TabDocument::new(1)],
+            active_tab: 0,
+            next_tab_id: 2,
+            tab_close_pending: None,
             dir_cache: None,
         }
     }
@@ -284,6 +351,111 @@ impl EditorApp {
                     .and_then(|e| e.to_str())
                     .unwrap_or(""),
             )
+        }
+    }
+
+    /// S8 (Etapa 2): Guarda el estado actual del editor en la pestaña activa.
+    pub fn sync_active_to_tab(&mut self) {
+        if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+            tab.lines = self.lines.clone();
+            tab.editor_state = self.editor_state.clone();
+            tab.last_snapshot = Arc::clone(&self.last_snapshot);
+            tab.undo_stack = self.undo_stack.clone();
+            tab.file_path_input = self.file_path_input.clone();
+            tab.current_file = self.current_file.clone();
+            tab.dirty = self.dirty;
+            tab.line_ending = self.line_ending;
+            tab.last_disk_mtime = self.last_disk_mtime;
+            tab.external_changed = self.external_changed;
+            tab.last_mtime_check = self.last_mtime_check;
+            tab.view_bytes = self.view_bytes;
+        }
+    }
+
+    /// S8 (Etapa 2): Carga los datos de la pestaña `idx` en el estado activo del editor.
+    pub fn load_tab(&mut self, idx: usize) {
+        if let Some(tab) = self.tabs.get(idx) {
+            self.active_tab = idx;
+            self.lines = tab.lines.clone();
+            self.editor_state = tab.editor_state.clone();
+            self.last_snapshot = Arc::clone(&tab.last_snapshot);
+            self.undo_stack = tab.undo_stack.clone();
+            self.file_path_input = tab.file_path_input.clone();
+            self.current_file = tab.current_file.clone();
+            self.dirty = tab.dirty;
+            self.line_ending = tab.line_ending;
+            self.last_disk_mtime = tab.last_disk_mtime;
+            self.external_changed = tab.external_changed;
+            self.last_mtime_check = tab.last_mtime_check;
+            self.view_bytes = tab.view_bytes;
+            self.chunk_tracker.reset();
+            self.find_matches.clear();
+        }
+    }
+
+    /// S8 (Etapa 2): Cambia a la pestaña indicada, sincronizando la actual previamente.
+    pub fn switch_tab(&mut self, new_idx: usize) {
+        if new_idx == self.active_tab || new_idx >= self.tabs.len() {
+            return;
+        }
+        self.sync_active_to_tab();
+        self.load_tab(new_idx);
+        self.status = format!("Pestaña: {}", self.tabs[self.active_tab].display_title());
+    }
+
+    /// S8 (Etapa 2): Crea una nueva pestaña en blanco y la activa.
+    pub fn new_tab(&mut self) {
+        self.sync_active_to_tab();
+        let new_tab = TabDocument::new(self.next_tab_id);
+        self.next_tab_id += 1;
+        self.tabs.push(new_tab);
+        self.load_tab(self.tabs.len() - 1);
+        self.status = "Nueva pestaña creada".to_string();
+    }
+
+    /// S8 (Etapa 2): Cierra la pestaña en `idx`. Si es la única pestaña, la resetea en blanco.
+    pub fn close_tab(&mut self, idx: usize) {
+        if idx >= self.tabs.len() {
+            return;
+        }
+
+        if self.tabs.len() == 1 {
+            let reset_tab = TabDocument::new(self.next_tab_id);
+            self.next_tab_id += 1;
+            self.tabs[0] = reset_tab;
+            self.load_tab(0);
+            return;
+        }
+
+        self.sync_active_to_tab();
+        self.tabs.remove(idx);
+
+        if self.active_tab >= self.tabs.len() {
+            self.active_tab = self.tabs.len() - 1;
+        } else if idx < self.active_tab {
+            self.active_tab -= 1;
+        }
+
+        self.load_tab(self.active_tab);
+    }
+
+    /// S8 (Etapa 2): Intenta cerrar una pestaña. Si tiene cambios sin guardar,
+    /// pide confirmación estableciendo `tab_close_pending`.
+    pub fn try_close_tab(&mut self, idx: usize) {
+        if idx >= self.tabs.len() {
+            return;
+        }
+
+        let is_dirty = if idx == self.active_tab {
+            self.dirty
+        } else {
+            self.tabs[idx].dirty
+        };
+
+        if is_dirty {
+            self.tab_close_pending = Some(idx);
+        } else {
+            self.close_tab(idx);
         }
     }
     /// Reconstruye el texto completo a partir de `lines` — es O(n),
@@ -552,6 +724,23 @@ impl EditorApp {
     /// carpetas). Después de abrir, el campo "Archivo" solo muestra
     /// el nombre — la ruta completa se ve en la barra de abajo.
     pub fn open_path(&mut self, path: PathBuf) {
+        // S8 (Etapa 2): Si ya está abierto en alguna pestaña, activarla
+        self.sync_active_to_tab();
+        if let Some(pos) = self.tabs.iter().position(|t| t.current_file.as_ref() == Some(&path)) {
+            self.switch_tab(pos);
+            self.status = "Archivo ya abierto en pestaña".to_string();
+            return;
+        }
+
+        // Si la pestaña actual está intacta y vacía, la reutilizamos; si no, creamos nueva pestaña
+        let can_reuse_current = self.current_file.is_none() && !self.dirty && self.lines == [""];
+        if !can_reuse_current {
+            let new_tab = TabDocument::new(self.next_tab_id);
+            self.next_tab_id += 1;
+            self.tabs.push(new_tab);
+            self.active_tab = self.tabs.len() - 1;
+        }
+
         match Self::read_file(&path) {
             Ok((content, ending, mtime)) => {
                 self.set_text(&content);
@@ -566,6 +755,7 @@ impl EditorApp {
                 self.current_file = Some(path);
                 self.dirty = false;
                 self.status = "Archivo abierto".to_string();
+                self.sync_active_to_tab();
             }
             Err(e) => {
                 self.status = format!("Error al abrir: {}", e);
@@ -781,6 +971,7 @@ impl EditorApp {
         self.chunk_tracker.reset();
         self.find_matches.clear();
         self.status = "Nuevo documento".to_string();
+        self.sync_active_to_tab();
     }
 
     /// S8: Intenta crear un nuevo documento. Si el buffer actual está sucio
@@ -985,7 +1176,13 @@ mod tests {
         assert!(app.close_after_save);
         // El destino queda fijado a dir/nuevo.txt antes del async.
         assert_eq!(app.current_file, Some(dir.join("nuevo.txt")));
-        std::fs::remove_dir_all(&dir)?;
+        if let Some(progress) = &app.save_progress {
+            while !progress.lock().unwrap().done {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
+        let _ = std::fs::remove_file(dir.join("nuevo.txt"));
+        let _ = std::fs::remove_dir_all(&dir);
         Ok(())
     }
 
@@ -1288,5 +1485,67 @@ mod tests {
         let mut app_clean = EditorApp::default();
         app_clean.try_new_document();
         assert!(!app_clean.new_doc_pending);
+    }
+
+    // ---- S8 (Etapa 2): Pestañas / Múltiples documentos ----
+
+    #[test]
+    fn tabs_creacion_cambio_y_cierre() {
+        let mut app = EditorApp::default();
+        assert_eq!(app.tabs.len(), 1);
+        assert_eq!(app.active_tab, 0);
+
+        app.set_text("Texto en pestaña 1");
+        app.dirty = true;
+
+        app.new_tab();
+        assert_eq!(app.tabs.len(), 2);
+        assert_eq!(app.active_tab, 1);
+        assert_eq!(app.current_text(), "");
+
+        app.set_text("Texto en pestaña 2");
+        app.switch_tab(0);
+        assert_eq!(app.active_tab, 0);
+        assert_eq!(app.current_text(), "Texto en pestaña 1");
+
+        app.switch_tab(1);
+        assert_eq!(app.active_tab, 1);
+        assert_eq!(app.current_text(), "Texto en pestaña 2");
+
+        app.close_tab(0);
+        assert_eq!(app.tabs.len(), 1);
+        assert_eq!(app.active_tab, 0);
+        assert_eq!(app.current_text(), "Texto en pestaña 2");
+    }
+
+    #[test]
+    fn tabs_open_path_no_duplica_y_reutiliza_vacia() -> std::io::Result<()> {
+        let dir = std::env::temp_dir();
+        let path_a = dir.join(format!("karkinos_tab_a_{}.txt", std::process::id()));
+        let path_b = dir.join(format!("karkinos_tab_b_{}.txt", std::process::id()));
+        std::fs::write(&path_a, "archivo A")?;
+        std::fs::write(&path_b, "archivo B")?;
+
+        let mut app = EditorApp::default();
+        // Abrir en pestaña inicial limpia debe reutilizarla
+        app.open_path(path_a.clone());
+        assert_eq!(app.tabs.len(), 1);
+        assert_eq!(app.current_file, Some(path_a.clone()));
+
+        // Abrir segundo archivo debe crear pestaña nueva
+        app.open_path(path_b.clone());
+        assert_eq!(app.tabs.len(), 2);
+        assert_eq!(app.active_tab, 1);
+        assert_eq!(app.current_file, Some(path_b.clone()));
+
+        // Abrir el archivo A nuevamente debe cambiar a la pestaña 0 sin duplicar
+        app.open_path(path_a.clone());
+        assert_eq!(app.tabs.len(), 2);
+        assert_eq!(app.active_tab, 0);
+        assert_eq!(app.current_file, Some(path_a.clone()));
+
+        std::fs::remove_file(path_a)?;
+        std::fs::remove_file(path_b)?;
+        Ok(())
     }
 }

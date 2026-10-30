@@ -14,6 +14,7 @@ pub fn clamp_font_size(size: f32) -> f32 {
 
 /// Estado del cursor/selección/scroll del editor — vive en EditorApp,
 /// no acá, porque tiene que sobrevivir entre frames.
+#[derive(Debug, Clone)]
 pub struct EditorState {
     pub cursor_line: usize,
     pub cursor_col: usize, // índice de CARÁCTER (no byte) dentro de la línea LÓGICA

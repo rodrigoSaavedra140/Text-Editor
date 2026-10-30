@@ -225,6 +225,52 @@ impl EditorApp {
         }
     }
 
+    /// S8 (Etapa 2): Diálogo de confirmación para cerrar pestaña con cambios sin guardar.
+    fn show_tab_close_confirm(&mut self, ctx: &egui::Context) {
+        let Some(idx) = self.tab_close_pending else {
+            return;
+        };
+        let mut discard = false;
+        let mut cancel = false;
+
+        let title = self
+            .tabs
+            .get(idx)
+            .map(|t| t.display_title())
+            .unwrap_or_default();
+
+        egui::Window::new("Cerrar pestaña")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.label(format!("La pestaña \"{}\" tiene cambios sin guardar.", title));
+                ui.label("¿Deseás descartar los cambios y cerrarla?");
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui.button("Descartar y cerrar").clicked() {
+                        discard = true;
+                    }
+                    if ui.button("Cancelar").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+
+        if discard {
+            self.tab_close_pending = None;
+            if idx == self.active_tab {
+                self.dirty = false;
+            }
+            if let Some(tab) = self.tabs.get_mut(idx) {
+                tab.dirty = false;
+            }
+            self.close_tab(idx);
+        } else if cancel || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.tab_close_pending = None;
+        }
+    }
+
     /// Cierre de ventana con puertas de datos: si hay cambios sin
     /// guardar (o un guardado en pleno vuelo) NO cierra nada — planta
     /// el diálogo S1 y, si el cierre vino del sistema (X/Alt+F4 del
@@ -526,7 +572,7 @@ impl eframe::App for EditorApp {
         }
 
         // Atajos de teclado globales
-        let (want_save, want_undo, want_redo, want_quit, want_goto, want_find, want_new, want_quick_open) = ctx.input(|i| {
+        let (want_save, want_undo, want_redo, want_quit, want_goto, want_find, want_new, want_quick_open, want_new_tab, want_close_tab) = ctx.input(|i| {
             (
                 i.modifiers.ctrl && i.key_pressed(egui::Key::S),
                 i.modifiers.ctrl && i.key_pressed(egui::Key::Z),
@@ -536,10 +582,18 @@ impl eframe::App for EditorApp {
                 i.modifiers.ctrl && i.key_pressed(egui::Key::F),
                 i.modifiers.ctrl && i.key_pressed(egui::Key::N),
                 i.modifiers.ctrl && i.key_pressed(egui::Key::P),
+                i.modifiers.ctrl && i.key_pressed(egui::Key::T),
+                i.modifiers.ctrl && i.key_pressed(egui::Key::W),
             )
         });
         if want_new {
             self.try_new_document();
+        }
+        if want_new_tab {
+            self.new_tab();
+        }
+        if want_close_tab {
+            self.try_close_tab(self.active_tab);
         }
         if want_quick_open {
             if self.quick_open.open {
@@ -717,6 +771,92 @@ impl eframe::App for EditorApp {
             });
         });
 
+        // S8 (Etapa 2): Barra de pestañas sobre el editor
+        egui::TopBottomPanel::top("tab_bar")
+            .exact_height(28.0)
+            .frame(egui::Frame::none().fill(theme.panel_bg))
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 2.0;
+                    let mut switch_to = None;
+                    let mut close_target = None;
+
+                    for (idx, tab) in self.tabs.iter().enumerate() {
+                        let is_active = idx == self.active_tab;
+                        let title = if is_active {
+                            let base = if let Some(ref p) = self.current_file {
+                                p.file_name()
+                                    .and_then(|n| n.to_str())
+                                    .unwrap_or("archivo")
+                                    .to_string()
+                            } else if !self.file_path_input.is_empty() {
+                                self.file_path_input.clone()
+                            } else {
+                                "Sin título".to_string()
+                            };
+                            if self.dirty {
+                                format!("{} •", base)
+                            } else {
+                                base
+                            }
+                        } else {
+                            tab.display_title()
+                        };
+
+                        let bg = if is_active { theme.bg } else { theme.panel_bg };
+                        let text_color = if is_active { theme.text } else { theme.gutter_text };
+
+                        let tab_frame = egui::Frame::none()
+                            .fill(bg)
+                            .inner_margin(egui::Margin::symmetric(8.0, 4.0))
+                            .rounding(egui::Rounding {
+                                nw: 4.0,
+                                ne: 4.0,
+                                sw: 0.0,
+                                se: 0.0,
+                            });
+
+                        tab_frame.show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                let label = ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(&title).color(text_color).strong(),
+                                    )
+                                    .sense(egui::Sense::click()),
+                                );
+                                if label.clicked() {
+                                    switch_to = Some(idx);
+                                }
+
+                                if ui
+                                    .add(
+                                        egui::Button::new(
+                                            egui::RichText::new("×").color(text_color).size(12.0),
+                                        )
+                                        .frame(false),
+                                    )
+                                    .on_hover_text("Cerrar pestaña (Ctrl+W)")
+                                    .clicked()
+                                {
+                                    close_target = Some(idx);
+                                }
+                            });
+                        });
+                    }
+
+                    if ui.button("+").on_hover_text("Nueva pestaña (Ctrl+T)").clicked() {
+                        self.new_tab();
+                    }
+
+                    if let Some(idx) = switch_to {
+                        self.switch_tab(idx);
+                    }
+                    if let Some(idx) = close_target {
+                        self.try_close_tab(idx);
+                    }
+                });
+            });
+
         // Dropdown con el listado de carpetas/archivos (encima de
         // todo, posicionado debajo del botón "Abrir…"): navegar
         // carpetas NO lo cierra; solo cerrar con click afuera, Esc o
@@ -841,11 +981,15 @@ impl eframe::App for EditorApp {
                 if response.lost_focus {
                     self.snapshot_if_changed();
                 }
+                // S8: sincronizar estado con la pestaña activa
+                self.sync_active_to_tab();
             });
 
         // S1: al final, para que el diálogo SIEMPRE pinte por encima
         // de todos los paneles ya dibujados este frame.
         self.show_close_confirm(ctx);
+        // S8: confirmación de cierre de pestaña con cambios sin guardar
+        self.show_tab_close_confirm(ctx);
         // S4: igual que el confirm, arriba de todo (los paneles
         // dibujados antes no le pisan al campo de entrada).
         self.show_goto_line(ctx);
