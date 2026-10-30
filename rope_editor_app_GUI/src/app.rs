@@ -309,12 +309,40 @@ impl EditorApp {
         self.snapshot_text(&current);
     }
 
+    /// S3 (revisión 2026-10-29): restaura el texto de un paso undo/redo
+    /// SIN resetear la vista. set_text sirve a abrir/nuevo documento
+    /// (arrancar de arriba es correcto ahí), pero para deshacer el
+    /// salto al principio del documento es una regresión: se conserva
+    /// el cursor (clampeado al nuevo buffer) y el scroll (la caché del
+    /// widget lo recorta al nuevo máx en el próximo frame).
+    fn restore_text_keeping_view(&mut self, text: &str) {
+        let (line, col, scroll) = (
+            self.editor_state.cursor_line,
+            self.editor_state.cursor_col,
+            self.editor_state.scroll,
+        );
+        self.set_text(text);
+        self.editor_state.scroll = scroll;
+        let last_line = self.lines.len().saturating_sub(1);
+        if line > last_line {
+            // La línea vieja ya no existe: el contenido Ty se ajusta a
+            // que el cursor aterrice al FIN de la última línea nueva.
+            self.editor_state.cursor_line = last_line;
+            self.editor_state.cursor_col =
+                self.lines[last_line].chars().count();
+        } else {
+            self.editor_state.cursor_line = line;
+            let line_len = self.lines[line].chars().count();
+            self.editor_state.cursor_col = col.min(line_len);
+        }
+    }
+
     pub fn undo(&mut self) {
         self.snapshot_if_changed();
         self.chunk_tracker.reset();
         if let Some(edit) = self.undo_stack.undo() {
             let text = edit.before.clone();
-            self.set_text(&text);
+            self.restore_text_keeping_view(&text);
             self.last_snapshot = text;
             self.status = "Deshecho".to_string();
         } else {
@@ -326,7 +354,7 @@ impl EditorApp {
         self.chunk_tracker.reset();
         if let Some(edit) = self.undo_stack.redo() {
             let text = edit.after.clone();
-            self.set_text(&text);
+            self.restore_text_keeping_view(&text);
             self.last_snapshot = text;
             self.status = "Rehecho".to_string();
         } else {
@@ -918,6 +946,58 @@ mod tests {
         // Documento nunca ligado a disco: recién ahí tampoco.
         assert!(!mtime_is_stale(None, None));
     }
+
+    // ---- S3: undo/redo NO deben saltar al principio del documento ----
+
+    #[test]
+    fn undo_y_redo_conservan_cursor_y_scroll_en_su_lugar() {
+        let mut app = EditorApp::default();
+        app.set_text("uno\ndos\ntres");
+        app.snapshot_if_changed();
+
+        // Simulo que el usuario tipeó más y la vista se movió abajo.
+        app.set_text("uno\ndos\ntres\nCUATRO");
+        app.snapshot_if_changed();
+        app.editor_state.cursor_line = 1;
+        app.editor_state.cursor_col = 1;
+        app.editor_state.scroll = 99.0;
+
+        app.undo();
+        // El texto vuelve al paso anterior...
+        assert_eq!(app.current_text(), "uno\ndos\ntres");
+        // ...pero la vista NO se resetea a (0,0) / scroll 0.
+        assert_eq!(app.editor_state.cursor_line, 1);
+        assert_eq!(app.editor_state.cursor_col, 1);
+        assert!((app.editor_state.scroll - 99.0).abs() < f32::EPSILON);
+
+        app.redo();
+        assert_eq!(app.current_text(), "uno\ndos\ntres\nCUATRO");
+        assert_eq!(app.editor_state.cursor_line, 1);
+        assert_eq!(app.editor_state.cursor_col, 1);
+        assert!((app.editor_state.scroll - 99.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn undo_restaura_cursor_clamp_fuera_del_buffer_reparado() {
+        let mut app = EditorApp::default();
+        app.set_text("sola una linea");
+        app.snapshot_if_changed();
+        app.set_text("uno\ndos\ntres");
+        app.snapshot_if_changed();
+        // Captura el estado del cursor fuera de rango (para ver como
+        // aterrizaría sobre el buffer deshecho de UNA sola línea).
+        app.editor_state.cursor_line = 2;
+        app.editor_state.scroll = 40.0;
+
+        app.undo();
+        // El buffer deshecho tiene UNA línea: la 2 no existe y el
+        // cursor aterriza al FIN de esa línea, no crashea ni va a 0.
+        assert_eq!(app.current_text(), "sola una linea");
+        assert_eq!(app.editor_state.cursor_line, 0);
+        assert_eq!(app.editor_state.cursor_col, "sola una linea".chars().count());
+        assert!((app.editor_state.scroll - 40.0).abs() < f32::EPSILON);
+    }
+
 
     // ---- S2: Buscar y reemplazar (Ctrl+F) ----
 
