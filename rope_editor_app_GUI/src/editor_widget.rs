@@ -205,6 +205,26 @@ fn inherited_indent(prev_line: &str) -> String {
     prev_line.chars().take_while(|c| c.is_whitespace()).collect()
 }
 
+/// S4 (Etapa 2): desindenta una línea quitando un '\t' inicial o hasta 4 espacios iniciales.
+/// Devuelve la cantidad de caracteres de sangría eliminados.
+fn dedent_line(line: &mut String) -> usize {
+    if line.starts_with('\t') {
+        line.remove(0);
+        1
+    } else if line.starts_with(' ') {
+        let spaces = line.chars().take(4).take_while(|&c| c == ' ').count();
+        line.drain(0..spaces);
+        spaces
+    } else {
+        0
+    }
+}
+
+/// S4 (Etapa 2): indenta una línea insertando '\t' al inicio.
+fn indent_line(line: &mut String) {
+    line.insert(0, '\t');
+}
+
 /// Texto que Ctrl+C/Ctrl+X copiarian: la selección si hay, y si no
 /// la línea LÓGICA completa bajo el cursor (convención de editores
 /// tipo VS Code). egui-winit consume Ctrl+C/X y solo emite
@@ -760,23 +780,89 @@ pub fn show(
                     resync_rows!();
                 }
                 egui::Event::Key { key, pressed: true, modifiers, .. } => match key {
-                    egui::Key::Tab
-                        if !(modifiers.shift
-                            || modifiers.ctrl
-                            || modifiers.command
-                            || modifiers.alt) =>
-                    {
-                        // S6: Tab CON foco del editor inserta el
-                        // caracter (no se roba el foco: el filtro de
-                        // foco de egui quedó desactivado para Tab,
-                        // ver set_focus_lock_filter más abajo).
-                        let (nl, nc) =
-                            insert_text(lines, (state.cursor_line, state.cursor_col), "\t");
-                        state.cursor_line = nl;
-                        state.cursor_col = nc;
-                        state.sel_anchor = Some((nl, nc));
-                        changed = true;
-                        resync_rows!();
+                    egui::Key::Tab if !(modifiers.ctrl || modifiers.command || modifiers.alt) => {
+                        let sel = selection_range(state);
+                        let multiline = sel.and_then(|(s, e)| {
+                            let last_l = if e.1 == 0 && e.0 > s.0 { e.0 - 1 } else { e.0 };
+                            if last_l > s.0 {
+                                Some((s.0, last_l, s, e))
+                            } else {
+                                None
+                            }
+                        });
+
+                        if let Some((from_l, to_l, s, e)) = multiline {
+                            if modifiers.shift {
+                                // S4 (Etapa 2): Shift+Tab desindenta bloque multilínea
+                                let mut removed_first = 0;
+                                let mut removed_last = 0;
+                                for l in from_l..=to_l {
+                                    let rem = dedent_line(&mut lines[l]);
+                                    if l == s.0 {
+                                        removed_first = rem;
+                                    }
+                                    if l == e.0 {
+                                        removed_last = rem;
+                                    }
+                                }
+                                let new_s_col = s.1.saturating_sub(removed_first);
+                                let new_e_col = e.1.saturating_sub(removed_last);
+                                if state.cursor_line == s.0 {
+                                    state.cursor_col = new_s_col;
+                                    state.sel_anchor = Some((e.0, new_e_col));
+                                } else {
+                                    state.cursor_col = new_e_col;
+                                    state.sel_anchor = Some((s.0, new_s_col));
+                                }
+                            } else {
+                                // S4 (Etapa 2): Tab indenta bloque multilínea
+                                for l in from_l..=to_l {
+                                    indent_line(&mut lines[l]);
+                                }
+                                let new_s_col = s.1 + 1;
+                                let new_e_col = if e.1 > 0 || e.0 == to_l { e.1 + 1 } else { e.1 };
+                                if state.cursor_line == s.0 {
+                                    state.cursor_col = new_s_col;
+                                    state.sel_anchor = Some((e.0, new_e_col));
+                                } else {
+                                    state.cursor_col = new_e_col;
+                                    state.sel_anchor = Some((s.0, new_s_col));
+                                }
+                            }
+                            changed = true;
+                            force_snapshot = true;
+                            state.row_counts = rebuild_row_counts(lines, wrap_chars);
+                            state.char_lens = rebuild_char_lens(lines);
+                            state.cum_rows = build_cum_rows(&state.row_counts);
+                        } else if modifiers.shift {
+                            // S4 (Etapa 2): Shift+Tab en línea simple desindenta la línea actual
+                            let rem = dedent_line(&mut lines[state.cursor_line]);
+                            if rem > 0 {
+                                state.cursor_col = state.cursor_col.saturating_sub(rem);
+                                if let Some(anchor) = state.sel_anchor {
+                                    if anchor.0 == state.cursor_line {
+                                        state.sel_anchor = Some((anchor.0, anchor.1.saturating_sub(rem)));
+                                    }
+                                }
+                                changed = true;
+                                force_snapshot = true;
+                                resync_rows!();
+                            }
+                        } else {
+                            // S6: Tab en línea simple inserta \t
+                            if let Some((s, e)) = sel {
+                                delete_range(lines, s, e);
+                                state.cursor_line = s.0;
+                                state.cursor_col = s.1;
+                            }
+                            let (nl, nc) =
+                                insert_text(lines, (state.cursor_line, state.cursor_col), "\t");
+                            state.cursor_line = nl;
+                            state.cursor_col = nc;
+                            state.sel_anchor = Some((nl, nc));
+                            changed = true;
+                            resync_rows!();
+                        }
                     }
                     egui::Key::Enter => {
                         pre_break_snapshot = Some(lines.join("\n"));
@@ -1521,5 +1607,34 @@ mod tests {
 
         // 5. Cursor en caracter cualquiera
         assert_eq!(find_matching_bracket(&lines, 0, 1), None);
+    }
+
+    #[test]
+    fn indent_y_dedent_line_tab_y_espacios() {
+        let mut line_empty = String::new();
+        assert_eq!(dedent_line(&mut line_empty), 0);
+        assert_eq!(line_empty, "");
+
+        let mut line_tab = "\thola".to_string();
+        assert_eq!(dedent_line(&mut line_tab), 1);
+        assert_eq!(line_tab, "hola");
+
+        let mut line_4_spaces = "    mundo".to_string();
+        assert_eq!(dedent_line(&mut line_4_spaces), 4);
+        assert_eq!(line_4_spaces, "mundo");
+
+        let mut line_2_spaces = "  dos".to_string();
+        assert_eq!(dedent_line(&mut line_2_spaces), 2);
+        assert_eq!(line_2_spaces, "dos");
+
+        let mut line_6_spaces = "      seis".to_string();
+        assert_eq!(dedent_line(&mut line_6_spaces), 4);
+        assert_eq!(line_6_spaces, "  seis");
+
+        let mut line_clean = "codigo".to_string();
+        indent_line(&mut line_clean);
+        assert_eq!(line_clean, "\tcodigo");
+        assert_eq!(dedent_line(&mut line_clean), 1);
+        assert_eq!(line_clean, "codigo");
     }
 }
