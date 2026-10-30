@@ -59,6 +59,19 @@ pub const ZOOM_MIN: f32 = 8.0;
 pub const ZOOM_MAX: f32 = 32.0;
 pub const ZOOM_STEP: f32 = 1.0;
 
+/// Helper del selector de archivos (popup propio): puede quedarse
+/// abierto o cerrar si el click completo de este frame NO cayó ni
+/// adentro del popup ni sobre el botón que lo togglea. Sin rects
+/// conocidos se resuelve CERRAR (estado seguro).
+pub fn picker_should_stay_open(
+    click: egui::Pos2,
+    popup: Option<egui::Rect>,
+    button: Option<egui::Rect>,
+) -> bool {
+    let inside = |r: Option<egui::Rect>| r.map(|r| r.contains(click)).unwrap_or(false);
+    inside(popup) || inside(button)
+}
+
 /// Detecta si el archivo cambió en el disco respecto a lo que
 /// recordamos: mismo mtime = sin cambios; mtime distinto = alguien
 /// lo tocó por afuera; ya no existe en el disco = tocado/borrado;
@@ -170,6 +183,12 @@ pub struct EditorApp {
     // S8: confirmación de creación de nuevo documento con cambios sin guardar.
     pub new_doc_pending: bool,
     pub new_after_save: bool,
+    // Selector de carpetas propio (popup debrowse): se mantiene
+    // abierto mientras se navega entre carpetas — el ComboBox de egui
+    // cerraba el popup con CUALQUIER click adentro (navegar = reabrir
+    // cada vez). button rect se registra cada frame en ui.rs.
+    pub picker_open: bool,
+    pub picker_button_rect: Option<egui::Rect>,
     // S10: tamaño en puntos de la fuente monoespaciada del editor
     // (clamp 8..32). Solo la fuente del editor, no toda la UI.
     pub font_size: f32,
@@ -198,6 +217,8 @@ impl Default for EditorApp {
             close_after_save: false,
             new_doc_pending: false,
             new_after_save: false,
+            picker_open: false,
+            picker_button_rect: None,
             last_mtime_check: None,
             external_changed: false,
             goto_pending: false,
@@ -1000,6 +1021,23 @@ mod tests {
 
 
     // ---- S2: Buscar y reemplazar (Ctrl+F) ----
+
+    #[test]
+    fn picker_se_queda_abierto_solo_si_el_click_es_adentro() {
+        use egui::{pos2, Rect};
+
+        let popup = Rect::from_min_max(pos2(100.0, 100.0), pos2(300.0, 400.0));
+        let button = Rect::from_min_max(pos2(10.0, 10.0), pos2(80.0, 30.0));
+
+        // Click adentro del popup (navegó una carpeta): sigue abierto.
+        assert!(picker_should_stay_open(pos2(150.0, 200.0), Some(popup), Some(button)));
+        // Click sobre el botón de toggle: él mismo maneja su estado.
+        assert!(picker_should_stay_open(pos2(40.0, 20.0), Some(popup), Some(button)));
+        // Click bien lejos (editor, otro lado de la ventana): cerrar.
+        assert!(!picker_should_stay_open(pos2(700.0, 500.0), Some(popup), Some(button)));
+        // Sin rects conocidos aún: cerrar (estado seguro).
+        assert!(!picker_should_stay_open(pos2(150.0, 200.0), None, None));
+    }
 
     #[test]
     fn buscar_coincidencias_case_sensitive_e_insensitive() {

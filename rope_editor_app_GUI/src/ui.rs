@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use eframe::egui;
 
-use crate::app::EditorApp;
+use crate::app::{picker_should_stay_open, EditorApp};
 use crate::title_bar::{draw_resize_handles, title_bar_icon_button, TitleBarIcon};
 use crate::util::{format_size, request_close};
 use crate::LOGO_BYTES;
@@ -12,6 +12,99 @@ use crate::LOGO_BYTES;
 // repartir los métodos de un mismo struct en varios `impl` de
 // distintos archivos, así que acá van los que necesitan `egui`.
 impl EditorApp {
+    /// Popup del explorador de archivos (carpetas + archivos del
+    /// browse_dir actual), posicionado debajo del botón "Abrir…".
+    /// A diferencia de egui::ComboBox, se mantiene abierto mientras
+    /// se navega de carpeta en carpeta: cada frame re-dibuja el
+    /// listado de la carpeta actual (cached_list_dir refresca solo
+    /// si cambió la carpeta o su mtime).
+    fn show_picker_popup(&mut self, ctx: &egui::Context) {
+        if !self.picker_open {
+            return;
+        }
+        // Esc lo cierra por convención (igual que la barra buscar).
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.picker_open = false;
+            return;
+        }
+
+        let button_rect = self.picker_button_rect;
+        let pos = button_rect
+            .map(|r| r.left_bottom())
+            .unwrap_or_else(|| ctx.screen_rect().left_top() + egui::vec2(10.0, 34.0));
+
+        let dir_label = format!("📂 {}", self.browse_dir.display());
+        let mut navigate_to: Option<PathBuf> = None;
+        let mut open_file: Option<PathBuf> = None;
+
+        let area_response = egui::Area::new(egui::Id::new("file_picker_popup"))
+            .order(egui::Order::Foreground)
+            .constrain(true)
+            .fixed_pos(pos)
+            .pivot(egui::Align2::LEFT_TOP)
+            .show(ctx, |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.set_min_width(280.0);
+                    egui::ScrollArea::vertical().max_height(340.0).show(ui, |ui| {
+                        ui.label(&dir_label);
+                        ui.separator();
+
+                        // Subir a la carpeta padre (si existe).
+                        if let Some(parent) = self.browse_dir.parent() {
+                            if ui.selectable_label(false, "⬆ ..").clicked() {
+                                navigate_to = Some(parent.to_path_buf());
+                            }
+                        }
+
+                        // Caché del listado (ver cached_list_dir en
+                        // app.rs): sin read_dir por frame.
+                        let (dirs, files) = self.cached_list_dir();
+
+                        for name in &dirs {
+                            if ui.selectable_label(false, format!("📁 {}", name)).clicked() {
+                                navigate_to = Some(self.browse_dir.join(name));
+                            }
+                        }
+                        for name in &files {
+                            if ui.selectable_label(false, name).clicked() {
+                                open_file = Some(self.browse_dir.join(name));
+                            }
+                        }
+                        if dirs.is_empty() && files.is_empty() {
+                            ui.label("(carpeta vacía)");
+                        }
+                    });
+                });
+            });
+
+        // Elegir un ARCHIVO cierra el popup (ya se abrió en el
+        // editor): es el objetivo final del selector.
+        if let Some(dir) = navigate_to {
+            self.browse_dir = dir;
+        }
+        if let Some(path) = open_file {
+            self.picker_open = false;
+            self.open_path(path);
+        }
+
+        // Click COMPLETO afuera del popup (y que no sea el propio
+        // toggle del botón): cerrar. La decisión va por el helper
+        // puro picker_should_stay_open (testeable).
+        let (any_click, click_pos) =
+            ctx.input(|i| (i.pointer.any_click(), i.pointer.interact_pos()));
+        if any_click {
+            if let Some(click_pos) = click_pos {
+                if !picker_should_stay_open(
+                    click_pos,
+                    Some(area_response.response.rect),
+                    button_rect,
+                ) {
+                    self.picker_open = false;
+                }
+            }
+        }
+    }
+
     /// Dibuja la ventana emergente de progreso mientras haya un
     /// guardado en curso, y la cierra sola cuando termina.
     fn show_save_progress(&mut self, ctx: &egui::Context) {
@@ -470,48 +563,17 @@ impl eframe::App for EditorApp {
                     self.open();
                 }
 
-                // Desplegable con navegación de carpetas: subcarpetas
-                // para entrar (📁), "⬆ subir" para volver al padre, y
-                // archivos de texto que se abren con un click.
-                let mut navigate_to: Option<PathBuf> = None;
-                let mut open_file: Option<PathBuf> = None;
-                egui::ComboBox::from_id_source("file_picker")
-                    .selected_text("Abrir…")
-                    .show_ui(ui, |ui| {
-                        ui.label(format!("📂 {}", self.browse_dir.display()));
-                        ui.separator();
-
-                        if let Some(parent) = self.browse_dir.parent() {
-                            if ui.selectable_label(false, "⬆ ..").clicked() {
-                                navigate_to = Some(parent.to_path_buf());
-                            }
-                        }
-
-                        // Caché del listado (ver cached_list_dir en
-                        // app.rs): sin read_dir ni peek de archivos
-                        // por frame con el desplegable abierto.
-                        let (dirs, files) = self.cached_list_dir();
-
-                        for name in &dirs {
-                            if ui.selectable_label(false, format!("📁 {}", name)).clicked() {
-                                navigate_to = Some(self.browse_dir.join(name));
-                            }
-                        }
-                        for name in &files {
-                            if ui.selectable_label(false, name).clicked() {
-                                open_file = Some(self.browse_dir.join(name));
-                            }
-                        }
-                        if dirs.is_empty() && files.is_empty() {
-                            ui.label("(carpeta vacía)");
-                        }
-                    });
-                if let Some(dir) = navigate_to {
-                    self.browse_dir = dir;
+                // Dropdown del selector de carpetas: botón + popup
+                // propio (show_file_picker, más abajo). Se usa un
+                // estado nuestro y no egui::ComboBox porque ese
+                // cierra el popup con CUALQUIER click adentro —
+                // navegar de carpeta en carpeta obligaba a
+                // reabrirlo en cada paso.
+                let open_picker_btn = ui.button("Abrir…");
+                if open_picker_btn.clicked() {
+                    self.picker_open = !self.picker_open;
                 }
-                if let Some(path) = open_file {
-                    self.open_path(path);
-                }
+                self.picker_button_rect = Some(open_picker_btn.interact_rect);
 
                 // S8: Botón Nuevo documento
                 if ui.button("Nuevo").clicked() {
@@ -538,6 +600,12 @@ impl eframe::App for EditorApp {
                 }
             });
         });
+
+        // Dropdown con el listado de carpetas/archivos (encima de
+        // todo, posicionado debajo del botón "Abrir…"): navegar
+        // carpetas NO lo cierra; solo cerrar con click afuera, Esc o
+        // elegir un archivo.
+        self.show_picker_popup(ctx);
 
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
             ui.horizontal(|ui| {
