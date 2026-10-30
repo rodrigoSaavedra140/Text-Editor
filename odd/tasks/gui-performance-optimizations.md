@@ -22,7 +22,7 @@
 |----|-------|-------|--------|--------|
 | T1 | S1 | inline | listo | e4eb95c |
 | T2 | S2 | inline | listo | 9403330 |
-| T3 | S3 | inline | pendiente | - |
+| T3 | S3 | inline | listo | fd29c45 |
 
 ## Log
 
@@ -38,3 +38,8 @@
 - **L3** (2026-10-29): T2 terminado (commit 9403330, suite 48/48 pasando, 0 warnings).
   En `show()`, el vector de eventos de entrada `ui.input(|i| i.events)` ahora solo se clona si
   `!events.is_empty()`, eliminando alocaciones y copias en el heap en frames ociosos con foco activo.
+- **L4** (2026-10-29): T3 terminado (commit fd29c45, suite 49/49 pasando, 0 warnings).
+  `Edit` y `EditorApp.last_snapshot` ahora usan `Arc<str>`. El estado $N$ se comparte inmutablemente
+  entre el `after` del paso anterior y el `before` del paso nuevo (`Arc::clone` O(1) en vez de alocar y
+  copiar todo el texto). Las operaciones `undo()` y `redo()` ahora transfieren estados entre pilas
+  con cero copias de buffers en el heap. Test con `Arc::ptr_eq` incorporado.
