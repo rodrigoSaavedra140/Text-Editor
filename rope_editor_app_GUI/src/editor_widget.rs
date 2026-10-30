@@ -55,6 +55,11 @@ fn char_to_byte(s: &str, char_idx: usize) -> usize {
     s.char_indices().nth(char_idx).map(|(b, _)| b).unwrap_or(s.len())
 }
 
+/// Public wrapper for char_to_byte (used by app.rs find/replace).
+pub fn char_to_byte_pub(s: &str, char_idx: usize) -> usize {
+    char_to_byte(s, char_idx)
+}
+
 fn line_char_count(s: &str) -> usize {
     s.chars().count()
 }

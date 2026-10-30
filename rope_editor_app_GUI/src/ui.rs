@@ -123,9 +123,81 @@ impl EditorApp {
         }
     }
 
+    /// S2: barra de búsqueda y reemplazo debajo del editor (Ctrl+F).
+    fn show_find_bar(&mut self, ctx: &egui::Context) {
+        if !self.find_open {
+            return;
+        }
+        egui::TopBottomPanel::bottom("find_bar")
+            .frame(egui::Frame::none().fill(egui::Color32::from_rgb(30, 30, 30)).inner_margin(6.0))
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Buscar:");
+                    let find_field = ui.add(
+                        egui::TextEdit::singleline(&mut self.find_query)
+                            .desired_width(200.0)
+                            .hint_text("texto…"),
+                    );
+                    if find_field.changed() {
+                        self.find_update_matches();
+                        if !self.find_matches.is_empty() {
+                            self.find_goto_current();
+                        }
+                    }
+                    // Enter en el campo = siguiente match.
+                    if find_field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        self.find_next();
+                        find_field.request_focus();
+                    }
+
+                    let total = self.find_matches.len();
+                    if total > 0 {
+                        ui.label(format!("{}/{}", self.find_current + 1, total));
+                    } else if !self.find_query.is_empty() {
+                        ui.label("0/0");
+                    }
+
+                    if ui.button("◀").clicked() {
+                        self.find_prev();
+                    }
+                    if ui.button("▶").clicked() {
+                        self.find_next();
+                    }
+
+                    let mut case = self.find_case_sensitive;
+                    if ui.checkbox(&mut case, "Aa").changed() {
+                        self.find_case_sensitive = case;
+                        self.find_update_matches();
+                        if !self.find_matches.is_empty() {
+                            self.find_goto_current();
+                        }
+                    }
+
+                    ui.separator();
+                    ui.label("Reemplazar:");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.find_replace)
+                            .desired_width(150.0)
+                            .hint_text("reemplazo…"),
+                    );
+                    if ui.button("Reemplazar").clicked() {
+                        self.find_replace_current();
+                    }
+                    if ui.button("Todo").clicked() {
+                        self.find_replace_all();
+                    }
+
+                    if ui.button("✕").clicked() {
+                        self.find_open = false;
+                    }
+                });
+            });
+    }
+
     /// S4: ventana pequeña "Ir a línea" de Ctrl+G. Enter aplica,
     /// Esc cierra; la X del propio diálogo cuenta como cerrar.
     /// Números inválidos no mueven el cursor: solo avisan.
+    /// S4: diálogo "Ir a línea N" como ventana flotante (Ctrl+G).
     fn show_goto_line(&mut self, ctx: &egui::Context) {
         if !self.goto_pending {
             return;
@@ -234,13 +306,14 @@ impl eframe::App for EditorApp {
         }
 
         // Atajos de teclado globales
-        let (want_save, want_undo, want_redo, want_quit, want_goto) = ctx.input(|i| {
+        let (want_save, want_undo, want_redo, want_quit, want_goto, want_find) = ctx.input(|i| {
             (
                 i.modifiers.ctrl && i.key_pressed(egui::Key::S),
                 i.modifiers.ctrl && i.key_pressed(egui::Key::Z),
                 i.modifiers.ctrl && i.key_pressed(egui::Key::Y),
                 i.modifiers.ctrl && i.key_pressed(egui::Key::Q),
                 i.modifiers.ctrl && i.key_pressed(egui::Key::G),
+                i.modifiers.ctrl && i.key_pressed(egui::Key::F),
             )
         });
         if want_save {
@@ -260,6 +333,17 @@ impl eframe::App for EditorApp {
         if want_goto && !self.close_pending {
             self.goto_input = format!("{}", self.editor_state.cursor_line + 1);
             self.goto_pending = true;
+        }
+        // S2: Ctrl+F abre/cierra la barra de búsqueda.
+        if want_find {
+            self.find_open = !self.find_open;
+            if self.find_open {
+                self.find_update_matches();
+            }
+        }
+        // S2: Esc cierra la barra de búsqueda cuando está abierta.
+        if self.find_open && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.find_open = false;
         }
 
         // Lo mismo si el cierre vino del botón X de la ventana o de
@@ -424,6 +508,9 @@ impl eframe::App for EditorApp {
             });
         });
 
+        // S2: barra de búsqueda justo arriba de la barra de estado.
+        self.show_find_bar(ctx);
+
         // Sin márgenes propios: así el área de texto puede ocupar
         // el panel central entero, sin ese borde gris alrededor.
         egui::CentralPanel::default()
@@ -456,6 +543,9 @@ impl eframe::App for EditorApp {
                     // Una vez por edición real (no por frame): refresca
                     // el tamaño de la barra de estado.
                     self.recalc_view_bytes();
+                    if self.find_open {
+                        self.find_update_matches();
+                    }
                     if response.force_snapshot {
                         self.snapshot_if_changed();
                     } else {

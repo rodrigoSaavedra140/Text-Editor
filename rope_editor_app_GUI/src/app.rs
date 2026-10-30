@@ -129,6 +129,15 @@ pub struct EditorApp {
     // mtime de la carpeta (archivos creados/borrados dentro).
     // S3: agrupamiento de ediciones en chunks por inactividad o Enter/Paste.
     pub chunk_tracker: ChunkTracker,
+    // S2: búsqueda y reemplazo (Ctrl+F).
+    pub find_open: bool,
+    pub find_query: String,
+    pub find_replace: String,
+    pub find_case_sensitive: bool,
+    /// Posiciones de matches: (línea, columna-inicio en chars).
+    pub find_matches: Vec<(usize, usize)>,
+    /// Índice del match actual dentro de find_matches.
+    pub find_current: usize,
     dir_cache: Option<(PathBuf, Option<SystemTime>, Vec<String>, Vec<String>)>,
 }
 
@@ -158,6 +167,12 @@ impl Default for EditorApp {
             goto_input: String::new(),
             view_bytes: 0,
             chunk_tracker: ChunkTracker::default_timeout(),
+            find_open: false,
+            find_query: String::new(),
+            find_replace: String::new(),
+            find_case_sensitive: false,
+            find_matches: Vec::new(),
+            find_current: 0,
             dir_cache: None,
         }
     }
@@ -279,6 +294,122 @@ impl EditorApp {
         } else {
             self.status = "Nada para rehacer".to_string();
         }
+    }
+
+    // ---- S2: búsqueda y reemplazo ----
+
+    /// Recalcula find_matches recorriendo todas las líneas.
+    pub fn find_update_matches(&mut self) {
+        self.find_matches.clear();
+        if self.find_query.is_empty() {
+            self.find_current = 0;
+            return;
+        }
+        let query = if self.find_case_sensitive {
+            self.find_query.clone()
+        } else {
+            self.find_query.to_lowercase()
+        };
+        for (li, line) in self.lines.iter().enumerate() {
+            let hay = if self.find_case_sensitive {
+                line.clone()
+            } else {
+                line.to_lowercase()
+            };
+            let qlen = query.chars().count();
+            let hchars: Vec<char> = hay.chars().collect();
+            let qchars: Vec<char> = query.chars().collect();
+            if qlen == 0 || hchars.len() < qlen {
+                continue;
+            }
+            for start in 0..=(hchars.len() - qlen) {
+                if hchars[start..start + qlen] == qchars[..] {
+                    self.find_matches.push((li, start));
+                }
+            }
+        }
+        if self.find_current >= self.find_matches.len() {
+            self.find_current = 0;
+        }
+    }
+
+    /// Navega al match actual (mueve cursor + autoscroll).
+    pub fn find_goto_current(&mut self) {
+        if let Some(&(line, col)) = self.find_matches.get(self.find_current) {
+            let end_col = col + self.find_query.chars().count();
+            self.editor_state.sel_anchor = Some((line, col));
+            self.editor_state.cursor_line = line;
+            self.editor_state.cursor_col = end_col;
+            self.editor_state.request_autoscroll();
+        }
+    }
+
+    /// Siguiente match (envuelve al principio).
+    pub fn find_next(&mut self) {
+        if self.find_matches.is_empty() {
+            return;
+        }
+        self.find_current = (self.find_current + 1) % self.find_matches.len();
+        self.find_goto_current();
+    }
+
+    /// Match anterior (envuelve al final).
+    pub fn find_prev(&mut self) {
+        if self.find_matches.is_empty() {
+            return;
+        }
+        if self.find_current == 0 {
+            self.find_current = self.find_matches.len() - 1;
+        } else {
+            self.find_current -= 1;
+        }
+        self.find_goto_current();
+    }
+
+    /// Reemplaza el match actual y avanza al siguiente.
+    pub fn find_replace_current(&mut self) {
+        if self.find_matches.is_empty() {
+            return;
+        }
+        self.snapshot_if_changed();
+        if let Some(&(line, col)) = self.find_matches.get(self.find_current) {
+            let qlen = self.find_query.chars().count();
+            let sb = crate::editor_widget::char_to_byte_pub(&self.lines[line], col);
+            let eb = crate::editor_widget::char_to_byte_pub(&self.lines[line], col + qlen);
+            self.lines[line].replace_range(sb..eb, &self.find_replace);
+            self.dirty = true;
+            self.recalc_view_bytes();
+            self.snapshot_if_changed();
+            self.find_update_matches();
+            if !self.find_matches.is_empty() {
+                if self.find_current >= self.find_matches.len() {
+                    self.find_current = 0;
+                }
+                self.find_goto_current();
+            }
+        }
+    }
+
+    /// Reemplaza TODOS los matches de una vez (de atrás hacia adelante
+    /// para no invalidar las posiciones).
+    pub fn find_replace_all(&mut self) {
+        if self.find_matches.is_empty() {
+            return;
+        }
+        self.snapshot_if_changed();
+        let qlen = self.find_query.chars().count();
+        let count = self.find_matches.len();
+        // Reemplazar de atrás hacia adelante evita recalcular offsets.
+        for &(line, col) in self.find_matches.iter().rev() {
+            let sb = crate::editor_widget::char_to_byte_pub(&self.lines[line], col);
+            let eb = crate::editor_widget::char_to_byte_pub(&self.lines[line], col + qlen);
+            self.lines[line].replace_range(sb..eb, &self.find_replace);
+        }
+        self.dirty = true;
+        self.recalc_view_bytes();
+        self.snapshot_if_changed();
+        self.find_update_matches();
+        self.status = format!("{} reemplazos realizados", count);
     }
 
     /// Abre `path` directamente (usado por el explorador de
@@ -642,5 +773,79 @@ mod tests {
         assert!(!mtime_is_stale(Some(t), None));
         // Documento nunca ligado a disco: recién ahí tampoco.
         assert!(!mtime_is_stale(None, None));
+    }
+
+    // ---- S2: Buscar y reemplazar (Ctrl+F) ----
+
+    #[test]
+    fn buscar_coincidencias_case_sensitive_e_insensitive() {
+        let mut app = EditorApp::default();
+        app.set_text("Hola mundo\nhola otro mundo\nHOLA final");
+
+        // Case-insensitive (default)
+        app.find_query = "hola".to_string();
+        app.find_case_sensitive = false;
+        app.find_update_matches();
+        assert_eq!(app.find_matches, vec![(0, 0), (1, 0), (2, 0)]);
+
+        // Case-sensitive
+        app.find_case_sensitive = true;
+        app.find_update_matches();
+        assert_eq!(app.find_matches, vec![(1, 0)]);
+
+        // Sin query: lista vacía
+        app.find_query = "".to_string();
+        app.find_update_matches();
+        assert!(app.find_matches.is_empty());
+    }
+
+    #[test]
+    fn navegacion_siguiente_anterior_find_matches() {
+        let mut app = EditorApp::default();
+        app.set_text("uno\nuno\nuno");
+        app.find_query = "uno".to_string();
+        app.find_update_matches();
+        assert_eq!(app.find_matches.len(), 3);
+        assert_eq!(app.find_current, 0);
+
+        app.find_next();
+        assert_eq!(app.find_current, 1);
+        app.find_next();
+        assert_eq!(app.find_current, 2);
+        // Wrap around
+        app.find_next();
+        assert_eq!(app.find_current, 0);
+
+        // Prev wrap around
+        app.find_prev();
+        assert_eq!(app.find_current, 2);
+        app.find_prev();
+        assert_eq!(app.find_current, 1);
+    }
+
+    #[test]
+    fn reemplazo_actual_y_reemplazo_todo_con_undo() {
+        let mut app = EditorApp::default();
+        app.set_text("gato y perro y gato");
+        app.find_query = "gato".to_string();
+        app.find_replace = "lobo".to_string();
+        app.find_update_matches();
+        assert_eq!(app.find_matches.len(), 2);
+
+        // Reemplazar primer match
+        app.find_replace_current();
+        assert_eq!(app.current_text(), "lobo y perro y gato");
+
+        // Reemplazar todo lo que queda
+        app.find_replace_all();
+        assert_eq!(app.current_text(), "lobo y perro y lobo");
+
+        // Undo revierte el replace all
+        app.undo();
+        assert_eq!(app.current_text(), "lobo y perro y gato");
+
+        // Undo revierte el replace individual
+        app.undo();
+        assert_eq!(app.current_text(), "gato y perro y gato");
     }
 }
