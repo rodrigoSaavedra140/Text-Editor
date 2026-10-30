@@ -654,7 +654,7 @@ impl EditorApp {
             let logo_side = (rect.height() * 0.32).min(260.0);
             let logo_rect = egui::Rect::from_center_size(center, egui::vec2(logo_side, logo_side));
             let tint = match theme.mode {
-                crate::theme::ThemeMode::Light => egui::Color32::from_white_alpha(50),
+                crate::theme::ThemeMode::Light => egui::Color32::from_white_alpha(170),
                 _ => egui::Color32::from_white_alpha(45),
             };
             painter.image(
@@ -880,20 +880,20 @@ impl eframe::App for EditorApp {
                         ui.add(egui::Image::new((tex.id(), egui::vec2(18.0, 18.0))));
                     }
                     ui.add_space(6.0);
-                    ui.label(egui::RichText::new("Karkinos").strong());
+                    ui.label(egui::RichText::new("Karkinos").color(theme.text).strong());
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if title_bar_icon_button(ui, TitleBarIcon::Close).clicked() {
+                    if title_bar_icon_button(ui, TitleBarIcon::Close, &theme).clicked() {
                         self.try_close(ctx);
                     }
 
                         let is_maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
                         let icon = if is_maximized { TitleBarIcon::Restore } else { TitleBarIcon::Maximize };
-                        if title_bar_icon_button(ui, icon).clicked() {
+                        if title_bar_icon_button(ui, icon, &theme).clicked() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!is_maximized));
                         }
 
-                        if title_bar_icon_button(ui, TitleBarIcon::Minimize).clicked() {
+                        if title_bar_icon_button(ui, TitleBarIcon::Minimize, &theme).clicked() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                         }
                     });

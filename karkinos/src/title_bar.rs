@@ -11,20 +11,31 @@ pub enum TitleBarIcon {
 /// (líneas/rectángulos), en vez de un emoji — los emojis dependen de
 /// qué fuente tenga el sistema, y bajo WSLg a veces se ven mal o
 /// distinto a como se ven en Windows de verdad.
-pub fn title_bar_icon_button(ui: &mut egui::Ui, icon: TitleBarIcon) -> egui::Response {
+pub fn title_bar_icon_button(
+    ui: &mut egui::Ui,
+    icon: TitleBarIcon,
+    theme: &crate::theme::Theme,
+) -> egui::Response {
     let size = egui::vec2(32.0, 32.0);
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
 
     if response.hovered() {
         let bg = if matches!(icon, TitleBarIcon::Close) {
             egui::Color32::from_rgb(196, 43, 28) // hover rojo, como en Windows
+        } else if theme.mode == crate::theme::ThemeMode::Light {
+            egui::Color32::from_black_alpha(25)
         } else {
             egui::Color32::from_white_alpha(25)
         };
         ui.painter().rect_filled(rect, 0.0, bg);
     }
 
-    let stroke = egui::Stroke::new(1.2_f32, egui::Color32::from_gray(225));
+    let stroke_color = if theme.mode == crate::theme::ThemeMode::Light {
+        egui::Color32::from_rgb(40, 40, 40)
+    } else {
+        egui::Color32::from_gray(225)
+    };
+    let stroke = egui::Stroke::new(1.2_f32, stroke_color);
     let center = rect.center();
     let painter = ui.painter();
 
@@ -52,7 +63,7 @@ pub fn title_bar_icon_button(ui: &mut egui::Ui, icon: TitleBarIcon) -> egui::Res
             // Tapamos la parte de atrás que "taparía" la ventana de
             // adelante, para que se vea como dos ventanas de verdad
             // superpuestas y no como dos cuadrados cruzados.
-            painter.rect_filled(front, 0.0, egui::Color32::from_rgb(18, 18, 18));
+            painter.rect_filled(front, 0.0, theme.title_bar_bg);
             painter.rect_stroke(front, 0.0, stroke);
         }
     }
