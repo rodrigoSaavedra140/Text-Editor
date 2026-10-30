@@ -25,6 +25,7 @@ pub struct Document {
     pub last_disk_mtime: Option<SystemTime>,
     pub view_bytes: usize,
     pub ast_engine: Option<AstEngine>,
+    pub lsp_client: Option<crate::lsp::LspClient>,
 }
 
 impl Document {
@@ -42,6 +43,26 @@ impl Document {
             last_disk_mtime: None,
             view_bytes: 0,
             ast_engine: None,
+            lsp_client: None,
+        }
+    }
+
+    /// Attaches an LSP client and notifies it with `didOpen` if a file path is configured.
+    pub fn attach_lsp(&mut self, client: crate::lsp::LspClient, language_id: &str) {
+        if let Some(ref path) = self.file_path {
+            let uri = format!("file://{}", path.display());
+            client.did_open(&uri, language_id, &self.buffer.to_string());
+        }
+        self.lsp_client = Some(client);
+    }
+
+    /// Queries live diagnostics for this document from the attached LSP client.
+    pub fn diagnostics(&self) -> Vec<crate::lsp::LspDiagnostic> {
+        if let (Some(client), Some(path)) = (&self.lsp_client, &self.file_path) {
+            let uri = format!("file://{}", path.display());
+            client.diagnostics_for_file(&uri)
+        } else {
+            Vec::new()
         }
     }
 
@@ -76,12 +97,16 @@ impl Document {
             .unwrap_or_default()
     }
 
-    /// Sets the text content, normalizes CRLF, and recalculates byte metrics.
+    /// Sets the text content, normalizes CRLF, recalculates byte metrics, and updates AST & LSP.
     pub fn set_text(&mut self, text: &str) {
         let text = text.replace("\r\n", "\n");
         self.buffer.set_text(&text);
         self.recalc_view_bytes();
         self.update_ast();
+        if let (Some(client), Some(path)) = (&self.lsp_client, &self.file_path) {
+            let uri = format!("file://{}", path.display());
+            client.did_change(&uri, 2, &text);
+        }
     }
 
     /// Recalculates total UTF-8 byte count.
@@ -207,5 +232,34 @@ mod tests {
         assert_eq!(foldings.len(), 2); // function and block
         let spans = doc.highlight_spans();
         assert!(!spans.is_empty());
+    }
+
+    #[test]
+    fn test_document_lsp_integration() {
+        use crate::lsp::{DiagnosticSeverity, LspClient, LspDiagnostic, LspPosition, LspRange};
+
+        let mut doc = Document::new(3);
+        doc.file_path = Some(PathBuf::from("/test/src/main.rs"));
+        let client = LspClient::mock();
+
+        client.set_diagnostics_for_file(
+            "file:///test/src/main.rs",
+            vec![LspDiagnostic {
+                range: LspRange {
+                    start: LspPosition { line: 1, character: 0 },
+                    end: LspPosition { line: 1, character: 5 },
+                },
+                severity: Some(DiagnosticSeverity::Error),
+                code: Some("E0425".to_string()),
+                source: Some("rustc".to_string()),
+                message: "cannot find value `x` in this scope".to_string(),
+            }],
+        );
+
+        doc.attach_lsp(client, "rust");
+        let diags = doc.diagnostics();
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].message, "cannot find value `x` in this scope");
+        assert_eq!(diags[0].severity, Some(DiagnosticSeverity::Error));
     }
 }

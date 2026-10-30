@@ -1159,6 +1159,7 @@ impl eframe::App for EditorApp {
                     // el tamaño de la barra de estado.
                     self.recalc_view_bytes();
                     self.update_ast();
+                    self.update_lsp();
                     if self.find_open {
                         self.find_update_matches();
                     }

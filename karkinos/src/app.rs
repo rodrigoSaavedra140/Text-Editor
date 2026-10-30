@@ -150,6 +150,7 @@ pub struct TabDocument {
     pub external_changed: bool,
     pub last_mtime_check: Option<Instant>,
     pub view_bytes: usize,
+    pub lsp_client: Option<karkinos_core::lsp::LspClient>,
 }
 
 impl TabDocument {
@@ -169,6 +170,7 @@ impl TabDocument {
             external_changed: false,
             last_mtime_check: None,
             view_bytes: 0,
+            lsp_client: None,
         }
     }
 
@@ -283,6 +285,8 @@ pub struct EditorApp {
     pub save_name_pending: bool,
     pub save_name_input: String,
     dir_cache: Option<(PathBuf, Option<SystemTime>, Vec<String>, Vec<String>)>,
+    // S4 (Etapa 4): Cliente Language Server Protocol (LSP)
+    pub lsp_client: Option<karkinos_core::lsp::LspClient>,
 }
 
 impl Default for EditorApp {
@@ -332,6 +336,7 @@ impl Default for EditorApp {
             save_name_pending: false,
             save_name_input: String::new(),
             dir_cache: None,
+            lsp_client: None,
         }
     }
 }
@@ -372,6 +377,7 @@ impl EditorApp {
             tab.external_changed = self.external_changed;
             tab.last_mtime_check = self.last_mtime_check;
             tab.view_bytes = self.view_bytes;
+            tab.lsp_client = self.lsp_client.clone();
         }
     }
 
@@ -426,9 +432,11 @@ impl EditorApp {
             self.external_changed = tab.external_changed;
             self.last_mtime_check = tab.last_mtime_check;
             self.view_bytes = tab.view_bytes;
+            self.lsp_client = tab.lsp_client.clone();
             self.chunk_tracker.reset();
             self.find_matches.clear();
             self.update_ast();
+            self.update_lsp();
         }
     }
 
@@ -564,6 +572,7 @@ impl EditorApp {
         self.chunk_tracker.reset();
         self.recalc_view_bytes();
         self.update_ast();
+        self.update_lsp();
     }
 
     /// Recalcula el tamaño "en vivo" que muestra la barra de estado.
@@ -592,6 +601,32 @@ impl EditorApp {
         } else {
             self.editor_state.ast_engine = None;
             self.editor_state.folding_ranges.clear();
+        }
+    }
+
+    /// S4 (Etapa 4): Actualiza diagnósticos y estado del cliente LSP.
+    pub fn update_lsp(&mut self) {
+        if self.current_language() != crate::syntax::Language::Rust {
+            self.editor_state.diagnostics.clear();
+            return;
+        }
+
+        if self.lsp_client.is_none() {
+            let client = karkinos_core::lsp::LspClient::spawn("rust-analyzer", &[], &self.browse_dir)
+                .unwrap_or_else(|_| karkinos_core::lsp::LspClient::mock());
+            self.lsp_client = Some(client);
+        }
+
+        if let (Some(ref client), Some(ref path)) = (&self.lsp_client, &self.current_file) {
+            let uri = format!("file://{}", path.display());
+            let text = self.current_text();
+            client.did_change(&uri, 2, &text);
+            self.editor_state.diagnostics = client.diagnostics_for_file(&uri);
+
+            if let Some(diag) = self.editor_state.diagnostics.iter().find(|d| d.range.start.line == self.editor_state.cursor_line) {
+                self.editor_state.hover_text = Some(diag.message.clone());
+                self.status = format!("LSP: {}", diag.message);
+            }
         }
     }
 
@@ -1825,5 +1860,36 @@ mod tests {
         assert!(!app.editor_state.folding_ranges.is_empty());
         let has_func = app.editor_state.folding_ranges.iter().any(|r| r.start_line == 0 && r.end_line == 3);
         assert!(has_func, "should detect function folding range");
+    }
+
+    #[test]
+    fn test_editor_app_lsp_diagnostics() {
+        use karkinos_core::lsp::{DiagnosticSeverity, LspClient, LspDiagnostic, LspPosition, LspRange};
+
+        let mut app = EditorApp::default();
+        let path = PathBuf::from("main.rs");
+        app.current_file = Some(path);
+
+        let client = LspClient::mock();
+        client.set_diagnostics_for_file(
+            "file://main.rs",
+            vec![LspDiagnostic {
+                range: LspRange {
+                    start: LspPosition { line: 0, character: 3 },
+                    end: LspPosition { line: 0, character: 7 },
+                },
+                severity: Some(DiagnosticSeverity::Error),
+                code: Some("E0433".to_string()),
+                source: Some("rustc".to_string()),
+                message: "failed to resolve: use of undeclared crate".to_string(),
+            }],
+        );
+
+        app.lsp_client = Some(client);
+        app.update_lsp();
+
+        assert_eq!(app.editor_state.diagnostics.len(), 1);
+        assert_eq!(app.editor_state.diagnostics[0].severity, Some(DiagnosticSeverity::Error));
+        assert!(app.status.contains("failed to resolve"));
     }
 }

@@ -53,6 +53,12 @@ pub struct EditorState {
     // S3 (Etapa 3): Motor AST Tree-sitter y rangos de plegado de código
     pub ast_engine: Option<karkinos_core::syntax_ast::AstEngine>,
     pub folding_ranges: Vec<karkinos_core::syntax_ast::FoldingRange>,
+    // S3 & S4 (Etapa 4): Diagnósticos en vivo y autocompletado LSP
+    pub diagnostics: Vec<karkinos_core::lsp::LspDiagnostic>,
+    pub hover_text: Option<String>,
+    pub completions: Vec<karkinos_core::lsp::LspCompletionItem>,
+    pub show_completions: bool,
+    pub selected_completion: usize,
 }
 
 impl Default for EditorState {
@@ -73,6 +79,11 @@ impl Default for EditorState {
             last_font_size: DEFAULT_FONT_SIZE,
             ast_engine: None,
             folding_ranges: Vec::new(),
+            diagnostics: Vec::new(),
+            hover_text: None,
+            completions: Vec::new(),
+            show_completions: false,
+            selected_completion: 0,
         }
     }
 }
@@ -1263,6 +1274,26 @@ pub fn show(
             );
         }
 
+        // S3 (Etapa 4): Indicadores de diagnósticos LSP en el gutter
+        if let Some(diag) = state.diagnostics.iter().find(|d| d.range.start.line == i) {
+            let (marker, color) = match diag.severity {
+                Some(karkinos_core::lsp::DiagnosticSeverity::Error) => {
+                    ("●", egui::Color32::from_rgb(240, 70, 70))
+                }
+                Some(karkinos_core::lsp::DiagnosticSeverity::Warning) => {
+                    ("▲", egui::Color32::from_rgb(240, 180, 50))
+                }
+                _ => ("ℹ", egui::Color32::from_rgb(100, 180, 240)),
+            };
+            gutter_painter.text(
+                egui::pos2(gutter_rect.left() + 8.0, line_top_y),
+                egui::Align2::LEFT_TOP,
+                marker,
+                egui::FontId::monospace(state.font_size * 0.75),
+                color,
+            );
+        }
+
         let char_len = state
             .char_lens
             .get(i)
@@ -1421,6 +1452,61 @@ pub fn show(
         let scrollbar_painter = ui.painter();
         scrollbar_painter.rect_filled(scrollbar_track, 0.0, egui::Color32::from_white_alpha(10));
         scrollbar_painter.rect_filled(thumb, 4.0, egui::Color32::from_white_alpha(90));
+    }
+
+    // S4 (Etapa 4): Popup flotante de autocompletado LSP
+    if state.show_completions && !state.completions.is_empty() {
+        let cursor_vrow = visual_row_of(&state.cum_rows, state.cursor_line, state.cursor_col, wrap_chars);
+        let cur_y = rect.top() + PAD_Y + cursor_vrow as f32 * row_height - state.scroll + row_height;
+        let cur_x = text_left + (state.cursor_col % wrap_chars.max(1)) as f32 * char_width;
+
+        let popup_w = 260.0_f32;
+        let item_h = 22.0_f32;
+        let visible_items = state.completions.len().min(8);
+        let popup_h = visible_items as f32 * item_h + 8.0;
+
+        let popup_rect = egui::Rect::from_min_size(
+            egui::pos2(
+                cur_x.min(rect.right() - popup_w - 10.0).max(rect.left()),
+                cur_y.min(rect.bottom() - popup_h - 10.0).max(rect.top()),
+            ),
+            egui::vec2(popup_w, popup_h),
+        );
+
+        let popup_painter = ui.painter();
+        popup_painter.rect_filled(popup_rect, 4.0, egui::Color32::from_rgb(32, 34, 40));
+        popup_painter.rect_stroke(popup_rect, 4.0, egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(70, 75, 90)));
+
+        for (idx, item) in state.completions.iter().take(visible_items).enumerate() {
+            let item_y = popup_rect.top() + 4.0 + idx as f32 * item_h;
+            let item_rect = egui::Rect::from_min_size(
+                egui::pos2(popup_rect.left() + 4.0, item_y),
+                egui::vec2(popup_w - 8.0, item_h),
+            );
+
+            let is_sel = idx == state.selected_completion;
+            if is_sel {
+                popup_painter.rect_filled(item_rect, 2.0, egui::Color32::from_rgb(50, 70, 110));
+            }
+
+            popup_painter.text(
+                egui::pos2(item_rect.left() + 6.0, item_y + 3.0),
+                egui::Align2::LEFT_TOP,
+                &item.label,
+                egui::FontId::monospace(state.font_size * 0.9),
+                if is_sel { egui::Color32::WHITE } else { theme.text },
+            );
+
+            if let Some(ref detail) = item.detail {
+                popup_painter.text(
+                    egui::pos2(item_rect.right() - 6.0, item_y + 3.0),
+                    egui::Align2::RIGHT_TOP,
+                    detail,
+                    egui::FontId::monospace(state.font_size * 0.75),
+                    theme.gutter_text,
+                );
+            }
+        }
     }
 
     EditorResponse {
