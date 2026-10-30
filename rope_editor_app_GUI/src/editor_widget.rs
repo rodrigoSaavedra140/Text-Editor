@@ -357,6 +357,103 @@ fn page_target_row(current_row: usize, total_rows: usize, page_rows: usize, down
     }
 }
 
+/// S3 (Etapa 2): resultado de búsqueda de delimitador coincidente.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BracketMatch {
+    pub origin: (usize, usize),
+    pub partner: Option<(usize, usize)>,
+}
+
+fn matching_partner(c: char) -> Option<(char, bool)> {
+    match c {
+        '(' => Some((')', true)),
+        '[' => Some((']', true)),
+        '{' => Some(('}', true)),
+        ')' => Some(('(', false)),
+        ']' => Some(('[', false)),
+        '}' => Some(('{', false)),
+        _ => None,
+    }
+}
+
+pub fn find_matching_bracket(
+    lines: &[String],
+    cursor_line: usize,
+    cursor_col: usize,
+) -> Option<BracketMatch> {
+    if lines.is_empty() || cursor_line >= lines.len() {
+        return None;
+    }
+    let cur_line = &lines[cursor_line];
+    let cur_chars: Vec<char> = cur_line.chars().collect();
+
+    let (origin_col, ch) = if cursor_col < cur_chars.len()
+        && matching_partner(cur_chars[cursor_col]).is_some()
+    {
+        (cursor_col, cur_chars[cursor_col])
+    } else if cursor_col > 0
+        && cursor_col - 1 < cur_chars.len()
+        && matching_partner(cur_chars[cursor_col - 1]).is_some()
+    {
+        (cursor_col - 1, cur_chars[cursor_col - 1])
+    } else {
+        return None;
+    };
+
+    let (partner_ch, forward) = matching_partner(ch)?;
+    let origin = (cursor_line, origin_col);
+
+    let max_lines = 2000;
+    if forward {
+        let mut depth = 1usize;
+        let mut start_c = origin_col + 1;
+        let end_line = (cursor_line + max_lines).min(lines.len());
+        for l in cursor_line..end_line {
+            for (c_idx, c) in lines[l].chars().enumerate().skip(start_c) {
+                if c == ch {
+                    depth += 1;
+                } else if c == partner_ch {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(BracketMatch {
+                            origin,
+                            partner: Some((l, c_idx)),
+                        });
+                    }
+                }
+            }
+            start_c = 0;
+        }
+    } else {
+        let mut depth = 1usize;
+        let start_c = origin_col;
+        let min_line = cursor_line.saturating_sub(max_lines);
+        for l in (min_line..=cursor_line).rev() {
+            let line_chars: Vec<char> = lines[l].chars().collect();
+            let from = if l == cursor_line { start_c } else { line_chars.len() };
+            for c_idx in (0..from).rev() {
+                let c = line_chars[c_idx];
+                if c == ch {
+                    depth += 1;
+                } else if c == partner_ch {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(BracketMatch {
+                            origin,
+                            partner: Some((l, c_idx)),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    Some(BracketMatch {
+        origin,
+        partner: None,
+    })
+}
+
 // ============================================================
 // Ajuste de línea (word wrap) — todo lo de acá para abajo asume
 // fuente monoespaciada, así que "wrap_chars" caracteres entran
@@ -924,6 +1021,13 @@ pub fn show(
     let gutter_painter = ui.painter_at(gutter_rect);
     gutter_painter.rect_filled(gutter_rect, 0.0, egui::Color32::from_white_alpha(5));
 
+    // S3 (Etapa 2): matching de delimitadores () [] {} bajo el cursor
+    let bracket_match = if has_focus && sel.is_none() {
+        find_matching_bracket(lines, state.cursor_line, state.cursor_col)
+    } else {
+        None
+    };
+
     // La primera línea visible sale O(log n) de la búsqueda binaria
     // sobre cum_rows: el loop de abajo solo recorre las filas que
     // entran en pantalla (más la primera, que puede verse partida),
@@ -1031,6 +1135,47 @@ pub fn show(
             if !chunk.is_empty() {
                 let galley = ui.fonts(|f| f.layout_no_wrap(chunk.to_string(), font_id.clone(), text_color));
                 painter.galley(egui::pos2(text_left, y), galley, text_color);
+            }
+
+            // S3 (Etapa 2): Resaltado de delimitadores coincidentes
+            if let Some(bm) = bracket_match {
+                let check_pos = |pos: (usize, usize)| -> bool {
+                    pos.0 == i && pos.1 >= start && pos.1 < end
+                };
+                let is_origin = check_pos(bm.origin);
+                let is_partner = bm.partner.map_or(false, check_pos);
+
+                if is_origin || is_partner {
+                    let col = if is_origin { bm.origin.1 } else { bm.partner.unwrap().1 };
+                    let bx0 = text_left + (col - start) as f32 * char_width;
+                    let b_rect = egui::Rect::from_min_size(
+                        egui::pos2(bx0, y),
+                        egui::vec2(char_width, row_height),
+                    );
+                    if bm.partner.is_some() {
+                        painter.rect_filled(
+                            b_rect,
+                            2.0,
+                            egui::Color32::from_rgba_unmultiplied(100, 180, 255, 60),
+                        );
+                        painter.rect_stroke(
+                            b_rect,
+                            2.0,
+                            egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(120, 200, 255)),
+                        );
+                    } else {
+                        painter.rect_filled(
+                            b_rect,
+                            2.0,
+                            egui::Color32::from_rgba_unmultiplied(255, 80, 80, 50),
+                        );
+                        painter.rect_stroke(
+                            b_rect,
+                            2.0,
+                            egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(255, 90, 90)),
+                        );
+                    }
+                }
             }
 
             if has_focus && i == state.cursor_line && state.cursor_col >= start
@@ -1330,5 +1475,51 @@ mod tests {
                 assert_eq!(char_to_byte(text, c), naive_byte);
             }
         }
+    }
+
+    #[test]
+    fn find_matching_bracket_mismo_renglon_multilinea_y_desbalance() {
+        let lines = vec![
+            "fn main() {".to_string(),
+            "    let a = [1, (2 + 3)];".to_string(),
+            "}".to_string(),
+        ];
+
+        // 1. Paréntesis () en misma línea
+        // Línea 1: "    let a = [1, (2 + 3)];"
+        // '[' está en col 12, '(' en col 16, ')' en col 22, ']' en col 23
+        let match_paren = find_matching_bracket(&lines, 1, 16).expect("debería encontrar '('");
+        assert_eq!(match_paren.origin, (1, 16));
+        assert_eq!(match_paren.partner, Some((1, 22)));
+
+        // Cursor a la derecha de '(': col 17
+        let match_paren_right = find_matching_bracket(&lines, 1, 17).expect("debería encontrar '('");
+        assert_eq!(match_paren_right.origin, (1, 16));
+        assert_eq!(match_paren_right.partner, Some((1, 22)));
+
+        // Cursor sobre ')': col 22 -> backward search
+        let match_paren_close = find_matching_bracket(&lines, 1, 22).expect("debería encontrar ')'");
+        assert_eq!(match_paren_close.origin, (1, 22));
+        assert_eq!(match_paren_close.partner, Some((1, 16)));
+
+        // 2. Corchetes [] anidados en misma línea
+        let match_bracket = find_matching_bracket(&lines, 1, 12).expect("debería encontrar '['");
+        assert_eq!(match_bracket.origin, (1, 12));
+        assert_eq!(match_bracket.partner, Some((1, 23)));
+
+        // 3. Llaves {} multilínea
+        // Línea 0, col 10: '{'
+        let match_brace = find_matching_bracket(&lines, 0, 10).expect("debería encontrar '{'");
+        assert_eq!(match_brace.origin, (0, 10));
+        assert_eq!(match_brace.partner, Some((2, 0))); // '}' en línea 2, col 0
+
+        // 4. Delimitador desbalanceado (sin pareja)
+        let unclosed = vec!["let x = (a + b;".to_string()];
+        let match_unclosed = find_matching_bracket(&unclosed, 0, 8).expect("debería detectar '('");
+        assert_eq!(match_unclosed.origin, (0, 8));
+        assert_eq!(match_unclosed.partner, None); // Sin pareja
+
+        // 5. Cursor en caracter cualquiera
+        assert_eq!(find_matching_bracket(&lines, 0, 1), None);
     }
 }
