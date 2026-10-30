@@ -46,7 +46,7 @@
 |----|-------|-------|--------|--------|
 | T1 | S1 | inline | listo | 9b1f340 |
 | T2 | S2 | inline | listo | 2be1a15 |
-| T3 | S3 | inline | pendiente | - |
+| T3 | S3 | inline | listo | 9f14c29 |
 | T4 | S4 | inline | pendiente | - |
 | T5 | S5 | inline | pendiente | - |
 | T6 | S6 | inline | pendiente | - |
@@ -64,3 +64,8 @@
   Resaltado de todas las coincidencias visibles de búsqueda en el viewport (ámbar translúcido para
   matches secundarios y naranja intenso para el match actualmente enfocado). Búsqueda binaria O(log M)
   por línea en los matches ordenados y cero alocaciones (referencias prestadas en `SearchHighlight`).
+- **L4** (2026-10-29): T3 terminado (commit 9f14c29, suite 50/50 pasando, 0 warnings).
+  Matching de delimitadores `()`, `[]`, `{}`: helper puro `find_matching_bracket` con soporte de
+  anidación, búsqueda bidireccional y detección de desbalance (cap defensivo 2000 líneas).
+  Visualización con recuadro azul/cyan para pares coincidentes y alerta roja tenue para delimitadores
+  huérfanos. Suite con test multilínea, anidado y desbalanceado.
