@@ -802,16 +802,18 @@ pub fn show(
 
     // --- teclado ---
     if has_focus {
-        // S6: mientras el editor tiene foco, egui NO usa Tab para
-        // cambiar de widget enfocado — así Event::Key{Tab} nos llega
-        // y el widget lo inserta como caracter. (Mismos términos que
-        // usa egui::TextEdit para las flechas: EventFilter.)
+        // S6: mientras el editor tiene foco, egui NO usa Tab ni las flechas para
+        // cambiar de widget enfocado — así las flechas (arriba/abajo/izq/der) y Tab
+        // pertenecen exclusivamente al editor de texto y jamás saltan el foco
+        // a la barra de herramientas o al input de archivo.
         ui.memory_mut(|m| {
             m.set_focus_lock_filter(
                 id,
                 egui::EventFilter {
                     tab: true,
-                    ..Default::default()
+                    horizontal_arrows: true,
+                    vertical_arrows: true,
+                    escape: false,
                 },
             )
         });
