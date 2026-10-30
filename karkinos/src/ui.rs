@@ -71,7 +71,7 @@ impl EditorApp {
                             }
                         }
                         if dirs.is_empty() && files.is_empty() {
-                            ui.label("(carpeta vacía)");
+                            ui.label("(empty directory)");
                         }
                     });
                 });
@@ -118,7 +118,7 @@ impl EditorApp {
 
         let fraction = if total == 0 { 1.0 } else { written as f32 / total as f32 };
 
-        egui::Window::new("Guardando…")
+        egui::Window::new("Saving…")
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
@@ -140,10 +140,10 @@ impl EditorApp {
             // ventana encima de un error.
             self.note_save_done();
             match error {
-                Some(e) => self.status = format!("Error al guardar: {}", e),
+                Some(e) => self.status = format!("Save error: {}", e),
                 None => {
                     self.dirty = false;
-                    self.status = "Guardado".to_string();
+                    self.status = "Saved".to_string();
                 }
             }
             self.save_progress = None;
@@ -194,23 +194,23 @@ impl EditorApp {
         }
         let is_new = self.new_doc_pending;
         let dirty_count = self.dirty_tabs_count();
-        let title = if is_new { "Nuevo documento" } else { "Cambios sin guardar" };
+        let title = if is_new { "New Document" } else { "Unsaved Changes" };
         let doc_name = self
             .tabs
             .get(self.active_tab)
             .map(|t| t.display_title())
-            .unwrap_or_else(|| "este documento".to_string());
+            .unwrap_or_else(|| "this document".to_string());
 
         let prompt = if is_new {
-            "Tenés cambios sin guardar. ¿Deseás guardar antes de crear un nuevo documento?".to_string()
+            "You have unsaved changes. Do you want to save before creating a new document?".to_string()
         } else if dirty_count > 1 {
             format!(
-                "Tenés {} pestañas con cambios sin guardar.\n¿Deseás guardar \"{}\" antes de salir?",
+                "You have {} tabs with unsaved changes.\nDo you want to save \"{}\" before quitting?",
                 dirty_count, doc_name
             )
         } else {
             format!(
-                "Tenés cambios sin guardar en \"{}\".\n¿Deseás guardar antes de salir?",
+                "You have unsaved changes in \"{}\".\nDo you want to save before quitting?",
                 doc_name
             )
         };
@@ -226,14 +226,14 @@ impl EditorApp {
                 ui.label(prompt);
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Guardar").clicked() {
+                    if ui.button("Save").clicked() {
                         if is_new {
                             self.confirm_new_doc_save();
                         } else {
                             self.confirm_close_save();
                         }
                     }
-                    if ui.button("Descartar").clicked() {
+                    if ui.button("Discard").clicked() {
                         if is_new {
                             self.new_doc_pending = false;
                             self.new_document();
@@ -251,7 +251,7 @@ impl EditorApp {
                             }
                         }
                     }
-                    if ui.button("Cancelar").clicked() {
+                    if ui.button("Cancel").clicked() {
                         self.cancel_close();
                     }
                 });
@@ -277,22 +277,22 @@ impl EditorApp {
             .map(|t| t.display_title())
             .unwrap_or_default();
 
-        egui::Window::new("Cerrar pestaña")
+        egui::Window::new("Close Tab")
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
             .show(ctx, |ui| {
-                ui.label(format!("La pestaña \"{}\" tiene cambios sin guardar.", title));
-                ui.label("¿Deseás guardar los cambios antes de cerrarla?");
+                ui.label(format!("Tab \"{}\" has unsaved changes.", title));
+                ui.label("Do you want to save changes before closing it?");
                 ui.separator();
                 ui.horizontal(|ui| {
-                    if ui.button("Guardar").clicked() {
+                    if ui.button("Save").clicked() {
                         save_and_close = true;
                     }
-                    if ui.button("Descartar").clicked() {
+                    if ui.button("Discard").clicked() {
                         discard = true;
                     }
-                    if ui.button("Cancelar").clicked() {
+                    if ui.button("Cancel").clicked() {
                         cancel = true;
                     }
                 });
@@ -334,16 +334,16 @@ impl EditorApp {
         let mut cancel = false;
         let mut is_open = true;
 
-        egui::Window::new("Guardar archivo")
+        egui::Window::new("Save File")
             .open(&mut is_open)
             .collapsible(false)
             .resizable(false)
             .default_width(380.0)
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
             .show(ctx, |ui| {
-                ui.label("Ingresá un nombre para el archivo:");
+                ui.label("Enter a name for this file:");
                 ui.label(
-                    egui::RichText::new("(Si lo dejás en blanco se guardará como nuevo.txt)")
+                    egui::RichText::new("(If left blank, it will be saved as untitled.txt)")
                         .color(egui::Color32::from_gray(140))
                         .small(),
                 );
@@ -352,7 +352,7 @@ impl EditorApp {
                 let field = ui.add_sized(
                     [ui.available_width(), 24.0],
                     egui::TextEdit::singleline(&mut self.save_name_input)
-                        .hint_text("nuevo.txt"),
+                        .hint_text("untitled.txt"),
                 );
                 field.request_focus();
 
@@ -362,10 +362,10 @@ impl EditorApp {
 
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Guardar").clicked() {
+                    if ui.button("Save").clicked() {
                         apply = true;
                     }
-                    if ui.button("Cancelar").clicked() {
+                    if ui.button("Cancel").clicked() {
                         cancel = true;
                     }
                 });
@@ -408,11 +408,11 @@ impl EditorApp {
             .frame(egui::Frame::none().fill(egui::Color32::from_rgb(30, 30, 30)).inner_margin(6.0))
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label("Buscar:");
+                    ui.label("Find:");
                     let find_field = ui.add(
                         egui::TextEdit::singleline(&mut self.find_query)
                             .desired_width(200.0)
-                            .hint_text("texto…"),
+                            .hint_text("text…"),
                     );
                     if find_field.changed() {
                         self.find_update_matches();
@@ -450,16 +450,16 @@ impl EditorApp {
                     }
 
                     ui.separator();
-                    ui.label("Reemplazar:");
+                    ui.label("Replace:");
                     ui.add(
                         egui::TextEdit::singleline(&mut self.find_replace)
                             .desired_width(150.0)
-                            .hint_text("reemplazo…"),
+                            .hint_text("replacement…"),
                     );
-                    if ui.button("Reemplazar").clicked() {
+                    if ui.button("Replace").clicked() {
                         self.find_replace_current();
                     }
-                    if ui.button("Todo").clicked() {
+                    if ui.button("All").clicked() {
                         self.find_replace_all();
                     }
 
@@ -484,7 +484,7 @@ impl EditorApp {
         }
         let mut apply = false;
         let mut enter_pressed = false;
-        egui::Window::new("Ir a línea")
+        egui::Window::new("Go to Line")
             // La X del diálogo escribe false directamente en el flag.
             .open(&mut self.goto_pending)
             .collapsible(false)
@@ -493,13 +493,13 @@ impl EditorApp {
             .show(ctx, |ui| {
                 ui.set_min_width(240.0);
                 ui.horizontal(|ui| {
-                    ui.label("Línea:");
+                    ui.label("Line:");
                     let field =
                         ui.add(egui::TextEdit::singleline(&mut self.goto_input).char_limit(12));
                     // El campo pide el foco cada frame del diálogo:
                     // escribir y Enter salen solos.
                     field.request_focus();
-                    if ui.button("Ir").clicked() {
+                    if ui.button("Go").clicked() {
                         apply = true;
                     }
                     // Enter del campo (con foco) = Ir. Se lleva a una
@@ -521,9 +521,9 @@ impl EditorApp {
                     self.editor_state.cursor_col = 0;
                     self.editor_state.sel_anchor = Some((idx, 0));
                     self.editor_state.request_autoscroll();
-                    self.status = format!("Línea {}", idx + 1);
+                    self.status = format!("Line {}", idx + 1);
                 }
-                None => self.status = "Escribí un número de línea para saltar".to_string(),
+                None => self.status = "Please enter a valid line number".to_string(),
             }
         }
     }
@@ -543,7 +543,7 @@ impl EditorApp {
         let mut query_changed = false;
         let mut open_selected = false;
 
-        egui::Window::new("🔍 Búsqueda rápida (Ctrl+P)")
+        egui::Window::new("🔍 Quick Open (Ctrl+P)")
             .open(&mut is_open)
             .collapsible(false)
             .resizable(false)
@@ -556,7 +556,7 @@ impl EditorApp {
                     let input_resp = ui.add_sized(
                         [ui.available_width() - 8.0, 24.0],
                         egui::TextEdit::singleline(&mut self.quick_open.query)
-                            .hint_text("Escribí para buscar archivos... (↑/↓ navegar, Enter abrir, Esc cerrar)"),
+                            .hint_text("Type to search files... (↑/↓ navigate, Enter open, Esc close)"),
                     );
                     if self.quick_open.request_focus {
                         input_resp.request_focus();
@@ -579,7 +579,7 @@ impl EditorApp {
 
                 ui.separator();
                 let total = self.quick_open.filtered.len();
-                ui.label(format!("{} archivos encontrados", total));
+                ui.label(format!("{} files found", total));
 
                 egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
                     let mut clicked_idx = None;
@@ -906,7 +906,7 @@ impl eframe::App for EditorApp {
             ui.horizontal(|ui| {
                 let file_input_response = ui.add(
                     egui::TextEdit::singleline(&mut self.file_path_input)
-                        .hint_text("Ingrese nombre de archivo o nombre de nuevo archivo"),
+                        .hint_text("Enter file path or new file name"),
                 );
                 // Sin botón "Abrir": escribir el nombre y apretar
                 // Enter abre ese archivo directamente.
@@ -914,37 +914,32 @@ impl eframe::App for EditorApp {
                     self.open();
                 }
 
-                // Dropdown del selector de carpetas: botón + popup
-                // propio (show_file_picker, más abajo). Se usa un
-                // estado nuestro y no egui::ComboBox porque ese
-                // cierra el popup con CUALQUIER click adentro —
-                // navegar de carpeta en carpeta obligaba a
-                // reabrirlo en cada paso.
-                let open_picker_btn = ui.button("Abrir…");
+                // Dropdown del selector de carpetas: botón + popup propio
+                let open_picker_btn = ui.button("Open…");
                 if open_picker_btn.clicked() {
                     self.picker_open = !self.picker_open;
                 }
                 self.picker_button_rect = Some(open_picker_btn.interact_rect);
 
                 // S8: Botón Nuevo documento
-                if ui.button("Nuevo").clicked() {
+                if ui.button("New").clicked() {
                     self.try_new_document();
                 }
                 // S7 (Etapa 2): Botón Búsqueda rápida de archivos
-                if ui.button("🔍 Buscar (Ctrl+P)").clicked() {
+                if ui.button("🔍 Search (Ctrl+P)").clicked() {
                     self.quick_open.open(&self.browse_dir);
                 }
-                if ui.button("Guardar (Ctrl+S)").clicked() {
+                if ui.button("Save (Ctrl+S)").clicked() {
                     self.try_save();
                 }
-                if ui.button("Guardar como…").on_hover_text("Guardar como… (Ctrl+Shift+S)").clicked() {
+                if ui.button("Save As…").on_hover_text("Save As… (Ctrl+Shift+S)").clicked() {
                     self.save_as();
                 }
                 ui.separator();
-                if ui.button("Deshacer (Ctrl+Z)").clicked() {
+                if ui.button("Undo (Ctrl+Z)").clicked() {
                     self.undo();
                 }
-                if ui.button("Rehacer (Ctrl+Y)").clicked() {
+                if ui.button("Redo (Ctrl+Y)").clicked() {
                     self.redo();
                 }
                 ui.separator();
@@ -986,12 +981,12 @@ impl eframe::App for EditorApp {
                             let base = if let Some(ref p) = self.current_file {
                                 p.file_name()
                                     .and_then(|n| n.to_str())
-                                    .unwrap_or("archivo")
+                                    .unwrap_or("file")
                                     .to_string()
                             } else if !self.file_path_input.is_empty() {
                                 self.file_path_input.clone()
                             } else {
-                                "Sin título".to_string()
+                                "Untitled".to_string()
                             };
                             if self.dirty {
                                 format!("{} •", base)
@@ -1034,7 +1029,7 @@ impl eframe::App for EditorApp {
                                         )
                                         .frame(false),
                                     )
-                                    .on_hover_text("Cerrar pestaña (Ctrl+W)")
+                                    .on_hover_text("Close Tab (Ctrl+W)")
                                     .clicked()
                                 {
                                     close_target = Some(idx);
@@ -1043,7 +1038,7 @@ impl eframe::App for EditorApp {
                         });
                     }
 
-                    if ui.button("+").on_hover_text("Nueva pestaña (Ctrl+T)").clicked() {
+                    if ui.button("+").on_hover_text("New Tab (Ctrl+T)").clicked() {
                         self.new_tab();
                     }
 
@@ -1056,10 +1051,7 @@ impl eframe::App for EditorApp {
                 });
             });
 
-        // Dropdown con el listado de carpetas/archivos (encima de
-        // todo, posicionado debajo del botón "Abrir…"): navegar
-        // carpetas NO lo cierra; solo cerrar con click afuera, Esc o
-        // elegir un archivo.
+        // Dropdown con el listado de carpetas/archivos
         self.show_picker_popup(ctx);
 
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
@@ -1069,7 +1061,7 @@ impl eframe::App for EditorApp {
                     .current_file
                     .as_ref()
                     .map(|p| p.display().to_string())
-                    .unwrap_or_else(|| "(sin guardar todavía)".to_string());
+                    .unwrap_or_else(|| "(unsaved)".to_string());
                 ui.label(format!("{}{}", path_str, modified));
                 ui.separator();
                 ui.label(format_size(self.view_bytes));
@@ -1088,9 +1080,9 @@ impl eframe::App for EditorApp {
                 // debe nada (sin cambios propios): ofrecer recarga.
                 if self.external_changed && !self.dirty && self.save_progress.is_none() {
                     ui.separator();
-                    ui.label(egui::RichText::new("⚠ El archivo cambió en el disco")
+                    ui.label(egui::RichText::new("⚠ File changed on disk")
                         .color(egui::Color32::from_rgb(255, 178, 64)));
-                    if ui.button("Recargar").clicked() {
+                    if ui.button("Reload").clicked() {
                         self.reload();
                     }
                 }

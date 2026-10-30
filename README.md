@@ -1,74 +1,74 @@
 # Karkinos Text Editor
 
-Editor de texto ultra liviano y de alto rendimiento escrito en Rust con `eframe`/`egui`.
-Diseñado para iniciar en menos de 50 ms con un consumo de recursos mínimo, soporte nativo de multi-pestañas, búsqueda difusa de archivos, resaltado de sintaxis ligero y ergonomía de edición moderna. Corre en Linux nativo (Wayland y X11) y bajo WSLg.
+An ultra-lightweight, high-performance modern text editor written in Rust with `eframe`/`egui`.
+Engineered to start in under 50 ms with minimal system resource consumption, native multi-tab support, balanced B-Tree Rope text buffers (`ropey`), fuzzy file navigation, lightweight multi-language syntax highlighting, and modern editing ergonomics. Runs natively on Linux (Wayland & X11) and under Windows WSLg.
 
-## 📦 Estructura del proyecto
+## 📦 Project Structure
 
 ```text
 karkinos/
-├── Cargo.toml           # Dependencias + [profile.release] (LTO thin, strip)
+├── Cargo.toml           # Package configuration + [profile.release] (LTO thin, strip)
 ├── assets/
-│   └── logo.png         # Logo embebido con recorte de transparencia adaptativo
+│   └── logo.png         # Embedded logo with adaptive transparency cutout
 └── src/
-    ├── main.rs          # Entrada: inicialización de ventana custom y decoraciones
-    ├── app.rs           # EditorApp: buffers, pestañas, guardado async, zoom, confirmaciones
-    ├── buffer.rs        # Motor de buffer de texto Rope (ropey) O(log N) y snapshots COW O(1)
-    ├── editor_widget.rs # Widget de edición por franja (wrap), teclado, gutter, autoscroll
-    ├── ui.rs            # Layout egui: title bar personalizada, tabs, toolbar, diálogos modales
-    ├── title_bar.rs     # Barra de título sin bordes nativos con íconos vectoriales
-    ├── syntax.rs        # Tokenizador de sintaxis y coloreado LayoutJob (10 lenguajes)
-    ├── quick_open.rs    # Diálogo de búsqueda rápida de archivos (Ctrl+P) con fuzzy match
-    ├── theme.rs         # Paletas de temas (Dark, Light, Monokai, Dracula)
-    ├── util.rs          # Formateo de tamaños, cálculo de saltos y detección WSL
-    └── undo.rs          # UndoStack con agrupación por inactividad y punteros Arc compartidos
+    ├── main.rs          # Entry point: custom frameless window and decoration setup
+    ├── app.rs           # EditorApp: buffers, tabs, async save, font zoom, dialogs
+    ├── buffer.rs        # Balanced B-Tree Rope text buffer engine with O(1) COW snapshots
+    ├── editor_widget.rs # Band-rendered wrap editor widget, keyboard input, gutter, autoscroll
+    ├── ui.rs            # egui layout: custom title bar, tabs, toolbar, modal dialogs
+    ├── title_bar.rs     # Frameless title bar with vector icons and window controls
+    ├── syntax.rs        # Syntax tokenizers and LayoutJob colorizer (10+ languages)
+    ├── quick_open.rs    # Quick Open file search dialog (Ctrl+P) with fuzzy matching
+    ├── theme.rs         # Theme palettes (Dark, Light, Monokai, Dracula)
+    ├── util.rs          # Byte formatters, goto calculations, and WSL environment detection
+    └── undo.rs          # UndoStack with idle chunking and O(1) Copy-On-Write Rope snapshots
 ```
 
-## ⚙️ Requisitos
+## ⚙️ Requirements
 
-- [Rust y Cargo](https://rustup.rs/) (edición 2021).
-- **Linux nativo** (Wayland o X11) o **Windows con WSL / WSLg**.
+- [Rust and Cargo](https://rustup.rs/) (2021 edition).
+- **Native Linux** (Wayland or X11) or **Windows with WSL / WSLg**.
 
-## 🚀 Compilación y ejecución
+## 🚀 Building and Running
 
 ```bash
 cd karkinos
 
-# Modo desarrollo
+# Development mode
 cargo run
 
-# Abrir un archivo directamente
-cargo run -- mi_archivo.rs
+# Open a file directly
+cargo run -- src/main.rs
 
-# Compilar binario de producción optimizado
+# Build optimized production binary
 cargo build --release
 ```
 
-El ejecutable resultante se ubicará en `target/release/karkinos`.
+The resulting executable will be located at `target/release/karkinos`.
 
-## ⌨️ Atajos de teclado principales
+## ⌨️ Main Keyboard Shortcuts
 
-### Archivos y pestañas
-- `Ctrl+N` — Nuevo documento (con confirmación de cambios)
-- `Ctrl+T` — Nueva pestaña
-- `Ctrl+W` — Cerrar pestaña activa
-- `Ctrl+Tab` / `Ctrl+Shift+Tab` — Ciclar entre pestañas
-- `Ctrl+P` — Búsqueda rápida de archivos en el proyecto (*Quick Open*)
-- `Ctrl+S` — Guardar archivo
-- `Ctrl+Shift+S` — Guardar como...
-- `Ctrl+Q` — Salir (con resguardo multi-pestaña ante cambios sin guardar)
+### Files and Tabs
+- `Ctrl+N` — New document (prompts to save unsaved changes)
+- `Ctrl+T` — New tab
+- `Ctrl+W` — Close active tab
+- `Ctrl+Tab` / `Ctrl+Shift+Tab` — Cycle through open tabs
+- `Ctrl+P` — Quick Open project file finder
+- `Ctrl+S` — Save active document
+- `Ctrl+Shift+S` — Save As...
+- `Ctrl+Q` — Quit (with multi-tab unsaved changes protection)
 
-### Edición y navegación
-- `Ctrl+Z` / `Ctrl+Y` — Deshacer / Rehacer
-- `Ctrl+F` — Barra de búsqueda y reemplazo
-- `Ctrl+G` — Ir a número de línea
-- `Ctrl+/` — Comentar / descomentar línea o bloque seleccionado
-- `Ctrl+D` — Duplicar línea o bloque hacia abajo
-- `Tab` / `Shift+Tab` — Indentar / desindentar bloque o línea
-- `Ctrl+=` / `Ctrl+-` o `Ctrl+Rueda` — Zoom de tamaño de fuente
-- **Clic en el gutter (números de línea)** — Selecciona la línea completa
+### Editing and Navigation
+- `Ctrl+Z` / `Ctrl+Y` — Undo / Redo
+- `Ctrl+F` — Find & Replace bar
+- `Ctrl+G` — Go to line number
+- `Ctrl+/` — Toggle line or block comment
+- `Ctrl+D` — Duplicate line or selection downward
+- `Tab` / `Shift+Tab` — Indent / dedent selected block or line
+- `Ctrl+=` / `Ctrl+-` or `Ctrl+Wheel` — Editor font size zoom
+- **Gutter click (line numbers)** — Selects the entire clicked line
 
-## 📄 Licencia
+## 📄 License
 
-Este proyecto se distribuye bajo los términos de la [Business Source License 1.1 (BSL 1.1)](LICENSE).
-Permite el uso, copia, modificación y compilación gratuita para fines personales, educativos, de desarrollo y evaluación no comercial. Para cualquier uso o distribución comercial se requiere una licencia comercial emitida por el titular de los derechos.
+This project is distributed under the terms of the [Business Source License 1.1 (BSL 1.1)](LICENSE).
+It grants free use, copying, modification, and compilation for personal, educational, development, and non-commercial evaluation purposes. For any commercial production use or distribution, a commercial license issued by the copyright holder is required.

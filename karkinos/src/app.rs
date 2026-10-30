@@ -74,31 +74,23 @@ pub fn picker_should_stay_open(
     inside(popup) || inside(button)
 }
 
-/// Nombre por defecto de un archivo nuevo sin nombre: `nuevo.txt`
-/// dentro de `dir`. Si la carpeta ya tiene algo con ese nombre, NO
-/// pisa datos nuevos: propone `nuevo (1).txt`, `nuevo (2).txt` …
-/// hasta el primero libre.
-/// `exists` va como inyección (en test es un HashSet, en la app es
-/// disco real) para que el nombre quede decidido por una función
-/// pura y el test no toque el disco.
+/// Default file path for an unsaved file without a path: `untitled.txt` in `dir`.
 pub fn default_new_file_path(
     dir: &std::path::Path,
     exists: &dyn Fn(&std::path::Path) -> bool,
 ) -> std::path::PathBuf {
     for n in 0..1000u32 {
-        let nombre = if n == 0 {
-            "nuevo.txt".to_string()
+        let name = if n == 0 {
+            "untitled.txt".to_string()
         } else {
-            format!("nuevo ({n}).txt")
+            format!("untitled ({n}).txt")
         };
-        let path = dir.join(nombre);
+        let path = dir.join(name);
         if !exists(&path) {
             return path;
         }
     }
-    // Extremo improbable: 1000 copias ocupadas. Sale con un nombre
-    // fijo y legible en vez de ciclar o resolver por UUID raro.
-    dir.join("nuevo-sin-nombre-generado.txt")
+    dir.join("untitled-file.txt")
 }
 
 /// Detecta si el archivo cambió en el disco respecto a lo que
@@ -184,12 +176,12 @@ impl TabDocument {
         let name = if let Some(ref p) = self.current_file {
             p.file_name()
                 .and_then(|n| n.to_str())
-                .unwrap_or("archivo")
+                .unwrap_or("file")
                 .to_string()
         } else if !self.file_path_input.is_empty() {
             self.file_path_input.clone()
         } else {
-            "Sin título".to_string()
+            "Untitled".to_string()
         };
 
         if self.dirty {
@@ -304,7 +296,7 @@ impl Default for EditorApp {
             file_path_input: String::new(),
             current_file: None,
             dirty: false,
-            status: "Listo".to_string(),
+            status: "Ready".to_string(),
             browse_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             logo_texture: None,
             save_progress: None,
@@ -446,7 +438,7 @@ impl EditorApp {
         }
         self.sync_active_to_tab();
         self.load_tab(new_idx);
-        self.status = format!("Pestaña: {}", self.tabs[self.active_tab].display_title());
+        self.status = format!("Tab: {}", self.tabs[self.active_tab].display_title());
     }
 
     /// S8 (Etapa 2): Crea una nueva pestaña en blanco y la activa.
@@ -456,7 +448,7 @@ impl EditorApp {
         self.next_tab_id += 1;
         self.tabs.push(new_tab);
         self.load_tab(self.tabs.len() - 1);
-        self.status = "Nueva pestaña creada".to_string();
+        self.status = "New tab created".to_string();
     }
 
     /// S8 (Etapa 2): Cierra la pestaña en `idx`. Si es la única pestaña, la resetea en blanco.
@@ -664,9 +656,9 @@ impl EditorApp {
             let text = snap.to_string();
             self.restore_text_keeping_view(&text);
             self.last_snapshot = snap;
-            self.status = "Deshecho".to_string();
+            self.status = "Undone".to_string();
         } else {
-            self.status = "Nada para deshacer".to_string();
+            self.status = "Nothing to undo".to_string();
         }
     }
 
@@ -677,9 +669,9 @@ impl EditorApp {
             let text = snap.to_string();
             self.restore_text_keeping_view(&text);
             self.last_snapshot = snap;
-            self.status = "Rehecho".to_string();
+            self.status = "Redone".to_string();
         } else {
-            self.status = "Nada para rehacer".to_string();
+            self.status = "Nothing to redo".to_string();
         }
     }
 
@@ -796,7 +788,7 @@ impl EditorApp {
         self.recalc_view_bytes();
         self.snapshot_if_changed();
         self.find_update_matches();
-        self.status = format!("{} reemplazos realizados", count);
+        self.status = format!("Replaced {} occurrences", count);
     }
 
     /// Abre `path` directamente (usado por el explorador de
@@ -807,7 +799,7 @@ impl EditorApp {
         self.sync_active_to_tab();
         if let Some(pos) = self.tabs.iter().position(|t| t.current_file.as_ref() == Some(&path)) {
             self.switch_tab(pos);
-            self.status = "Archivo ya abierto en pestaña".to_string();
+            self.status = "File already open in tab".to_string();
             return;
         }
 
@@ -833,11 +825,11 @@ impl EditorApp {
                 }
                 self.current_file = Some(path);
                 self.dirty = false;
-                self.status = "Archivo abierto".to_string();
+                self.status = "File opened".to_string();
                 self.sync_active_to_tab();
             }
             Err(e) => {
-                self.status = format!("Error al abrir: {}", e);
+                self.status = format!("Error opening file: {}", e);
             }
         }
     }
@@ -987,7 +979,7 @@ impl EditorApp {
             }
         };
         if path.as_os_str().is_empty() {
-            self.status = "Escribí una ruta de archivo antes de guardar".to_string();
+            self.status = "Please provide a file path before saving".to_string();
             return false;
         }
 
@@ -1100,7 +1092,7 @@ impl EditorApp {
         self.undo_stack = UndoStack::new();
         self.chunk_tracker.reset();
         self.find_matches.clear();
-        self.status = "Nuevo documento".to_string();
+        self.status = "New document".to_string();
         self.sync_active_to_tab();
     }
 
@@ -1160,7 +1152,7 @@ impl EditorApp {
             return;
         };
         if self.dirty {
-            self.status = "Hay cambios sin guardar: guardá primero para recargar".to_string();
+            self.status = "Unsaved changes present: please save before reloading".to_string();
             return;
         }
         self.open_path(path);
@@ -1292,26 +1284,26 @@ mod tests {
         let dir = std::env::temp_dir()
             .join(format!("karkinos_close_default_{}", std::process::id()));
         std::fs::create_dir_all(&dir)?;
-        let _ = std::fs::remove_file(dir.join("nuevo.txt"));
+        let _ = std::fs::remove_file(dir.join("untitled.txt"));
 
         let mut app = EditorApp::default();
         app.browse_dir = dir.clone();
         app.dirty = true;
-        // Sin ruta y sin archivo: save() ELIGE "nuevo.txt" como
+        // Sin ruta y sin archivo: save() ELIGE "untitled.txt" como
         // nombre default (bugfix 2026-10-29), así que el diálogo
         // ahora sí puede prometer el cierre: el guardado arranca
         // sobre un destino concreto en vez de abortar.
         app.confirm_close_save();
         assert!(!app.close_pending, "el diálogo sí puede cerrar: el save arrancó");
         assert!(app.close_after_save);
-        // El destino queda fijado a dir/nuevo.txt antes del async.
-        assert_eq!(app.current_file, Some(dir.join("nuevo.txt")));
+        // El destino queda fijado a dir/untitled.txt antes del async.
+        assert_eq!(app.current_file, Some(dir.join("untitled.txt")));
         if let Some(progress) = &app.save_progress {
             while !progress.lock().unwrap().done {
                 std::thread::sleep(std::time::Duration::from_millis(5));
             }
         }
-        let _ = std::fs::remove_file(dir.join("nuevo.txt"));
+        let _ = std::fs::remove_file(dir.join("untitled.txt"));
         let _ = std::fs::remove_dir_all(&dir);
         Ok(())
     }
@@ -1433,26 +1425,26 @@ mod tests {
             move |p: &Path| existentes.contains(p.file_name().and_then(|n| n.to_str()).unwrap_or(""))
         }
 
-        // Caso feliz: carpeta libre → dir/nuevo.txt
+        // Caso feliz: carpeta libre → dir/untitled.txt
         assert_eq!(
             default_new_file_path(dir, &mk_exists(&HashSet::new())),
-            PathBuf::from("/tmp/karkinos_test/nuevo.txt")
+            PathBuf::from("/tmp/karkinos_test/untitled.txt")
         );
 
-        // Colisión con nuevo.txt → nuevo (1).txt
+        // Colisión con untitled.txt → untitled (1).txt
         let mut existentes = HashSet::new();
-        existentes.insert("nuevo.txt");
+        existentes.insert("untitled.txt");
         assert_eq!(
             default_new_file_path(dir, &mk_exists(&existentes)),
-            PathBuf::from("/tmp/karkinos_test/nuevo (1).txt")
+            PathBuf::from("/tmp/karkinos_test/untitled (1).txt")
         );
 
         // Colisión en cadena → cuenta mientras el nombre exista.
-        existentes.insert("nuevo (1).txt");
-        existentes.insert("nuevo (2).txt");
+        existentes.insert("untitled (1).txt");
+        existentes.insert("untitled (2).txt");
         assert_eq!(
             default_new_file_path(dir, &mk_exists(&existentes)),
-            PathBuf::from("/tmp/karkinos_test/nuevo (3).txt")
+            PathBuf::from("/tmp/karkinos_test/untitled (3).txt")
         );
     }
 
@@ -1461,7 +1453,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("karkinos_save_default_{}", std::process::id()));
         std::fs::create_dir_all(&dir)?;
         // limpio cualquier resto de corridas anteriores
-        let _ = std::fs::remove_file(dir.join("nuevo.txt"));
+        let _ = std::fs::remove_file(dir.join("untitled.txt"));
 
         let mut app = EditorApp::default();
         app.browse_dir = dir.clone();
@@ -1471,13 +1463,13 @@ mod tests {
         app.file_path_input.clear();
 
         assert!(app.save());
-        // Elige dir/nuevo.txt y muestra en el input el nombre elegido.
-        assert_eq!(app.current_file, Some(dir.join("nuevo.txt")));
-        assert_eq!(app.file_path_input, "nuevo.txt");
+        // Elige dir/untitled.txt y muestra en el input el nombre elegido.
+        assert_eq!(app.current_file, Some(dir.join("untitled.txt")));
+        assert_eq!(app.file_path_input, "untitled.txt");
         // Espera acotado al guardado asincrónico hasta que el disco
         // tenga el contenido completo.
         use std::io::Read;
-        let path = dir.join("nuevo.txt");
+        let path = dir.join("untitled.txt");
         let mut contenido = String::new();
         for _ in 0..200 {
             std::thread::sleep(std::time::Duration::from_millis(25));
@@ -1601,7 +1593,7 @@ mod tests {
         assert_eq!(app.current_file, None);
         assert_eq!(app.file_path_input, "");
         assert!(!app.dirty);
-        assert_eq!(app.status, "Nuevo documento");
+        assert_eq!(app.status, "New document");
     }
 
     #[test]
@@ -1709,7 +1701,7 @@ mod tests {
             }
         }
 
-        // 3. Otro documento sin nombre: dejar en blanco debe asignar "nuevo.txt"
+        // 3. Otro documento sin nombre: dejar en blanco debe asignar "untitled.txt"
         let mut app2 = EditorApp::default();
         app2.browse_dir = dir.clone();
         app2.set_text("otro texto");
@@ -1721,8 +1713,8 @@ mod tests {
         app2.save_name_input = "   ".to_string();
         assert!(app2.confirm_save_name());
         assert!(!app2.save_name_pending);
-        assert_eq!(app2.current_file, Some(dir.join("nuevo.txt")));
-        assert_eq!(app2.file_path_input, "nuevo.txt");
+        assert_eq!(app2.current_file, Some(dir.join("untitled.txt")));
+        assert_eq!(app2.file_path_input, "untitled.txt");
 
         if let Some(progress) = &app2.save_progress {
             while !progress.lock().unwrap().done {
@@ -1731,7 +1723,7 @@ mod tests {
         }
 
         let _ = std::fs::remove_file(dir.join("mi_programa.rs"));
-        let _ = std::fs::remove_file(dir.join("nuevo.txt"));
+        let _ = std::fs::remove_file(dir.join("untitled.txt"));
         let _ = std::fs::remove_dir_all(&dir);
         Ok(())
     }

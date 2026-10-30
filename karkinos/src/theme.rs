@@ -20,8 +20,8 @@ impl ThemeMode {
 
     pub fn name(&self) -> &'static str {
         match self {
-            ThemeMode::Dark => "Oscuro",
-            ThemeMode::Light => "Claro",
+            ThemeMode::Dark => "Dark",
+            ThemeMode::Light => "Light",
             ThemeMode::Monokai => "Monokai",
             ThemeMode::Dracula => "Dracula",
         }
