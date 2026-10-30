@@ -20,7 +20,7 @@
 
 | ID | Specs | Route | Status | Commit |
 |----|-------|-------|--------|--------|
-| T1 | S1 | inline | pendiente | - |
+| T1 | S1 | inline | listo | e4eb95c |
 | T2 | S2 | inline | pendiente | - |
 | T3 | S3 | inline | pendiente | - |
 
@@ -31,3 +31,7 @@
   2. Asignaciones en el heap por frame en `show()` (números de gutter, `font_id.clone()`, clonado incondicional de eventos).
   3. Duplicación de buffers completos en `UndoStack`.
   Plan aprobado por el usuario e inicio de ejecución.
+- **L2** (2026-10-29): T1 terminado (commit e4eb95c, suite 48/48 pasando, 0 warnings).
+  `char_to_byte` ahora ejecuta en O(1) vía clamp directo cuando la línea es ASCII (`s.is_ascii()`).
+  En el render loop de `show()`, si `line.len() == char_len`, la conversión de sub-fila a byte offsets
+  se resuelve en O(1) directo sin recorrer caracteres. Test exhaustivo de equivalencia ASCII/UTF-8 agregado.
