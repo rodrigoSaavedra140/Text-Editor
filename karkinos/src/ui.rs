@@ -470,6 +470,140 @@ impl EditorApp {
             });
     }
 
+    /// S1 (Rust IDE): Panel inferior para ejecución y diagnósticos de Cargo (F7 / F5 / Ctrl+\).
+    fn show_cargo_panel(&mut self, ctx: &egui::Context, theme: &crate::theme::Theme) {
+        if !self.cargo_panel_open {
+            return;
+        }
+
+        let mut close_panel = false;
+        let mut jump_target: Option<karkinos_core::cargo::CargoDiagnostic> = None;
+
+        let status = self.cargo_runner.status();
+        let (errors_count, warnings_count) = self.cargo_runner.error_and_warning_counts();
+
+        egui::TopBottomPanel::bottom("cargo_panel")
+            .resizable(true)
+            .default_height(200.0)
+            .min_height(100.0)
+            .max_height(450.0)
+            .frame(egui::Frame::none().fill(theme.panel_bg))
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("🦀 Cargo Pipeline").strong());
+
+                    let (status_text, status_color) = match status {
+                        karkinos_core::cargo::CargoStatus::Idle => ("Idle", egui::Color32::from_gray(140)),
+                        karkinos_core::cargo::CargoStatus::Running => ("Running…", egui::Color32::from_rgb(255, 190, 60)),
+                        karkinos_core::cargo::CargoStatus::Success => ("Success", egui::Color32::from_rgb(80, 200, 120)),
+                        karkinos_core::cargo::CargoStatus::Failed(_code) => {
+                            ("Failed", egui::Color32::from_rgb(255, 90, 90))
+                        }
+                        karkinos_core::cargo::CargoStatus::Killed => ("Terminated", egui::Color32::from_gray(160)),
+                    };
+
+                    ui.label(egui::RichText::new(format!("[{}]", status_text)).color(status_color).strong());
+
+                    if let Some(action) = self.cargo_runner.current_action {
+                        ui.label(egui::RichText::new(action.display_name()).italics().color(egui::Color32::from_gray(170)));
+                    }
+
+                    ui.separator();
+
+                    if ui.selectable_label(self.cargo_active_tab == 0, "Terminal Output").clicked() {
+                        self.cargo_active_tab = 0;
+                    }
+
+                    let diag_tab_label = format!("Diagnostics ({} err, {} warn)", errors_count, warnings_count);
+                    let diag_color = if errors_count > 0 {
+                        egui::Color32::from_rgb(255, 90, 90)
+                    } else if warnings_count > 0 {
+                        egui::Color32::from_rgb(255, 190, 60)
+                    } else {
+                        egui::Color32::from_gray(180)
+                    };
+
+                    if ui.selectable_label(self.cargo_active_tab == 1, egui::RichText::new(diag_tab_label).color(diag_color)).clicked() {
+                        self.cargo_active_tab = 1;
+                    }
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.small_button("✕").clicked() {
+                            close_panel = true;
+                        }
+                        if ui.small_button("Clear").clicked() {
+                            self.cargo_runner.clear();
+                        }
+                        if self.cargo_runner.is_running() {
+                            if ui.small_button("⏹ Stop").clicked() {
+                                self.cargo_runner.kill();
+                            }
+                        }
+                    });
+                });
+
+                ui.separator();
+
+                if self.cargo_active_tab == 0 {
+                    let lines = self.cargo_runner.raw_lines();
+                    egui::ScrollArea::both()
+                        .stick_to_bottom(true)
+                        .show(ui, |ui| {
+                            for line in lines {
+                                let color = if line.is_error {
+                                    egui::Color32::from_rgb(255, 120, 120)
+                                } else {
+                                    theme.text
+                                };
+                                ui.label(egui::RichText::new(line.text).monospace().color(color));
+                            }
+                        });
+                } else {
+                    let diags = self.cargo_runner.diagnostics();
+                    if diags.is_empty() {
+                        ui.label(egui::RichText::new("No compiler errors or warnings detected.").italics().color(egui::Color32::from_gray(140)));
+                    } else {
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            for diag in &diags {
+                                let (badge, color) = match diag.level.as_str() {
+                                    "error" => ("● ERROR", egui::Color32::from_rgb(255, 80, 80)),
+                                    "warning" => ("▲ WARN", egui::Color32::from_rgb(255, 190, 60)),
+                                    _ => ("ℹ NOTE", egui::Color32::from_rgb(100, 180, 255)),
+                                };
+
+                                ui.group(|ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.label(egui::RichText::new(badge).strong().color(color));
+                                        if let Some(ref file) = diag.file {
+                                            let loc_str = format!("{}:{}:{}", file.display(), diag.line + 1, diag.col + 1);
+                                            if ui.link(egui::RichText::new(loc_str).color(egui::Color32::from_rgb(130, 190, 255))).clicked() {
+                                                jump_target = Some(diag.clone());
+                                            }
+                                        }
+                                    });
+                                    ui.label(egui::RichText::new(&diag.message).color(theme.text));
+                                    if !diag.rendered.is_empty() {
+                                        ui.collapsing("Compiler Details", |ui| {
+                                            ui.label(egui::RichText::new(&diag.rendered).monospace().small());
+                                        });
+                                    }
+                                });
+                                ui.add_space(2.0);
+                            }
+                        });
+                    }
+                }
+            });
+
+        if close_panel {
+            self.cargo_panel_open = false;
+        }
+
+        if let Some(target) = jump_target {
+            self.jump_to_cargo_diagnostic(&target);
+        }
+    }
+
     /// S4: ventana pequeña "Ir a línea" de Ctrl+G. Enter aplica,
     /// Esc cierra; la X del propio diálogo cuenta como cerrar.
     /// Números inválidos no mueven el cursor: solo avisan.
@@ -974,6 +1108,22 @@ impl eframe::App for EditorApp {
         if want_redo {
             self.redo();
         }
+        let (want_cargo_check, want_cargo_run, want_cargo_toggle) = ctx.input(|i| {
+            (
+                i.key_pressed(egui::Key::F7),
+                i.key_pressed(egui::Key::F5),
+                i.modifiers.ctrl && i.key_pressed(egui::Key::Backslash),
+            )
+        });
+        if want_cargo_check {
+            self.run_cargo(karkinos_core::cargo::CargoAction::Check);
+        }
+        if want_cargo_run {
+            self.run_cargo(karkinos_core::cargo::CargoAction::Run);
+        }
+        if want_cargo_toggle {
+            self.cargo_panel_open = !self.cargo_panel_open;
+        }
         if want_quit {
             self.try_close(ctx);
         }
@@ -1086,6 +1236,27 @@ impl eframe::App for EditorApp {
                 // Guardado rápido
                 if ui.button("💾 Save (Ctrl+S)").clicked() {
                     self.try_save();
+                }
+
+                ui.separator();
+
+                // S1 (Rust IDE): Rust & Cargo Developer Tools
+                ui.label(egui::RichText::new("🦀 Rust:").strong().color(egui::Color32::from_rgb(222, 100, 50)));
+                if ui.button("Check").on_hover_text("Run cargo check (F7)").clicked() {
+                    self.run_cargo(karkinos_core::cargo::CargoAction::Check);
+                }
+                if ui.button("Clippy").on_hover_text("Run cargo clippy").clicked() {
+                    self.run_cargo(karkinos_core::cargo::CargoAction::Clippy);
+                }
+                if ui.button("Test").on_hover_text("Run cargo test").clicked() {
+                    self.run_cargo(karkinos_core::cargo::CargoAction::Test);
+                }
+                if ui.button("▶ Run").on_hover_text("Run cargo run (F5)").clicked() {
+                    self.run_cargo(karkinos_core::cargo::CargoAction::Run);
+                }
+                let panel_toggle_label = if self.cargo_panel_open { "Console ▾" } else { "Console ▸" };
+                if ui.button(panel_toggle_label).on_hover_text("Toggle Cargo Console (Ctrl+\\)").clicked() {
+                    self.cargo_panel_open = !self.cargo_panel_open;
                 }
 
                 ui.separator();
@@ -1262,6 +1433,8 @@ impl eframe::App for EditorApp {
 
         // S2: barra de búsqueda justo arriba de la barra de estado.
         self.show_find_bar(ctx);
+        // S1 (Rust IDE): panel inferior de ejecución y diagnósticos de Cargo (F7 / F5 / Ctrl+\).
+        self.show_cargo_panel(ctx, &theme);
 
         // Sin márgenes propios: así el área de texto puede ocupar
         // el panel central entero, sin ese borde gris alrededor.

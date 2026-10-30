@@ -8,6 +8,7 @@
 //! - Text algorithms: Word boundary navigation, comment toggling, auto-indentation, and bracket matching.
 
 pub mod buffer;
+pub mod cargo;
 pub mod document;
 pub mod ending;
 pub mod lsp;
@@ -17,6 +18,7 @@ pub mod text_ops;
 pub mod undo;
 
 pub use buffer::TextBuffer;
+pub use cargo::{CargoAction, CargoDiagnostic, CargoOutputLine, CargoRunner, CargoStatus};
 pub use document::Document;
 pub use ending::{default_new_file_path, detect_line_ending, serialize_line_ending, LineEnding};
 pub use lsp::{

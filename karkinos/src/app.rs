@@ -289,6 +289,10 @@ pub struct EditorApp {
     pub plugin_manager: karkinos_core::plugin::PluginManager,
     pub extensions_modal_open: bool,
     pub extensions_tab: usize,
+    // S1 (Rust IDE): Ejecutor nativo de pipelines de Cargo
+    pub cargo_runner: karkinos_core::cargo::CargoRunner,
+    pub cargo_panel_open: bool,
+    pub cargo_active_tab: usize,
 }
 
 impl Default for EditorApp {
@@ -342,6 +346,9 @@ impl Default for EditorApp {
             plugin_manager: karkinos_core::plugin::PluginManager::with_default_plugins(),
             extensions_modal_open: false,
             extensions_tab: 0,
+            cargo_runner: karkinos_core::cargo::CargoRunner::new(),
+            cargo_panel_open: false,
+            cargo_active_tab: 0,
         }
     }
 }
@@ -663,6 +670,33 @@ impl EditorApp {
             }
         }
         handled
+    }
+
+    /// S1 (Rust IDE): Ejecuta un comando de Cargo en el directorio de trabajo del proyecto
+    pub fn run_cargo(&mut self, action: karkinos_core::cargo::CargoAction) {
+        let dir = self.current_file
+            .as_ref()
+            .and_then(|p| p.parent())
+            .unwrap_or(&self.browse_dir)
+            .to_path_buf();
+        self.cargo_panel_open = true;
+        let _ = self.cargo_runner.spawn(action, &dir, &[]);
+    }
+
+    /// S1 (Rust IDE): Salta a la ubicación de un diagnóstico de Cargo en el editor
+    pub fn jump_to_cargo_diagnostic(&mut self, diag: &karkinos_core::cargo::CargoDiagnostic) {
+        if let Some(ref path) = diag.file {
+            let full_path = if path.is_absolute() {
+                path.clone()
+            } else {
+                self.browse_dir.join(path)
+            };
+            self.open_path(full_path);
+            self.editor_state.cursor_line = diag.line;
+            self.editor_state.cursor_col = diag.col;
+            self.editor_state.needs_autoscroll = true;
+            self.status = format!("Jumped to {}: line {}", diag.level, diag.line + 1);
+        }
     }
 
     /// Listado de `self.browse_dir` con caché (ver el campo
@@ -2005,5 +2039,28 @@ mod tests {
         assert_eq!(app.editor_state.diagnostics.len(), 1);
         assert_eq!(app.editor_state.diagnostics[0].message, "tab2 error");
         assert!(app.editor_state.ast_engine.is_some(), "AST engine must remain cached");
+    }
+
+    #[test]
+    fn test_editor_app_cargo_runner_and_navigation() {
+        use karkinos_core::cargo::CargoDiagnostic;
+
+        let mut app = EditorApp::default();
+        assert!(!app.cargo_panel_open);
+
+        let diag = CargoDiagnostic {
+            level: "error".to_string(),
+            message: "mismatched types".to_string(),
+            file: Some(PathBuf::from("test_target.rs")),
+            line: 7,
+            col: 4,
+            rendered: "error[E0308]: mismatched types".to_string(),
+        };
+
+        app.jump_to_cargo_diagnostic(&diag);
+        assert_eq!(app.editor_state.cursor_line, 7);
+        assert_eq!(app.editor_state.cursor_col, 4);
+        assert!(app.editor_state.needs_autoscroll);
+        assert!(app.status.contains("Jumped to error: line 8"));
     }
 }
