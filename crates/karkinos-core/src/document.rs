@@ -8,10 +8,11 @@ use ropey::Rope;
 
 use crate::buffer::TextBuffer;
 use crate::ending::{detect_line_ending, serialize_line_ending, LineEnding};
+use crate::syntax_ast::{AstEngine, AstHighlightSpan, AstLanguage, FoldingRange};
 use crate::undo::{Edit, UndoStack};
 
 /// Represents an active document managed by the core editing engine.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Document {
     pub id: usize,
     pub buffer: TextBuffer,
@@ -23,6 +24,7 @@ pub struct Document {
     pub line_ending: LineEnding,
     pub last_disk_mtime: Option<SystemTime>,
     pub view_bytes: usize,
+    pub ast_engine: Option<AstEngine>,
 }
 
 impl Document {
@@ -39,7 +41,39 @@ impl Document {
             line_ending: LineEnding::Lf,
             last_disk_mtime: None,
             view_bytes: 0,
+            ast_engine: None,
         }
+    }
+
+    /// Enables the AST engine for a supported language.
+    pub fn enable_ast(&mut self, lang: AstLanguage) -> Result<(), String> {
+        let mut engine = AstEngine::new(lang)?;
+        engine.update_from_buffer(&self.buffer);
+        self.ast_engine = Some(engine);
+        Ok(())
+    }
+
+    /// Re-parses AST if an engine is attached.
+    pub fn update_ast(&mut self) {
+        if let Some(engine) = &mut self.ast_engine {
+            engine.update_from_buffer(&self.buffer);
+        }
+    }
+
+    /// Extracts code folding ranges via AST.
+    pub fn folding_ranges(&self) -> Vec<FoldingRange> {
+        self.ast_engine
+            .as_ref()
+            .map(|e| e.folding_ranges())
+            .unwrap_or_default()
+    }
+
+    /// Extracts semantic highlight tokens via AST.
+    pub fn highlight_spans(&self) -> Vec<AstHighlightSpan> {
+        self.ast_engine
+            .as_ref()
+            .map(|e| e.highlight_spans())
+            .unwrap_or_default()
     }
 
     /// Sets the text content, normalizes CRLF, and recalculates byte metrics.
@@ -47,6 +81,7 @@ impl Document {
         let text = text.replace("\r\n", "\n");
         self.buffer.set_text(&text);
         self.recalc_view_bytes();
+        self.update_ast();
     }
 
     /// Recalculates total UTF-8 byte count.
@@ -160,5 +195,17 @@ mod tests {
         let redone = doc.redo().expect("should redo");
         assert_eq!(redone, "hello world");
         assert_eq!(doc.buffer.to_string(), "hello world");
+    }
+
+    #[test]
+    fn test_document_ast_integration() {
+        let mut doc = Document::new(2);
+        doc.enable_ast(AstLanguage::Rust).expect("should enable rust AST");
+        doc.set_text("fn test() {\n    let val = 42;\n}");
+
+        let foldings = doc.folding_ranges();
+        assert_eq!(foldings.len(), 2); // function and block
+        let spans = doc.highlight_spans();
+        assert!(!spans.is_empty());
     }
 }

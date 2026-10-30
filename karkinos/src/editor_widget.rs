@@ -50,6 +50,9 @@ pub struct EditorState {
     // S10: tamaño de fuente del editor (clamp 8..32 px)
     pub font_size: f32,
     last_font_size: f32,
+    // S3 (Etapa 3): Motor AST Tree-sitter y rangos de plegado de código
+    pub ast_engine: Option<karkinos_core::syntax_ast::AstEngine>,
+    pub folding_ranges: Vec<karkinos_core::syntax_ast::FoldingRange>,
 }
 
 impl Default for EditorState {
@@ -68,6 +71,8 @@ impl Default for EditorState {
             needs_autoscroll: false,
             font_size: DEFAULT_FONT_SIZE,
             last_font_size: DEFAULT_FONT_SIZE,
+            ast_engine: None,
+            folding_ranges: Vec::new(),
         }
     }
 }
@@ -1247,6 +1252,17 @@ pub fn show(
             theme.gutter_text,
         );
 
+        // S3 (Etapa 3): Indicador de plegado AST en el gutter
+        if state.folding_ranges.iter().any(|r| r.start_line == i) {
+            gutter_painter.text(
+                egui::pos2(gutter_rect.left() + 2.0, line_top_y),
+                egui::Align2::LEFT_TOP,
+                "▾",
+                egui::FontId::monospace(state.font_size * 0.8),
+                theme.syntax_keyword,
+            );
+        }
+
         let char_len = state
             .char_lens
             .get(i)
@@ -1254,9 +1270,9 @@ pub fn show(
             .unwrap_or_else(|| line_char_count(line));
         let is_pure_ascii = line.len() == char_len;
 
-        // S6 (Etapa 2): Resaltado de sintaxis ligero
+        // S6 (Etapa 2) + S3 (Etapa 3): Resaltado de sintaxis enriquecido por AST
         let line_tokens = if language != crate::syntax::Language::PlainText {
-            crate::syntax::tokenize_line(line, language)
+            crate::syntax::tokenize_line_semantic(line, i, language, state.ast_engine.as_ref())
         } else {
             Vec::new()
         };

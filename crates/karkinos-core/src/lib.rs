@@ -10,12 +10,17 @@
 pub mod buffer;
 pub mod document;
 pub mod ending;
+pub mod syntax_ast;
 pub mod text_ops;
 pub mod undo;
 
 pub use buffer::TextBuffer;
 pub use document::Document;
 pub use ending::{default_new_file_path, detect_line_ending, serialize_line_ending, LineEnding};
+pub use syntax_ast::{
+    AstEngine, AstHighlightSpan, AstLanguage, AstNodeInfo, FoldingKind, FoldingRange,
+    SemanticTokenType,
+};
 pub use text_ops::{
     char_to_byte, dedent_line, find_matching_bracket, indent_line, inherited_indent,
     is_word_char, line_char_count, next_word_pos, prev_word_pos, toggle_comment_range,

@@ -65,7 +65,7 @@ impl Language {
     /// Nombre legible del lenguaje para la interfaz de usuario.
     pub fn name(&self) -> &'static str {
         match self {
-            Language::PlainText => "Texto plano",
+            Language::PlainText => "Plain Text",
             Language::Rust => "Rust",
             Language::Markdown => "Markdown",
             Language::Json => "JSON",
@@ -142,6 +142,47 @@ pub fn tokenize_line(line: &str, lang: Language) -> Vec<(Range<usize>, TokenType
         Language::Html => tokenize_html(line),
         Language::Css => tokenize_css(line),
     }
+}
+
+/// Tokeniza una línea incorporando tokens semánticos del AST si están disponibles,
+/// o usando el tokenizador léxico como fallback automático.
+pub fn tokenize_line_semantic(
+    line: &str,
+    line_idx: usize,
+    lang: Language,
+    ast_engine: Option<&karkinos_core::syntax_ast::AstEngine>,
+) -> Vec<(Range<usize>, TokenType)> {
+    if let Some(engine) = ast_engine {
+        if lang == Language::Rust {
+            let spans = engine.highlight_spans();
+            let mut line_tokens = Vec::new();
+            for span in spans {
+                if span.start_line == line_idx && span.end_line == line_idx {
+                    let sb = span.start_col;
+                    let eb = span.end_col;
+                    if sb < eb && eb <= line.len() {
+                        let token_type = match span.token_type {
+                            karkinos_core::syntax_ast::SemanticTokenType::Keyword => TokenType::Keyword,
+                            karkinos_core::syntax_ast::SemanticTokenType::FunctionDef
+                            | karkinos_core::syntax_ast::SemanticTokenType::FunctionCall => TokenType::Type,
+                            karkinos_core::syntax_ast::SemanticTokenType::TypeDef
+                            | karkinos_core::syntax_ast::SemanticTokenType::TypeRef => TokenType::Type,
+                            karkinos_core::syntax_ast::SemanticTokenType::StringLiteral => TokenType::StringLiteral,
+                            karkinos_core::syntax_ast::SemanticTokenType::NumberLiteral => TokenType::Number,
+                            karkinos_core::syntax_ast::SemanticTokenType::Comment => TokenType::Comment,
+                            _ => TokenType::Normal,
+                        };
+                        line_tokens.push((sb..eb, token_type));
+                    }
+                }
+            }
+            if !line_tokens.is_empty() {
+                line_tokens.sort_by_key(|(r, _)| r.start);
+                return line_tokens;
+            }
+        }
+    }
+    tokenize_line(line, lang)
 }
 
 // -----------------------------------------------------------------------------
@@ -1737,5 +1778,30 @@ mod tests {
         let sub_job = build_layout_job(chunk, 4, &tokens, &theme, font_id);
         assert_eq!(sub_job.text, chunk);
         assert!(!sub_job.sections.is_empty());
+    }
+
+    #[test]
+    fn test_tokenize_line_semantic_with_ast() {
+        use karkinos_core::syntax_ast::{AstEngine, AstLanguage};
+
+        let mut engine = AstEngine::new(AstLanguage::Rust).expect("should init rust engine");
+        let code = "fn compute() {\n    let val = 42;\n}";
+        engine.update_from_text(code);
+
+        // Line 0: "fn compute() {"
+        let tokens = tokenize_line_semantic("fn compute() {", 0, Language::Rust, Some(&engine));
+        assert!(!tokens.is_empty());
+        assert!(tokens.iter().any(|(_, t)| *t == TokenType::Keyword));
+        assert!(tokens.iter().any(|(_, t)| *t == TokenType::Type)); // compute as FunctionDef mapped to Type
+
+        // Line 1: "    let val = 42;"
+        let line1_tokens = tokenize_line_semantic("    let val = 42;", 1, Language::Rust, Some(&engine));
+        assert!(!line1_tokens.is_empty());
+        assert!(line1_tokens.iter().any(|(_, t)| *t == TokenType::Keyword));
+        assert!(line1_tokens.iter().any(|(_, t)| *t == TokenType::Number));
+
+        // Fallback test without engine
+        let fallback = tokenize_line_semantic("let a = 10;", 0, Language::Rust, None);
+        assert!(!fallback.is_empty());
     }
 }

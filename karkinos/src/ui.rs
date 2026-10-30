@@ -1158,6 +1158,7 @@ impl eframe::App for EditorApp {
                     // Una vez por edición real (no por frame): refresca
                     // el tamaño de la barra de estado.
                     self.recalc_view_bytes();
+                    self.update_ast();
                     if self.find_open {
                         self.find_update_matches();
                     }

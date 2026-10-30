@@ -428,6 +428,7 @@ impl EditorApp {
             self.view_bytes = tab.view_bytes;
             self.chunk_tracker.reset();
             self.find_matches.clear();
+            self.update_ast();
         }
     }
 
@@ -562,6 +563,7 @@ impl EditorApp {
         self.editor_state.scroll = 0.0;
         self.chunk_tracker.reset();
         self.recalc_view_bytes();
+        self.update_ast();
     }
 
     /// Recalcula el tamaño "en vivo" que muestra la barra de estado.
@@ -571,6 +573,26 @@ impl EditorApp {
     pub fn recalc_view_bytes(&mut self) {
         self.view_bytes = self.lines.iter().map(|l| l.len()).sum::<usize>()
             + self.lines.len().saturating_sub(1);
+    }
+
+    /// S3 (Etapa 3): Actualiza el motor de sintaxis semántico AST y los rangos de plegado.
+    pub fn update_ast(&mut self) {
+        let is_rust = self.current_language() == crate::syntax::Language::Rust;
+        if is_rust {
+            if self.editor_state.ast_engine.is_none() {
+                if let Ok(engine) = karkinos_core::syntax_ast::AstEngine::new(karkinos_core::syntax_ast::AstLanguage::Rust) {
+                    self.editor_state.ast_engine = Some(engine);
+                }
+            }
+            let code = self.current_text();
+            if let Some(ref mut engine) = self.editor_state.ast_engine {
+                engine.update_from_text(&code);
+                self.editor_state.folding_ranges = engine.folding_ranges();
+            }
+        } else {
+            self.editor_state.ast_engine = None;
+            self.editor_state.folding_ranges.clear();
+        }
     }
 
     /// Listado de `self.browse_dir` con caché (ver el campo
@@ -1791,5 +1813,17 @@ mod tests {
         let _ = std::fs::remove_file(dir.join("archivo_copia.txt"));
         let _ = std::fs::remove_dir_all(&dir);
         Ok(())
+    }
+
+    #[test]
+    fn test_editor_app_ast_engine_and_folding_ranges() {
+        let mut app = EditorApp::default();
+        app.current_file = Some(PathBuf::from("main.rs"));
+        app.set_text("fn calculate() -> i32 {\n    let a = 10;\n    a * 2\n}");
+
+        assert!(app.editor_state.ast_engine.is_some());
+        assert!(!app.editor_state.folding_ranges.is_empty());
+        let has_func = app.editor_state.folding_ranges.iter().any(|r| r.start_line == 0 && r.end_line == 3);
+        assert!(has_func, "should detect function folding range");
     }
 }
