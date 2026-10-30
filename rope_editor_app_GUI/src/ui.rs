@@ -497,13 +497,6 @@ impl eframe::App for EditorApp {
 
         self.ensure_logo_texture(ctx);
 
-        // S10: la fuente de verdad del zoom es App.font_size; lo
-        // sincronizo al EditorState para este frame (fluye desde los
-        // botones +/- o desde un valor cargado del Storage).
-        if (self.editor_state.font_size - self.font_size).abs() > f32::EPSILON {
-            self.editor_state.set_font_size(self.font_size);
-        }
-
         // Le sacamos la decoración nativa a la ventana (ver main()),
         // así que esta barra ocupa exactamente el lugar donde antes
         // estaba la barra nativa del sistema operativo — con nuestro
@@ -664,15 +657,26 @@ impl eframe::App for EditorApp {
                 // entero en cada tecla como hacía egui::TextEdit —
                 // eso era lo que volvía lento al editor con archivos
                 // grandes (1MB+).
+                // S10: la fuente de verdad del zoom es App.font_size
+                // (atajos Ctrl+=/- y botones +/- la tocaron mas
+                // arriba en este MISMO frame): sincronizo el
+                // EditorState justo antes de dibujar, para que el
+                // tamaño aplique SIN esperar el frame siguiente.
+                if (self.editor_state.font_size - self.font_size).abs() > f32::EPSILON {
+                    self.editor_state.set_font_size(self.font_size);
+                }
                 let response = crate::editor_widget::show(
                     ui,
                     &mut self.lines,
                     &mut self.editor_state,
                     self.text_area_bg,
                 );
-                // S10: el Ctrl+Scroll zoomea DIRECTO en el EditorState;
-                // escribo el resultado de vuelta en App (fuente de
-                // verdad) y aviso en la barra de estado.
+                // S10: el Ctrl+Scroll zoomea DIRECTO en el EditorState
+                // mientras dibuja; escribo el resultado de vuelta en
+                // App (fuente de verdad) y aviso en la barra de estado.
+                // OJO: este mirror es solo para lo que cambió DENTRO
+                // de show() — los botones/atajos ya dejaron App nuevo
+                // mas arriba y el state ya lo tomó arriba.
                 if (self.editor_state.font_size - self.font_size).abs() > f32::EPSILON {
                     self.font_size = self.editor_state.font_size;
                     self.status = format!("Zoom: {} px", self.editor_state.font_size);
