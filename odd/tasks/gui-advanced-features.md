@@ -51,7 +51,7 @@
 | T5 | S5 | inline | listo | d3f429e |
 | T6 | S6 | inline | listo | 003ec3d |
 | T7 | S7 | inline | listo | ce61b9c |
-| T8 | S8 | inline | pendiente | - |
+| T8 | S8 | inline | listo | 656d7cd |
 
 ## Log
 
@@ -88,3 +88,9 @@
   workspace (omitiendo `.git`, `target`, etc. con tope defensivo), algoritmo de coincidencia difusa
   (fuzzy match) con puntuación por límites de palabra y cercanía, navegación por teclado (flechas
   arriba/abajo, Enter para abrir, Esc para cancelar) y click directo. Integrado en toolbar y atajo global.
+- **L9** (2026-10-30): T8 terminado (commit 656d7cd, suite 63/63 pasando, 0 warnings).
+  Pestañas / Múltiples documentos (Tabs): estructura `TabDocument` que encapsula estado individual
+  (buffer, editor_state, last_snapshot, undo_stack, ruta, flags dirty/mtime, line ending). Barra
+  de pestañas interactiva con diseño integrado al tema, botón de cierre '×' con confirmación previa ante
+  cambios sin guardar (`show_tab_close_confirm`), botón '+' y atajos Ctrl+T (nueva pestaña) y Ctrl+W
+  (cerrar pestaña). Integración transparente con `open_path` (reutilización de pestaña vacía o creación).
