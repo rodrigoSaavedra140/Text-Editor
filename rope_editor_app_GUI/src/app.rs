@@ -145,7 +145,7 @@ pub struct EditorApp {
     // egui::TextEdit con archivos grandes).
     pub lines: Vec<String>,
     pub editor_state: EditorState,
-    pub last_snapshot: String, // texto en el último snapshot guardado (para detectar cambios)
+    pub last_snapshot: Arc<str>, // texto en el último snapshot guardado (Arc compartido con UndoStack)
     pub undo_stack: UndoStack,
     pub file_path_input: String,
     pub current_file: Option<PathBuf>,
@@ -227,7 +227,7 @@ impl Default for EditorApp {
         EditorApp {
             lines: vec![String::new()],
             editor_state: EditorState::default(),
-            last_snapshot: String::new(),
+            last_snapshot: Arc::from(""),
             undo_stack: UndoStack::new(),
             file_path_input: String::new(),
             current_file: None,
@@ -339,12 +339,13 @@ impl EditorApp {
     /// S3: Registra un snapshot explícito para un texto dado. Si coincide
     /// con el último snapshot, no hace nada (evita pasos vacíos).
     pub fn snapshot_text(&mut self, text: &str) {
-        if text != self.last_snapshot {
+        if text != &*self.last_snapshot {
+            let next_snapshot: Arc<str> = Arc::from(text);
             self.undo_stack.push(Edit {
-                before: self.last_snapshot.clone(),
-                after: text.to_string(),
+                before: Arc::clone(&self.last_snapshot),
+                after: Arc::clone(&next_snapshot),
             });
-            self.last_snapshot = text.to_string();
+            self.last_snapshot = next_snapshot;
             self.dirty = true;
             self.chunk_tracker.reset();
         }
@@ -389,7 +390,7 @@ impl EditorApp {
         self.snapshot_if_changed();
         self.chunk_tracker.reset();
         if let Some(edit) = self.undo_stack.undo() {
-            let text = edit.before.clone();
+            let text = Arc::clone(&edit.before);
             self.restore_text_keeping_view(&text);
             self.last_snapshot = text;
             self.status = "Deshecho".to_string();
@@ -401,7 +402,7 @@ impl EditorApp {
     pub fn redo(&mut self) {
         self.chunk_tracker.reset();
         if let Some(edit) = self.undo_stack.redo() {
-            let text = edit.after.clone();
+            let text = Arc::clone(&edit.after);
             self.restore_text_keeping_view(&text);
             self.last_snapshot = text;
             self.status = "Rehecho".to_string();
@@ -533,7 +534,7 @@ impl EditorApp {
         match Self::read_file(&path) {
             Ok((content, ending, mtime)) => {
                 self.set_text(&content);
-                self.last_snapshot = content;
+                self.last_snapshot = Arc::from(content.as_str());
                 self.line_ending = ending;
                 self.last_disk_mtime = mtime;
                 self.external_changed = false;
@@ -752,7 +753,7 @@ impl EditorApp {
         self.current_file = None;
         self.file_path_input.clear();
         self.dirty = false;
-        self.last_snapshot = String::new();
+        self.last_snapshot = Arc::from("");
         self.last_disk_mtime = None;
         self.line_ending = LineEnding::Lf;
         self.undo_stack = UndoStack::new();

@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 // Undo del GUI: el widget edita un Vec<String> en vivo, así que cada
@@ -84,16 +85,19 @@ impl ChunkTracker {
 /// multiplicaría la memoria por cada sesión de tipeo sin límite.
 const MAX_UNDO_EDITS: usize = 200;
 
-/// Un paso de undo/redo: contenido completo del documento antes y
-/// después del snapshot.
+/// Un paso de undo/redo: contenido inmutable compartido vía Arc<str>.
+/// Almacenar Arc<str> en lugar de String evita duplicar el documento entero
+/// cuando el estado N pasa de ser 'after' del paso anterior a 'before' del
+/// siguiente paso, reduciendo a la mitad el consumo de memoria del historial.
+#[derive(Clone)]
 pub struct Edit {
-    pub before: String,
-    pub after: String,
+    pub before: Arc<str>,
+    pub after: Arc<str>,
 }
 
 pub struct UndoStack {
-    stack: Vec<Edit>,
-    redo_stack: Vec<Edit>,
+    pub stack: Vec<Edit>,
+    pub redo_stack: Vec<Edit>,
 }
 
 impl UndoStack {
@@ -112,12 +116,10 @@ impl UndoStack {
     }
 
     pub fn undo(&mut self) -> Option<Edit> {
-        // Clonamos igual que antes (misma orientación before/after):
-        // el clon va al redo para poder rehacer el mismo paso.
         let edit = self.stack.pop()?;
         self.redo_stack.push(Edit {
-            before: edit.before.clone(),
-            after: edit.after.clone(),
+            before: Arc::clone(&edit.before),
+            after: Arc::clone(&edit.after),
         });
         Some(edit)
     }
@@ -125,8 +127,8 @@ impl UndoStack {
     pub fn redo(&mut self) -> Option<Edit> {
         let edit = self.redo_stack.pop()?;
         self.stack.push(Edit {
-            before: edit.before.clone(),
-            after: edit.after.clone(),
+            before: Arc::clone(&edit.before),
+            after: Arc::clone(&edit.after),
         });
         Some(edit)
     }
@@ -138,8 +140,8 @@ mod tests {
 
     fn edit(n: usize) -> Edit {
         Edit {
-            before: format!("antes-{}", n),
-            after: format!("despues-{}", n),
+            before: Arc::from(format!("antes-{}", n)),
+            after: Arc::from(format!("despues-{}", n)),
         }
     }
 
@@ -156,8 +158,8 @@ mod tests {
         // Solo quedan los últimos MAX_UNDO_EDITS, en orden de más
         // reciente a más viejo, y se descartaron los 10 primeros.
         assert_eq!(undone.len(), MAX_UNDO_EDITS);
-        assert_eq!(undone[0], format!("antes-{}", MAX_UNDO_EDITS + 9));
-        assert_eq!(undone.last(), Some(&format!("antes-10")));
+        assert_eq!(&*undone[0], &format!("antes-{}", MAX_UNDO_EDITS + 9));
+        assert_eq!(undone.last().map(|s| &**s), Some(format!("antes-10").as_str()));
     }
 
     #[test]
@@ -175,12 +177,30 @@ mod tests {
         let mut stack = UndoStack::new();
         stack.push(edit(7));
         let undone = stack.undo().expect("debería haber algo para deshacer");
-        assert_eq!(undone.before, "antes-7");
+        assert_eq!(&*undone.before, "antes-7");
         let redone = stack.redo().expect("debería haber algo para rehacer");
-        assert_eq!(redone.after, "despues-7");
+        assert_eq!(&*redone.after, "despues-7");
         // La pila de undo vuelve a quedar con el paso para deshacerlo
         // de nuevo (round-trip).
         assert!(stack.undo().is_some());
+    }
+
+    #[test]
+    fn snapshots_consecutivos_comparten_puntero_arc() {
+        let mut stack = UndoStack::new();
+        let s1: Arc<str> = Arc::from("estado 1");
+        let s2: Arc<str> = Arc::from("estado 2");
+        stack.push(Edit {
+            before: Arc::clone(&s1),
+            after: Arc::clone(&s2),
+        });
+        let s3: Arc<str> = Arc::from("estado 3");
+        stack.push(Edit {
+            before: Arc::clone(&s2),
+            after: Arc::clone(&s3),
+        });
+        // s2 es 'after' del paso 0 y 'before' del paso 1: deben apuntar exactamente a la misma dirección
+        assert!(Arc::ptr_eq(&stack.stack[0].after, &stack.stack[1].before));
     }
 
     #[test]
