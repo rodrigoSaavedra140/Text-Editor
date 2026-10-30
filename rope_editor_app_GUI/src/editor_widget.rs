@@ -620,11 +620,11 @@ pub fn show(
                 },
             )
         });
-        let events = ui.input(|i| i.events.clone());
-        if !events.is_empty() {
+        let has_events = ui.input(|i| !i.events.is_empty());
+        if has_events {
             cursor_moved = true;
-        }
-        for event in events {
+            let events = ui.input(|i| i.events.clone());
+            for event in events {
             match event {
                 egui::Event::Text(t) => {
                     if let Some((s, e)) = selection_range(state) {
@@ -859,6 +859,7 @@ pub fn show(
                 }
                 _ => {}
             }
+        }
         }
     }
 
