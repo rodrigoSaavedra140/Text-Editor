@@ -1,10 +1,10 @@
 [package]
-name = "rope_editor_gui"
+name = "karkinos"
 version = "0.1.0"
 edition = "2021"
 
 [[bin]]
-name = "rope_editor_gui"
+name = "karkinos"
 path = "src/main.rs"
 
 [dependencies]

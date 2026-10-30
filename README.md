@@ -6,13 +6,14 @@ Diseñado para iniciar en menos de 50 ms con un consumo de recursos mínimo, sop
 ## 📦 Estructura del proyecto
 
 ```text
-rope_editor_app_GUI/
+karkinos/
 ├── Cargo.toml           # Dependencias + [profile.release] (LTO thin, strip)
 ├── assets/
 │   └── logo.png         # Logo embebido con recorte de transparencia adaptativo
 └── src/
     ├── main.rs          # Entrada: inicialización de ventana custom y decoraciones
     ├── app.rs           # EditorApp: buffers, pestañas, guardado async, zoom, confirmaciones
+    ├── buffer.rs        # Motor de buffer de texto Rope (ropey) O(log N) y snapshots COW O(1)
     ├── editor_widget.rs # Widget de edición por franja (wrap), teclado, gutter, autoscroll
     ├── ui.rs            # Layout egui: title bar personalizada, tabs, toolbar, diálogos modales
     ├── title_bar.rs     # Barra de título sin bordes nativos con íconos vectoriales
@@ -31,7 +32,7 @@ rope_editor_app_GUI/
 ## 🚀 Compilación y ejecución
 
 ```bash
-cd rope_editor_app_GUI
+cd karkinos
 
 # Modo desarrollo
 cargo run
@@ -43,7 +44,7 @@ cargo run -- mi_archivo.rs
 cargo build --release
 ```
 
-El ejecutable resultante se ubicará en `target/release/rope_editor_gui`.
+El ejecutable resultante se ubicará en `target/release/karkinos`.
 
 ## ⌨️ Atajos de teclado principales
 

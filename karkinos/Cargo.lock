@@ -1334,6 +1334,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "karkinos"
+version = "0.1.0"
+dependencies = [
+ "arboard",
+ "eframe",
+ "image 0.24.9",
+ "ropey",
+]
+
+[[package]]
 name = "khronos-egl"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2002,16 +2012,6 @@ dependencies = [
  "bitflags 2.13.2",
  "serde",
  "serde_derive",
-]
-
-[[package]]
-name = "rope_editor_gui"
-version = "0.1.0"
-dependencies = [
- "arboard",
- "eframe",
- "image 0.24.9",
- "ropey",
 ]
 
 [[package]]
