@@ -44,7 +44,7 @@
 
 | ID | Specs | Route | Status | Commit |
 |----|-------|-------|--------|--------|
-| T1 | S1 | inline | pendiente | - |
+| T1 | S1 | inline | listo | 9b1f340 |
 | T2 | S2 | inline | pendiente | - |
 | T3 | S3 | inline | pendiente | - |
 | T4 | S4 | inline | pendiente | - |
@@ -57,3 +57,6 @@
 
 - **L1** (2026-10-29): Selección de las 8 funcionalidades por el usuario vía question tool.
   Diseño de arquitectura y ordenamiento de tareas por dependencias (ergonomía de render -> edición -> temas -> sintaxis -> navegación -> arquitectura multi-tab).
+- **L2** (2026-10-29): T1 terminado (commit 9b1f340, suite 49/49 pasando, 0 warnings).
+  Franja de fondo sutil (`Color32::from_white_alpha(12)`) sobre la línea lógica activa bajo el cursor
+  (abarcando todas sus sub-filas visuales si hay wrap), activa únicamente con foco del widget.
