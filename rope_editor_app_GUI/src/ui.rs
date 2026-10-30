@@ -271,6 +271,65 @@ impl EditorApp {
         }
     }
 
+    /// Diálogo modal para solicitar nombre al guardar un archivo sin nombre.
+    fn show_save_name_dialog(&mut self, ctx: &egui::Context) {
+        if !self.save_name_pending {
+            return;
+        }
+
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.cancel_save_name();
+            return;
+        }
+
+        let mut apply = false;
+        let mut cancel = false;
+        let mut is_open = true;
+
+        egui::Window::new("Guardar archivo")
+            .open(&mut is_open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(380.0)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.label("Ingresá un nombre para el archivo:");
+                ui.label(
+                    egui::RichText::new("(Si lo dejás en blanco se guardará como nuevo.txt)")
+                        .color(egui::Color32::from_gray(140))
+                        .small(),
+                );
+                ui.add_space(4.0);
+
+                let field = ui.add_sized(
+                    [ui.available_width(), 24.0],
+                    egui::TextEdit::singleline(&mut self.save_name_input)
+                        .hint_text("nuevo.txt"),
+                );
+                field.request_focus();
+
+                if field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    apply = true;
+                }
+
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Guardar").clicked() {
+                        apply = true;
+                    }
+                    if ui.button("Cancelar").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+
+        if !is_open || cancel {
+            self.cancel_save_name();
+        } else if apply {
+            self.confirm_save_name();
+        }
+    }
+
     /// Cierre de ventana con puertas de datos: si hay cambios sin
     /// guardar (o un guardado en pleno vuelo) NO cierra nada — planta
     /// el diálogo S1 y, si el cierre vino del sistema (X/Alt+F4 del
@@ -603,7 +662,7 @@ impl eframe::App for EditorApp {
             }
         }
         if want_save {
-            self.save();
+            self.try_save();
         }
         if want_undo {
             self.undo();
@@ -739,7 +798,7 @@ impl eframe::App for EditorApp {
                     self.quick_open.open(&self.browse_dir);
                 }
                 if ui.button("Guardar (Ctrl+S)").clicked() {
-                    self.save();
+                    self.try_save();
                 }
                 ui.separator();
                 if ui.button("Deshacer (Ctrl+Z)").clicked() {
@@ -995,5 +1054,7 @@ impl eframe::App for EditorApp {
         self.show_goto_line(ctx);
         // S7: diálogo modal de búsqueda rápida de archivos (Ctrl+P).
         self.show_quick_open(ctx);
+        // Diálogo modal para nombrar archivo al guardar si no tiene nombre.
+        self.show_save_name_dialog(ctx);
     }
 }

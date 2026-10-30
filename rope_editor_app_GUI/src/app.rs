@@ -284,6 +284,9 @@ pub struct EditorApp {
     pub active_tab: usize,
     pub next_tab_id: usize,
     pub tab_close_pending: Option<usize>,
+    // Modal para nombrar archivo sin nombre al guardar.
+    pub save_name_pending: bool,
+    pub save_name_input: String,
     dir_cache: Option<(PathBuf, Option<SystemTime>, Vec<String>, Vec<String>)>,
 }
 
@@ -329,6 +332,8 @@ impl Default for EditorApp {
             active_tab: 0,
             next_tab_id: 2,
             tab_close_pending: None,
+            save_name_pending: false,
+            save_name_input: String::new(),
             dir_cache: None,
         }
     }
@@ -829,6 +834,36 @@ impl EditorApp {
         (dirs, files)
     }
 
+    /// Intenta guardar el documento. Si el buffer actual no tiene archivo ni nombre asignado,
+    /// abre el diálogo modal para que el usuario ingrese un nombre personalizado.
+    pub fn try_save(&mut self) -> bool {
+        if self.current_file.is_none() && self.file_path_input.trim().is_empty() {
+            self.save_name_input.clear();
+            self.save_name_pending = true;
+            false
+        } else {
+            self.save()
+        }
+    }
+
+    /// Confirma el nombre ingresado en el diálogo modal y procede al guardado.
+    /// Si el campo se dejó en blanco o contiene solo espacios, guarda automáticamente como `nuevo.txt`
+    /// (o correlativo sin pisar archivos existentes).
+    pub fn confirm_save_name(&mut self) -> bool {
+        self.save_name_pending = false;
+        let name = self.save_name_input.trim();
+        if !name.is_empty() {
+            self.file_path_input = name.to_string();
+        }
+        self.save()
+    }
+
+    /// Cancela el diálogo de guardado con nombre sin modificar el estado.
+    pub fn cancel_save_name(&mut self) {
+        self.save_name_pending = false;
+        self.save_name_input.clear();
+    }
+
     /// Guarda el documento con su estilo de fin de línea original
     /// (S9). Devuelve true SOLO si realmente puso un guardado en
     /// marcha (el callback de cierre lo usa: si no se pudo empezar
@@ -854,7 +889,12 @@ impl EditorApp {
             }
             p
         } else {
-            PathBuf::from(&self.file_path_input)
+            let p = PathBuf::from(&self.file_path_input);
+            if p.is_relative() {
+                self.browse_dir.join(p)
+            } else {
+                p
+            }
         };
         if path.as_os_str().is_empty() {
             self.status = "Escribí una ruta de archivo antes de guardar".to_string();
@@ -1546,6 +1586,63 @@ mod tests {
 
         std::fs::remove_file(path_a)?;
         std::fs::remove_file(path_b)?;
+        Ok(())
+    }
+
+    // ---- Guardado de archivo sin nombre con diálogo modal ----
+
+    #[test]
+    fn try_save_sin_nombre_abre_modal_y_guarda_con_nombre_o_default() -> std::io::Result<()> {
+        let dir = std::env::temp_dir().join(format!("karkinos_try_save_{}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+
+        let mut app = EditorApp::default();
+        app.browse_dir = dir.clone();
+        app.set_text("codigo de prueba");
+        app.dirty = true;
+
+        // 1. try_save() en archivo sin nombre debe abrir el modal y no guardar aún
+        assert!(!app.try_save());
+        assert!(app.save_name_pending);
+
+        // 2. Confirmar con nombre "mi_programa.rs"
+        app.save_name_input = "mi_programa.rs".to_string();
+        assert!(app.confirm_save_name());
+        assert!(!app.save_name_pending);
+        assert_eq!(app.current_file, Some(dir.join("mi_programa.rs")));
+        assert_eq!(app.file_path_input, "mi_programa.rs");
+
+        // Esperar a que termine el guardado asíncrono
+        if let Some(progress) = &app.save_progress {
+            while !progress.lock().unwrap().done {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
+
+        // 3. Otro documento sin nombre: dejar en blanco debe asignar "nuevo.txt"
+        let mut app2 = EditorApp::default();
+        app2.browse_dir = dir.clone();
+        app2.set_text("otro texto");
+        app2.dirty = true;
+        assert!(!app2.try_save());
+        assert!(app2.save_name_pending);
+
+        // Dejar vacío
+        app2.save_name_input = "   ".to_string();
+        assert!(app2.confirm_save_name());
+        assert!(!app2.save_name_pending);
+        assert_eq!(app2.current_file, Some(dir.join("nuevo.txt")));
+        assert_eq!(app2.file_path_input, "nuevo.txt");
+
+        if let Some(progress) = &app2.save_progress {
+            while !progress.lock().unwrap().done {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
+
+        let _ = std::fs::remove_file(dir.join("mi_programa.rs"));
+        let _ = std::fs::remove_file(dir.join("nuevo.txt"));
+        let _ = std::fs::remove_dir_all(&dir);
         Ok(())
     }
 }
