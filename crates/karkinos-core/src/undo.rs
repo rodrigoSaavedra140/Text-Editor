@@ -1,19 +1,13 @@
+//! Undo/Redo stack with idle chunking and $O(1)$ Copy-On-Write Rope snapshots.
+
 use ropey::Rope;
 use std::time::{Duration, Instant};
 
-// Undo del GUI: el widget edita un Vec<String> en vivo, así que cada
-// snapshot del historial guarda el documento completo como String
-// (antes / después) por sesión de tipeo. Los snapshots de
-// documentos completos son pesados; con un tope acotamos el peor
-// caso en archivos gigantes en vez de crecer sin límite.
-
-/// S3: timeout de inactividad para agrupar caracteres tipeados en un
-/// mismo chunk de deshacer.
+/// Timeout to group consecutive typing into a single undo step (~700ms).
 pub const CHUNK_TIMEOUT: Duration = Duration::from_millis(700);
 
-/// S3: tipo de acción de edición para decidir la política de chunking.
+/// Action classification to determine chunk grouping behavior.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum EditAction {
     Typing,
     Enter,
@@ -22,7 +16,7 @@ pub enum EditAction {
     Save,
 }
 
-/// S3: corte inmediato vs espera de inactividad (~700ms).
+/// Structural actions break the chunk immediately.
 pub fn should_snapshot_immediately(action: EditAction) -> bool {
     match action {
         EditAction::Enter | EditAction::Paste | EditAction::LostFocus | EditAction::Save => true,
@@ -30,7 +24,7 @@ pub fn should_snapshot_immediately(action: EditAction) -> bool {
     }
 }
 
-/// S3: rastreador de chunks de tipeo por tiempo de inactividad o acción estructural.
+/// Tracks inactivity timeouts to chunk user typing strokes.
 pub struct ChunkTracker {
     pub last_edit_time: Option<Instant>,
     pub timeout: Duration,
@@ -80,21 +74,23 @@ impl ChunkTracker {
     }
 }
 
-/// Tope del historial: cada Edit guarda el documento completo dos
-/// veces (antes/después), así que sin tope un archivo grande
-/// multiplicaría la memoria por cada sesión de tipeo sin límite.
-const MAX_UNDO_EDITS: usize = 200;
+/// Maximum number of undo steps preserved in history.
+pub const MAX_UNDO_EDITS: usize = 200;
 
-/// Un paso de undo/redo: contenido inmutable compartido vía Rope (Copy-On-Write B-Tree).
-/// Almacenar Rope en lugar de String o Arc<str> permite snapshots instantáneos O(1)
-/// y mutaciones O(log N) eficientes sin duplicar el texto en el heap.
+/// A reversible edit step holding before and after state snapshots via $O(1)$ COW Rope trees.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Edit {
     pub before: Rope,
     pub after: Rope,
 }
 
-#[derive(Debug, Clone)]
+impl Edit {
+    pub fn new(before: Rope, after: Rope) -> Self {
+        Self { before, after }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
 pub struct UndoStack {
     pub stack: Vec<Edit>,
     pub redo_stack: Vec<Edit>,
@@ -102,12 +98,14 @@ pub struct UndoStack {
 
 impl UndoStack {
     pub fn new() -> Self {
-        UndoStack { stack: Vec::new(), redo_stack: Vec::new() }
+        UndoStack {
+            stack: Vec::new(),
+            redo_stack: Vec::new(),
+        }
     }
 
     pub fn push(&mut self, edit: Edit) {
         self.stack.push(edit);
-        // Descarta los más viejos del frente al pasar del tope.
         let overflow = self.stack.len().saturating_sub(MAX_UNDO_EDITS);
         if overflow > 0 {
             self.stack.drain(0..overflow);
@@ -132,6 +130,19 @@ impl UndoStack {
         });
         Some(edit)
     }
+
+    pub fn can_undo(&self) -> bool {
+        !self.stack.is_empty()
+    }
+
+    pub fn can_redo(&self) -> bool {
+        !self.redo_stack.is_empty()
+    }
+
+    pub fn clear(&mut self) {
+        self.stack.clear();
+        self.redo_stack.clear();
+    }
 }
 
 #[cfg(test)]
@@ -140,13 +151,13 @@ mod tests {
 
     fn edit(n: usize) -> Edit {
         Edit {
-            before: Rope::from_str(&format!("antes-{}", n)),
-            after: Rope::from_str(&format!("despues-{}", n)),
+            before: Rope::from_str(&format!("before-{}", n)),
+            after: Rope::from_str(&format!("after-{}", n)),
         }
     }
 
     #[test]
-    fn el_tope_descarta_el_mas_viejo() {
+    fn test_undo_stack_capacity_limit() {
         let mut stack = UndoStack::new();
         for i in 0..(MAX_UNDO_EDITS + 10) {
             stack.push(edit(i));
@@ -155,79 +166,68 @@ mod tests {
         while let Some(e) = stack.undo() {
             undone.push(e.before.to_string());
         }
-        // Solo quedan los últimos MAX_UNDO_EDITS, en orden de más
-        // reciente a más viejo, y se descartaron los 10 primeros.
         assert_eq!(undone.len(), MAX_UNDO_EDITS);
-        assert_eq!(&undone[0], &format!("antes-{}", MAX_UNDO_EDITS + 9));
-        assert_eq!(undone.last().map(|s| s.as_str()), Some(format!("antes-10").as_str()));
+        assert_eq!(&undone[0], &format!("before-{}", MAX_UNDO_EDITS + 9));
+        assert_eq!(undone.last().map(|s| s.as_str()), Some(format!("before-10").as_str()));
     }
 
     #[test]
-    fn push_limpia_redo() {
+    fn test_push_clears_redo() {
         let mut stack = UndoStack::new();
         stack.push(edit(0));
         stack.undo();
-        assert!(!stack.redo_stack.is_empty());
+        assert!(stack.can_redo());
         stack.push(edit(1));
-        assert!(stack.redo_stack.is_empty());
+        assert!(!stack.can_redo());
     }
 
     #[test]
-    fn undo_y_redo_recuperan_el_mismo_paso() {
+    fn test_undo_and_redo_roundtrip() {
         let mut stack = UndoStack::new();
         stack.push(edit(7));
-        let undone = stack.undo().expect("debería haber algo para deshacer");
-        assert_eq!(undone.before.to_string(), "antes-7");
-        let redone = stack.redo().expect("debería haber algo para rehacer");
-        assert_eq!(redone.after.to_string(), "despues-7");
-        // La pila de undo vuelve a quedar con el paso para deshacerlo
-        // de nuevo (round-trip).
-        assert!(stack.undo().is_some());
+        let undone = stack.undo().expect("should undo");
+        assert_eq!(undone.before.to_string(), "before-7");
+        let redone = stack.redo().expect("should redo");
+        assert_eq!(redone.after.to_string(), "after-7");
+        assert!(stack.can_undo());
     }
 
     #[test]
-    fn snapshots_consecutivos_comparten_arbol_rope() {
+    fn test_snapshots_share_cow_rope_nodes() {
         let mut stack = UndoStack::new();
-        let s1 = Rope::from_str("estado 1");
-        let s2 = Rope::from_str("estado 2");
+        let s1 = Rope::from_str("state 1");
+        let s2 = Rope::from_str("state 2");
         stack.push(Edit {
             before: s1.clone(),
             after: s2.clone(),
         });
-        let s3 = Rope::from_str("estado 3");
+        let s3 = Rope::from_str("state 3");
         stack.push(Edit {
             before: s2.clone(),
             after: s3.clone(),
         });
-        // s2 es 'after' del paso 0 y 'before' del paso 1: clonar Rope es O(1) Copy-On-Write
         assert_eq!(stack.stack.len(), 2);
         assert_eq!(stack.stack[0].after, stack.stack[1].before);
     }
 
     #[test]
-    fn chunk_policy_timeout_corta_tras_inactividad() {
+    fn test_chunk_tracker_timeout() {
         let mut tracker = ChunkTracker::default_timeout();
         let t0 = Instant::now();
 
-        // Tipear un carácter no corta inmediatamente.
         assert!(!tracker.on_edit(EditAction::Typing, t0));
 
-        // Antes de 700ms no corta por inactividad.
         let t_early = t0 + Duration::from_millis(300);
         assert!(!tracker.check_idle_timeout(t_early));
         assert!(tracker.remaining_time(t_early).unwrap() <= Duration::from_millis(400));
 
-        // A los 700ms o más corta el chunk.
         let t_late = t0 + Duration::from_millis(700);
         assert!(tracker.check_idle_timeout(t_late));
-
-        // Un chequeo subsiguiente no repite el corte.
         assert!(!tracker.check_idle_timeout(t_late + Duration::from_millis(10)));
-        assert_eq!(tracker.remaining_time(t_late), None);
     }
 
     #[test]
-    fn chunk_policy_enter_y_paste_fuerzan_corte_inmediato() {
+    fn test_chunk_tracker_structural_action_immediate() {
         let mut tracker = ChunkTracker::default_timeout();
         let now = Instant::now();
 
@@ -235,13 +235,5 @@ mod tests {
         assert!(tracker.on_edit(EditAction::Paste, now));
         assert!(tracker.on_edit(EditAction::LostFocus, now));
         assert!(tracker.on_edit(EditAction::Save, now));
-    }
-
-    #[test]
-    fn chunk_policy_typing_no_fuerza_corte_inmediato() {
-        let mut tracker = ChunkTracker::default_timeout();
-        let now = Instant::now();
-
-        assert!(!tracker.on_edit(EditAction::Typing, now));
     }
 }

@@ -1,13 +1,14 @@
 mod app;
-pub mod buffer;
 mod editor_widget;
 mod quick_open;
 mod syntax;
 mod theme;
 mod title_bar;
 mod ui;
-mod undo;
 mod util;
+
+pub use karkinos_core::buffer;
+pub use karkinos_core::undo;
 
 use eframe::egui;
 

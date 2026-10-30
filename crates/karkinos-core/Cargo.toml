@@ -1,0 +1,9 @@
+[package]
+name = "karkinos-core"
+version = "0.1.0"
+edition = "2021"
+description = "Headless high-performance text editing engine for Karkinos"
+license = "BSL-1.1"
+
+[dependencies]
+ropey = "1.6"
