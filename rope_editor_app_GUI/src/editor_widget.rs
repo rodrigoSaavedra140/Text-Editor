@@ -2,7 +2,18 @@ use eframe::egui;
 
 /// Estado del cursor/selección/scroll del editor — vive en EditorApp,
 /// no acá, porque tiene que sobrevivir entre frames.
-#[derive(Default)]
+/// S10: límites y tamaño por defecto de la fuente del editor.
+pub const MIN_FONT_SIZE: f32 = 8.0;
+pub const MAX_FONT_SIZE: f32 = 32.0;
+pub const DEFAULT_FONT_SIZE: f32 = 14.0;
+
+/// S10: acota el tamaño de fuente al rango permitido [8, 32] px.
+pub fn clamp_font_size(size: f32) -> f32 {
+    size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE)
+}
+
+/// Estado del cursor/selección/scroll del editor — vive en EditorApp,
+/// no acá, porque tiene que sobrevivir entre frames.
 pub struct EditorState {
     pub cursor_line: usize,
     pub cursor_col: usize, // índice de CARÁCTER (no byte) dentro de la línea LÓGICA
@@ -35,12 +46,53 @@ pub struct EditorState {
     // buscar y reemplazar): el autoscroll de teclado solo corre
     // cuando HAY eventos; saltos externos necesitan un flag propio.
     pub needs_autoscroll: bool,
+    // S10: tamaño de fuente del editor (clamp 8..32 px)
+    pub font_size: f32,
+    last_font_size: f32,
+}
+
+impl Default for EditorState {
+    fn default() -> Self {
+        Self {
+            cursor_line: 0,
+            cursor_col: 0,
+            sel_anchor: None,
+            scroll: 0.0,
+            was_focused: false,
+            row_counts: Vec::new(),
+            char_lens: Vec::new(),
+            cum_rows: Vec::new(),
+            last_wrap_chars: 0,
+            last_gutter: 0.0,
+            needs_autoscroll: false,
+            font_size: DEFAULT_FONT_SIZE,
+            last_font_size: DEFAULT_FONT_SIZE,
+        }
+    }
 }
 
 impl EditorState {
     /// Pide desplazar la vista hasta el cursor en el próximo frame.
     pub fn request_autoscroll(&mut self) {
         self.needs_autoscroll = true;
+    }
+
+    /// S10: zoom in (+1px).
+    pub fn zoom_in(&mut self) {
+        self.font_size = clamp_font_size(self.font_size + 1.0);
+        self.request_autoscroll();
+    }
+
+    /// S10: zoom out (-1px).
+    pub fn zoom_out(&mut self) {
+        self.font_size = clamp_font_size(self.font_size - 1.0);
+        self.request_autoscroll();
+    }
+
+    /// S10: fija el tamaño de fuente acotado al rango válido.
+    pub fn set_font_size(&mut self, size: f32) {
+        self.font_size = clamp_font_size(size);
+        self.request_autoscroll();
     }
 }
 
@@ -389,7 +441,10 @@ pub fn show(
     let mut force_snapshot = false;
     let mut pre_break_snapshot: Option<String> = None;
 
-    let font_id = egui::FontId::monospace(14.0);
+    // S10: el FontId sale del estado (zoomable), no de un literal:
+    // medir char_width/row_height con este FontId hace que wrap_chars,
+    // el gutter y el autoscroll se re-adjusten solos al zoomear.
+    let font_id = egui::FontId::monospace(state.font_size);
     let row_height = ui.fonts(|f| f.row_height(&font_id));
     let char_width = ui.fonts(|f| f.glyph_width(&font_id, ' '));
     let text_color = egui::Color32::from_gray(225);
@@ -813,9 +868,27 @@ pub fn show(
     }
 
     // --- scroll con la rueda del mouse / trackpad ---
+    // S10: con Ctrl tocando, la rueda zoomea en vez de scrollear
+    // (UN paso por evento de rueda, no por píxel de trackpad).
     if response.hovered() {
-        let scroll_delta = ui.input(|i| i.smooth_scroll_delta);
-        state.scroll -= scroll_delta.y;
+        let (scroll_delta, ctrl) = ui.input(|i| (i.smooth_scroll_delta, i.modifiers.ctrl));
+        if ctrl {
+            // Un notch por evento de rueda, no por píxel de trackpad.
+            if scroll_delta.y > 2.0 {
+                state.zoom_in();
+            } else if scroll_delta.y < -2.0 {
+                state.zoom_out();
+            }
+        } else {
+            state.scroll -= scroll_delta.y;
+        }
+        // S10: el tamaño puede haber cambiado por zoom o desde afuera
+        // (botones +/-): pedir re-layout/autoscroll cuando difiere del
+        // frame anterior.
+        if state.last_font_size != state.font_size {
+            state.last_font_size = state.font_size;
+            state.request_autoscroll();
+        }
     }
     state.scroll = state.scroll.clamp(0.0, max_scroll);
 

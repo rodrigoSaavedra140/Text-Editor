@@ -42,5 +42,19 @@ fn main() -> eframe::Result<()> {
     }
 
     let options = eframe::NativeOptions { viewport, ..Default::default() };
-    eframe::run_native("Karkinos", options, Box::new(|_cc| Box::new(EditorApp::default())))
+    eframe::run_native("Karkinos", options, Box::new(|cc| {
+        // S10: el zoom elegido la sesión anterior vuela al arrancar
+        // desde el Storage de la app (app-storage.json). Sin Storage
+        // (o valor corrupto) queda el default de 14 px.
+        let mut app = EditorApp::default();
+        if let Some(storage) = &cc.storage {
+            if let Some(size) = storage.get_string("editor_font_size") {
+                if let Some(parsed) = crate::app::font_size_from_string(&size) {
+                    app.font_size = parsed;
+                    app.editor_state.set_font_size(parsed);
+                }
+            }
+        }
+        Box::new(app)
+    }))
 }

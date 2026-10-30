@@ -313,6 +313,12 @@ impl EditorApp {
 }
 
 impl eframe::App for EditorApp {
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        // S10: persistir SOLO el zoom (lo demás es estado de sesión:
+        // buffer, cursor, desplegables).
+        storage.set_string("editor_font_size", crate::app::font_size_to_string(self.font_size));
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.show_save_progress(ctx);
         // S1: comprobación externa de disco (limitada a 1 stat/seg
@@ -373,6 +379,21 @@ impl eframe::App for EditorApp {
             self.find_open = false;
         }
 
+        // S10: Ctrl+= (y Ctrl+Plus) agranda, Ctrl+- achica la fuente.
+        let (want_zoom_in, want_zoom_out) = ctx.input(|i| {
+            (
+                i.modifiers.ctrl
+                    && (i.key_pressed(egui::Key::Equals) || i.key_pressed(egui::Key::Plus)),
+                i.modifiers.ctrl && i.key_pressed(egui::Key::Minus),
+            )
+        });
+        if want_zoom_in {
+            self.zoom(true);
+        }
+        if want_zoom_out {
+            self.zoom(false);
+        }
+
         // Lo mismo si el cierre vino del botón X de la ventana o de
         // Alt+F4 (no solo de nuestros botones/atajos): con cambios
         // sin guardar try_close lo CANCELA y planta el diálogo.
@@ -382,6 +403,13 @@ impl eframe::App for EditorApp {
         }
 
         self.ensure_logo_texture(ctx);
+
+        // S10: la fuente de verdad del zoom es App.font_size; lo
+        // sincronizo al EditorState para este frame (fluye desde los
+        // botones +/- o desde un valor cargado del Storage).
+        if (self.editor_state.font_size - self.font_size).abs() > f32::EPSILON {
+            self.editor_state.set_font_size(self.font_size);
+        }
 
         // Le sacamos la decoración nativa a la ventana (ver main()),
         // así que esta barra ocupa exactamente el lugar donde antes
@@ -499,6 +527,15 @@ impl eframe::App for EditorApp {
                 if ui.button("Rehacer (Ctrl+Y)").clicked() {
                     self.redo();
                 }
+                ui.separator();
+                // S10: zoom de la fuente del editor (también con
+                // Ctrl+Scroll sobre el editor y Ctrl+= / Ctrl+-).
+                if ui.button("−").clicked() {
+                    self.zoom(false);
+                }
+                if ui.button("+").clicked() {
+                    self.zoom(true);
+                }
             });
         });
 
@@ -565,6 +602,13 @@ impl eframe::App for EditorApp {
                     &mut self.editor_state,
                     self.text_area_bg,
                 );
+                // S10: el Ctrl+Scroll zoomea DIRECTO en el EditorState;
+                // escribo el resultado de vuelta en App (fuente de
+                // verdad) y aviso en la barra de estado.
+                if (self.editor_state.font_size - self.font_size).abs() > f32::EPSILON {
+                    self.font_size = self.editor_state.font_size;
+                    self.status = format!("Zoom: {} px", self.editor_state.font_size);
+                }
                 // S3: corte previo si la acción fue estructural (Enter / Paste).
                 if let Some(prev) = response.pre_break_snapshot {
                     self.snapshot_text(&prev);

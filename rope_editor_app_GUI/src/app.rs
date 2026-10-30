@@ -54,10 +54,39 @@ pub fn serialize_line_ending(text: &str, ending: LineEnding) -> String {
     }
 }
 
+// S10: rango y paso del zoom de la fuente del editor (clamp 8..32 px).
+pub const ZOOM_MIN: f32 = 8.0;
+pub const ZOOM_MAX: f32 = 32.0;
+pub const ZOOM_STEP: f32 = 1.0;
+
 /// Detecta si el archivo cambió en el disco respecto a lo que
 /// recordamos: mismo mtime = sin cambios; mtime distinto = alguien
 /// lo tocó por afuera; ya no existe en el disco = tocado/borrado;
 /// con mtime "None" (documento nunca ligado a disco) nunca está viejo.
+/// Política pura del zoom (S10): redondea al paso entero y recorta
+/// al clamp [8, 32].
+pub fn apply_zoom(current: f32, zoom_in: bool) -> f32 {
+    let next = if zoom_in {
+        current + ZOOM_STEP
+    } else {
+        current - ZOOM_STEP
+    };
+    let snapped = next.round();
+    snapped.clamp(ZOOM_MIN, ZOOM_MAX)
+}
+
+/// S10: serialización compacta para guardar el zoom en el Storage de
+/// egui/eframe: un float con un decimal, ida y vuelta exacta.
+pub fn font_size_to_string(size: f32) -> String {
+    format!("{:.1}", size)
+}
+
+/// S10: decode inverso del valor guardado. Un Storage con basura
+/// devuelve None y el llamador titula el default.
+pub fn font_size_from_string(s: &str) -> Option<f32> {
+    s.parse::<f32>().ok().map(|v| v.clamp(ZOOM_MIN, ZOOM_MAX))
+}
+
 pub fn mtime_is_stale(
     disk: Option<SystemTime>,
     memo: Option<SystemTime>,
@@ -141,6 +170,9 @@ pub struct EditorApp {
     // S8: confirmación de creación de nuevo documento con cambios sin guardar.
     pub new_doc_pending: bool,
     pub new_after_save: bool,
+    // S10: tamaño en puntos de la fuente monoespaciada del editor
+    // (clamp 8..32). Solo la fuente del editor, no toda la UI.
+    pub font_size: f32,
     dir_cache: Option<(PathBuf, Option<SystemTime>, Vec<String>, Vec<String>)>,
 }
 
@@ -178,6 +210,7 @@ impl Default for EditorApp {
             find_case_sensitive: false,
             find_matches: Vec::new(),
             find_current: 0,
+            font_size: 14.0,
             dir_cache: None,
         }
     }
@@ -702,11 +735,76 @@ impl EditorApp {
         }
         self.open_path(path);
     }
+
+    /// S10: cambia el tamaño de la fuente del editor un paso (zoom in
+    /// / out con clamp 8..32) y lo informa en la barra de estado. El
+    /// re-layout (wrap_chars, scroll, gutter) cae solo: el widget
+    /// mide el ancho/alto de glifo en cada frame con el FontId nuevo.
+    pub fn zoom(&mut self, zoom_in: bool) {
+        let next = apply_zoom(self.font_size, zoom_in);
+        if (next - self.font_size).abs() < f32::EPSILON {
+            return; // ya en el tope: no spamear el status
+        }
+        self.font_size = next;
+        self.status = format!("Zoom: {} px", next.round());
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- S10: Zoom de fuente ----
+
+    #[test]
+    fn zoom_reseta_tamano_y_respeta_el_clamp() {
+        const EPS: f32 = 0.001;
+        // Zoom in avanza un paso...
+        assert!((apply_zoom(14.0, true) - 15.0).abs() < EPS);
+        // ...y zoom out retrocede.
+        assert!((apply_zoom(14.0, false) - 13.0).abs() < EPS);
+        // Clamp por abajo: en 8.0 ya no baja más.
+        assert!((apply_zoom(8.0, false) - 8.0).abs() < EPS);
+        // Clamp por arriba: en 32.0 ya no sube más.
+        assert!((apply_zoom(32.0, true) - 32.0).abs() < EPS);
+        // Fuera de rango por valores espurio: se recorta al entrar.
+        assert!((apply_zoom(50.0, true) - 32.0).abs() < EPS);
+        assert!((apply_zoom(1.0, false) - 8.0).abs() < EPS);
+    }
+
+    #[test]
+    fn zoom_redondea_a_pasos_enteros() {
+        const EPS: f32 = 0.001;
+        assert!((apply_zoom(14.3, true) - 15.0).abs() < EPS);
+        assert!((apply_zoom(14.3, false) - 13.0).abs() < EPS);
+    }
+
+    #[test]
+    fn zoom_metodo_actualiza_font_size_y_avisa_en_status() {
+        const EPS: f32 = 0.001;
+        let mut app = EditorApp::default();
+        let base = app.font_size;
+        app.zoom(true);
+        assert!((app.font_size - (base + 1.0)).abs() < EPS);
+        assert!(app.status.contains("Zoom"));
+
+        app.zoom(false);
+        assert!((app.font_size - base).abs() < EPS);
+
+        // sincroniza persistence: el payload que se guarda y se lee
+        // del Storage es exactamente el tamaño actual.
+        app.font_size = 17.5;
+        assert_eq!(font_size_to_string(app.font_size), "17.5");
+        assert_eq!(font_size_from_string("17.5"), Some(17.5));
+        assert_eq!(font_size_from_string("basura"), None);
+
+        // S10: clamp también al cargar: un Storage corrupto machaca
+        // la fuente inválida en lugar de crashear o dibujar gigante.
+        app.font_size = font_size_from_string("999.0").unwrap_or_default();
+        assert!((app.font_size - ZOOM_MAX).abs() < EPS);
+    }
+
+
 
     // ---- S9: preservar saltos de línea originales ----
 
