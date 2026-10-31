@@ -1552,6 +1552,43 @@ impl EditorApp {
 
     /// S5 (Roadmap v0.2.25): Renderiza el emulador de terminal interactiva PTY (vt100 + portable-pty).
     fn show_interactive_terminal(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, theme: &crate::theme::Theme) {
+        // F10 (Roadmap v0.2.37): pestañas del dock de terminales. Las consolas
+        // inactivas no generan snapshot: sólo se fotografía la activa.
+        let mut switch_to = None;
+        let mut close_tab = false;
+        let mut new_tab = false;
+        ui.horizontal(|ui| {
+            let titles = self.terminal.titles();
+            for (idx, title) in titles.iter().enumerate() {
+                let selected = idx == self.terminal.active;
+                if ui.selectable_label(selected, title).clicked() {
+                    switch_to = Some(idx);
+                }
+            }
+            if ui.button("＋").on_hover_text("New Terminal").clicked() {
+                new_tab = true;
+            }
+            if self.terminal.len() > 1
+                && ui
+                    .button("✕")
+                    .on_hover_text("Close Terminal (Ctrl+Shift+W)")
+                    .clicked()
+            {
+                close_tab = true;
+            }
+        });
+        if let Some(idx) = switch_to {
+            self.terminal.set_active(idx);
+        }
+        if close_tab {
+            self.terminal.close_active();
+        }
+        if new_tab {
+            let cwd = self.current_working_dir();
+            let (cols, rows) = (self.terminal.cols, self.terminal.rows);
+            self.terminal.new_tab(&cwd, cols, rows);
+        }
+
         // OPT-1 (v0.2.26): nada de repintado a 30 ms por frame. La terminal
         // sólo se repinta rápido mientras llega salida del PTY (la revisión
         // avanza); en reposo baja a 150 ms para el cursor, y sin sesión viva

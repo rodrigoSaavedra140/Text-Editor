@@ -84,3 +84,4 @@ It grants free use, copying, modification, and compilation for personal, educati
 - Drag the 6px divider to change the ratio
 - Each pane keeps its own cursor and scroll over the same buffer
 - `Ctrl+\`` — Toggle the Cargo console (moved from `Ctrl+\`)
+- Terminal dock tabs: `＋` opens a new PTY, `✕` closes the active one; each tab keeps its own shell
