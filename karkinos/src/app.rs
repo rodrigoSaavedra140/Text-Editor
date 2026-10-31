@@ -1,60 +1,14 @@
-use std::fs;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::{Duration, Instant, SystemTime};
 
 use eframe::egui;
-use ropey::Rope;
 
-use crate::buffer::TextBuffer;
 use crate::editor_widget::EditorState;
-use crate::undo::{ChunkTracker, Edit, UndoStack};
+use crate::document_service::{DocumentService, TabDocument};
+use karkinos_core::LineEnding;
+use ropey::Rope;
+use crate::undo::UndoStack;
 
-/// Estado compartido entre el hilo que escribe el archivo y la UI,
-/// que solo lee esto para dibujar la barra de progreso.
-pub struct SaveProgress {
-    pub written: usize,
-    pub total: usize,
-    pub done: bool,
-    pub error: Option<String>,
-}
 
-/// Estilo de fin de línea del archivo tal como vive en el disco (S9).
-/// El buffer interno SIEMPRE trabaja con '\n': este estilo solo se
-/// usa al serializar de vuelta al guardar, así que un archivo CRLF
-/// vuelve a disco idéntico a como estaba.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum LineEnding {
-    #[default]
-    Lf,
-    Crlf,
-}
-
-/// Detecta el estilo del archivo: CRLF SOLO si cada '\n' viene con su
-/// '\r' delante. Un archivo mixto (algunos CRLF, otros LF) se conserva
-/// como CRLF únicamente si es uniforme; mixed o suelto → LF, que es
-/// el terminador que faltó.
-pub fn detect_line_ending(text: &str) -> LineEnding {
-    let crlf = text.matches("\r\n").count();
-    if crlf > 0 && crlf == text.matches('\n').count() {
-        LineEnding::Crlf
-    } else {
-        LineEnding::Lf
-    }
-}
-
-/// Serializa el texto del buffer (que usa '\n') con el estilo del
-/// archivo. Para LF lo deja tal cual; para CRLF reintroduce el '\r'
-/// delante de cada '\n'.
-pub fn serialize_line_ending(text: &str, ending: LineEnding) -> String {
-    match ending {
-        LineEnding::Lf => text.to_string(),
-        // El buffer no contiene pares '\r\n' (invariante del set_text/
-        // open_path), así que el replace directo no puede duplicarlos.
-        LineEnding::Crlf => text.replace('\n', "\r\n"),
-    }
-}
 
 // S10: rango y paso del zoom de la fuente del editor (clamp 8..32 px).
 pub const ZOOM_MIN: f32 = 8.0;
@@ -74,29 +28,6 @@ pub fn picker_should_stay_open(
     inside(popup) || inside(button)
 }
 
-/// Default file path for an unsaved file without a path: `untitled.txt` in `dir`.
-pub fn default_new_file_path(
-    dir: &std::path::Path,
-    exists: &dyn Fn(&std::path::Path) -> bool,
-) -> std::path::PathBuf {
-    for n in 0..1000u32 {
-        let name = if n == 0 {
-            "untitled.txt".to_string()
-        } else {
-            format!("untitled ({n}).txt")
-        };
-        let path = dir.join(name);
-        if !exists(&path) {
-            return path;
-        }
-    }
-    dir.join("untitled-file.txt")
-}
-
-/// Detecta si el archivo cambió en el disco respecto a lo que
-/// recordamos: mismo mtime = sin cambios; mtime distinto = alguien
-/// lo tocó por afuera; ya no existe en el disco = tocado/borrado;
-/// con mtime "None" (documento nunca ligado a disco) nunca está viejo.
 /// Política pura del zoom (S10): redondea al paso entero y recorta
 /// al clamp [8, 32].
 pub fn apply_zoom(current: f32, zoom_in: bool) -> f32 {
@@ -121,137 +52,25 @@ pub fn font_size_from_string(s: &str) -> Option<f32> {
     s.parse::<f32>().ok().map(|v| v.clamp(ZOOM_MIN, ZOOM_MAX))
 }
 
-pub fn mtime_is_stale(
-    disk: Option<SystemTime>,
-    memo: Option<SystemTime>,
-) -> bool {
-    match (disk, memo) {
-        (Some(a), Some(b)) => a != b,
-        (None, Some(_)) => true, // borrado o movido del disco
-        _ => false,
-    }
-}
 
-/// S8 (Etapa 2): Representación de un documento abierto en una pestaña.
-#[derive(Debug, Clone)]
-pub struct TabDocument {
-    #[allow(dead_code)]
-    pub id: usize,
-    pub lines: Vec<String>,
-    pub buffer: TextBuffer,
-    pub editor_state: EditorState,
-    pub last_snapshot: Rope,
-    pub undo_stack: UndoStack,
-    pub file_path_input: String,
-    pub current_file: Option<PathBuf>,
-    pub dirty: bool,
-    pub line_ending: LineEnding,
-    pub last_disk_mtime: Option<SystemTime>,
-    pub external_changed: bool,
-    pub last_mtime_check: Option<Instant>,
-    pub view_bytes: usize,
-}
-
-impl TabDocument {
-    pub fn new(id: usize) -> Self {
-        Self {
-            id,
-            lines: vec![String::new()],
-            buffer: TextBuffer::new(),
-            editor_state: EditorState::default(),
-            last_snapshot: Rope::from_str(""),
-            undo_stack: UndoStack::new(),
-            file_path_input: String::new(),
-            current_file: None,
-            dirty: false,
-            line_ending: LineEnding::Lf,
-            last_disk_mtime: None,
-            external_changed: false,
-            last_mtime_check: None,
-            view_bytes: 0,
-        }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.lines.is_empty() || (self.lines.len() == 1 && self.lines[0].trim().is_empty())
-    }
-
-    pub fn display_title(&self) -> String {
-        let name = if let Some(ref p) = self.current_file {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("file")
-                .to_string()
-        } else if !self.file_path_input.is_empty() {
-            self.file_path_input.clone()
-        } else {
-            "Untitled".to_string()
-        };
-
-        if self.dirty {
-            format!("{} •", name)
-        } else {
-            name
-        }
-    }
-}
 
 pub struct EditorApp {
-    // Buffer "vivo", partido en líneas para render y edición por franjas.
-    pub lines: Vec<String>,
-    pub buffer: TextBuffer,
+    // S5a (Roadmap v0.2.9): servicio de documento (buffer, pestañas,
+    // ciclo de vida de archivos). Toda la lógica pura vive en
+    // document_service.rs; app.rs orquesta con presentación/LSP/AST.
+    pub doc: crate::document_service::DocumentService,
     pub editor_state: EditorState,
-    pub last_snapshot: Rope, // snapshot del buffer en Rope (Copy-On-Write O(1) con UndoStack)
-    pub undo_stack: UndoStack,
-    pub file_path_input: String,
-    pub current_file: Option<PathBuf>,
-    pub dirty: bool,
-    pub status: String,
-    // Carpeta que está mostrando el desplegable de archivos ahora
-    // mismo — no tiene por qué ser la misma que la carpeta desde
-    // donde se lanzó el programa, porque se puede navegar.
-    pub browse_dir: PathBuf,
     // Textura del logo, cargada una sola vez en el primer frame
     // (None hasta ese momento).
     pub logo_texture: Option<egui::TextureHandle>,
-    // Some() mientras hay un guardado en curso en otro hilo.
-    pub save_progress: Option<Arc<Mutex<SaveProgress>>>,
-    // Momento en que se pidió el cierre prolijo — si pasa mucho
-    // tiempo sin que la ventana realmente se cierre (WSLg no
-    // responde bien a veces), forzamos la salida igual.
-    pub closing_since: Option<Instant>,
-    // S9: estilo de fin de línea con el que se abrió el archivo en
-    // disco (Lf para documentos nuevos).
-    pub line_ending: LineEnding,
-    // S9: mtime del archivo la última vez que lo leímos o guardamos
-    // (None = documento nuevo, nunca ligado a disco).
-    pub last_disk_mtime: Option<SystemTime>,
-    // S1: cierre pedido con cambios sin guardar — el diálogo
-    // Guardar / Descartar / Cancelar está visible.
-    pub close_pending: bool,
-    // S1: el usuario eligió Guardar en el diálogo — cerrar la
-    // ventana en cuanto el guardado termine bien.
-    pub close_after_save: bool,
-    // S1: fecha del último stat de disco (limitamos las comprobaciones
-    // a una por segundo para no hacer I/O en cada frame).
-    pub last_mtime_check: Option<Instant>,
-    // S1: el archivo en disco cambió por afuera y el buffer está
-    // limpio — la barra ofrece "Recargar".
-    pub external_changed: bool,
     // S4: diálogo "Ir a línea" abierto (Ctrl+G) + su campo de texto.
     pub goto_pending: bool,
     pub goto_input: String,
-    // Bytes del texto actual, cacheado. Recalcular era O(total) en
-    // CADA frame (sumaba el largo de todas las líneas para la barra
-    // de estado); ahora solo se refresca cuando el texto cambia.
-    pub view_bytes: usize,
     // Listado de la carpeta que se muestra en el desplegable,
     // cacheado: read_dir + abrir los primeros 8 KiB de cada archivo
     // era I/O de disco EN CADA FRAME con el desplegable abierto.
     // Se invalida al navegar a otra carpeta o cuando cambia el
     // mtime de la carpeta (archivos creados/borrados dentro).
-    // S3: agrupamiento de ediciones en chunks por inactividad o Enter/Paste.
-    pub chunk_tracker: ChunkTracker,
     // S2: búsqueda y reemplazo (Ctrl+F).
     pub find_open: bool,
     pub find_query: String,
@@ -261,9 +80,6 @@ pub struct EditorApp {
     pub find_matches: Vec<(usize, usize)>,
     /// Índice del match actual dentro de find_matches.
     pub find_current: usize,
-    // S8: confirmación de creación de nuevo documento con cambios sin guardar.
-    pub new_doc_pending: bool,
-    pub new_after_save: bool,
     // Selector de carpetas propio (popup debrowse): se mantiene
     // abierto mientras se navega entre carpetas — el ComboBox de egui
     // cerraba el popup con CUALQUIER click adentro (navegar = reabrir
@@ -280,16 +96,6 @@ pub struct EditorApp {
     // S4 (Roadmap v0.2.9): servicios de fondo del Quick Open (indexador
     // + scorer). UNA pareja por app; sirve al modal del tab activo.
     pub quick_open_services: crate::quick_open::QuickOpenServices,
-    // S8 (Etapa 2): Pestañas / Múltiples documentos abiertos simultáneamente.
-    pub tabs: Vec<TabDocument>,
-    pub active_tab: usize,
-    pub next_tab_id: usize,
-    pub tab_close_pending: Option<usize>,
-    pub tab_close_after_save: Option<usize>,
-    // Modal para nombrar archivo sin nombre al guardar.
-    pub save_name_pending: bool,
-    pub save_name_input: String,
-    dir_cache: Option<(PathBuf, Option<SystemTime>, Vec<String>, Vec<String>)>,
     // S4 (Etapa 4): Cliente Language Server Protocol (LSP)
     pub lsp_client: Option<karkinos_core::lsp::LspClient>,
     // S4 (Etapa 5): Gestor de extensiones y plugins
@@ -333,51 +139,23 @@ pub struct EditorApp {
 impl Default for EditorApp {
     fn default() -> Self {
         EditorApp {
-            lines: vec![String::new()],
-            buffer: TextBuffer::new(),
             editor_state: EditorState::default(),
-            last_snapshot: Rope::from_str(""),
-            undo_stack: UndoStack::new(),
-            file_path_input: String::new(),
-            current_file: None,
-            dirty: false,
-            status: "Ready".to_string(),
-            browse_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             logo_texture: None,
-            save_progress: None,
-            closing_since: None,
-            line_ending: LineEnding::Lf,
-            last_disk_mtime: None,
-            close_pending: false,
-            close_after_save: false,
-            new_doc_pending: false,
-            new_after_save: false,
-            picker_open: false,
-            picker_button_rect: None,
-            last_mtime_check: None,
-            external_changed: false,
             goto_pending: false,
             goto_input: String::new(),
-            view_bytes: 0,
-            chunk_tracker: ChunkTracker::default_timeout(),
+            doc: DocumentService::default(),
             find_open: false,
             find_query: String::new(),
             find_replace: String::new(),
             find_case_sensitive: false,
             find_matches: Vec::new(),
             find_current: 0,
+            picker_open: false,
+            picker_button_rect: None,
             font_size: 14.0,
             theme_mode: crate::theme::ThemeMode::Dark,
             quick_open: crate::quick_open::QuickOpenState::default(),
             quick_open_services: crate::quick_open::QuickOpenServices::default(),
-            tabs: vec![TabDocument::new(1)],
-            active_tab: 0,
-            next_tab_id: 2,
-            tab_close_pending: None,
-            tab_close_after_save: None,
-            save_name_pending: false,
-            save_name_input: String::new(),
-            dir_cache: None,
             lsp_client: None,
             plugin_manager: karkinos_core::plugin::PluginManager::with_default_plugins(),
             extensions_modal_open: false,
@@ -416,18 +194,18 @@ impl EditorApp {
 
     /// S6 (Etapa 2): Retorna el lenguaje detectado para el documento actual (autodetecta por extensión y contenido).
     pub fn current_language(&self) -> crate::syntax::Language {
-        let path = self.current_file.as_deref().or_else(|| {
-            if self.file_path_input.is_empty() {
+        let path = self.doc.current_file.as_deref().or_else(|| {
+            if self.doc.file_path_input.is_empty() {
                 None
             } else {
-                Some(std::path::Path::new(&self.file_path_input))
+                Some(std::path::Path::new(&self.doc.file_path_input))
             }
         });
 
-        let sample = if self.lines.len() <= 100 {
-            self.lines.join("\n")
+        let sample = if self.doc.lines.len() <= 100 {
+            self.doc.lines.join("\n")
         } else {
-            self.lines[..100].join("\n")
+            self.doc.lines[..100].join("\n")
         };
 
         crate::syntax::Language::detect(path, &sample)
@@ -435,31 +213,31 @@ impl EditorApp {
 
     /// S8 (Etapa 2): Guarda el estado actual del editor en la pestaña activa.
     pub fn sync_active_to_tab(&mut self) {
-        if let Some(tab) = self.tabs.get_mut(self.active_tab) {
-            tab.lines = self.lines.clone();
-            tab.buffer = self.buffer.clone();
+        if let Some(tab) = self.doc.tabs.get_mut(self.doc.active_tab) {
+            tab.lines = self.doc.lines.clone();
+            tab.buffer = self.doc.buffer.clone();
             tab.editor_state = self.editor_state.clone();
-            tab.last_snapshot = self.last_snapshot.clone();
-            tab.undo_stack = self.undo_stack.clone();
-            tab.file_path_input = self.file_path_input.clone();
-            tab.current_file = self.current_file.clone();
-            tab.dirty = self.dirty;
-            tab.line_ending = self.line_ending;
-            tab.last_disk_mtime = self.last_disk_mtime;
-            tab.external_changed = self.external_changed;
-            tab.last_mtime_check = self.last_mtime_check;
-            tab.view_bytes = self.view_bytes;
+            tab.last_snapshot = self.doc.last_snapshot.clone();
+            tab.undo_stack = self.doc.undo_stack.clone();
+            tab.file_path_input = self.doc.file_path_input.clone();
+            tab.current_file = self.doc.current_file.clone();
+            tab.dirty = self.doc.dirty;
+            tab.line_ending = self.doc.line_ending;
+            tab.last_disk_mtime = self.doc.last_disk_mtime;
+            tab.external_changed = self.doc.external_changed;
+            tab.last_mtime_check = self.doc.last_mtime_check;
+            tab.view_bytes = self.doc.view_bytes;
         }
     }
 
     /// S2: Sincronización ligera de metadatos (dirty, view_bytes, cursor) sin clonar lines ni undo_stack.
     pub fn sync_active_metadata_to_tab(&mut self) {
-        if let Some(tab) = self.tabs.get_mut(self.active_tab) {
-            tab.dirty = self.dirty;
-            tab.view_bytes = self.view_bytes;
-            tab.current_file = self.current_file.clone();
-            tab.file_path_input = self.file_path_input.clone();
-            tab.external_changed = self.external_changed;
+        if let Some(tab) = self.doc.tabs.get_mut(self.doc.active_tab) {
+            tab.dirty = self.doc.dirty;
+            tab.view_bytes = self.doc.view_bytes;
+            tab.current_file = self.doc.current_file.clone();
+            tab.file_path_input = self.doc.file_path_input.clone();
+            tab.external_changed = self.doc.external_changed;
             tab.editor_state.cursor_line = self.editor_state.cursor_line;
             tab.editor_state.cursor_col = self.editor_state.cursor_col;
             tab.editor_state.scroll = self.editor_state.scroll;
@@ -468,19 +246,19 @@ impl EditorApp {
 
     /// S4: Avanza a la siguiente pestaña de manera cíclica.
     pub fn next_tab(&mut self) {
-        if self.tabs.len() > 1 {
-            let next = (self.active_tab + 1) % self.tabs.len();
+        if self.doc.tabs.len() > 1 {
+            let next = (self.doc.active_tab + 1) % self.doc.tabs.len();
             self.switch_tab(next);
         }
     }
 
     /// S4: Retrocede a la pestaña anterior de manera cíclica.
     pub fn prev_tab(&mut self) {
-        if self.tabs.len() > 1 {
-            let prev = if self.active_tab == 0 {
-                self.tabs.len() - 1
+        if self.doc.tabs.len() > 1 {
+            let prev = if self.doc.active_tab == 0 {
+                self.doc.tabs.len() - 1
             } else {
-                self.active_tab - 1
+                self.doc.active_tab - 1
             };
             self.switch_tab(prev);
         }
@@ -488,22 +266,22 @@ impl EditorApp {
 
     /// S8 (Etapa 2): Carga los datos de la pestaña `idx` en el estado activo del editor.
     pub fn load_tab(&mut self, idx: usize) {
-        if let Some(tab) = self.tabs.get(idx) {
-            self.active_tab = idx;
-            self.lines = tab.lines.clone();
-            self.buffer = tab.buffer.clone();
+        if let Some(tab) = self.doc.tabs.get(idx) {
+            self.doc.active_tab = idx;
+            self.doc.lines = tab.lines.clone();
+            self.doc.buffer = tab.buffer.clone();
             self.editor_state = tab.editor_state.clone();
-            self.last_snapshot = tab.last_snapshot.clone();
-            self.undo_stack = tab.undo_stack.clone();
-            self.file_path_input = tab.file_path_input.clone();
-            self.current_file = tab.current_file.clone();
-            self.dirty = tab.dirty;
-            self.line_ending = tab.line_ending;
-            self.last_disk_mtime = tab.last_disk_mtime;
-            self.external_changed = tab.external_changed;
-            self.last_mtime_check = tab.last_mtime_check;
-            self.view_bytes = tab.view_bytes;
-            self.chunk_tracker.reset();
+            self.doc.last_snapshot = tab.last_snapshot.clone();
+            self.doc.undo_stack = tab.undo_stack.clone();
+            self.doc.file_path_input = tab.file_path_input.clone();
+            self.doc.current_file = tab.current_file.clone();
+            self.doc.dirty = tab.dirty;
+            self.doc.line_ending = tab.line_ending;
+            self.doc.last_disk_mtime = tab.last_disk_mtime;
+            self.doc.external_changed = tab.external_changed;
+            self.doc.last_mtime_check = tab.last_mtime_check;
+            self.doc.view_bytes = tab.view_bytes;
+            self.doc.chunk_tracker.reset();
             self.find_matches.clear();
 
             // S3 (Roadmap v0.2.9): el AST corre en un worker de fondo.
@@ -513,7 +291,7 @@ impl EditorApp {
             self.update_ast();
 
             // S4: Fast in-memory diagnostics lookup from existing singleton LSP client without process re-spawning
-            if let (Some(ref client), Some(ref path)) = (&self.lsp_client, &self.current_file) {
+            if let (Some(ref client), Some(ref path)) = (&self.lsp_client, &self.doc.current_file) {
                 let uri = karkinos_core::path_to_uri(path);
                 self.editor_state.diagnostics = client.diagnostics_for_file(&uri);
             }
@@ -524,134 +302,77 @@ impl EditorApp {
 
     /// S8 (Etapa 2): Cambia a la pestaña indicada, sincronizando la actual previamente.
     pub fn switch_tab(&mut self, new_idx: usize) {
-        if new_idx == self.active_tab || new_idx >= self.tabs.len() {
+        if new_idx == self.doc.active_tab || new_idx >= self.doc.tabs.len() {
             return;
         }
         self.sync_active_to_tab();
         self.load_tab(new_idx);
-        self.status = format!("Tab: {}", self.tabs[self.active_tab].display_title());
+        self.doc.status = format!("Tab: {}", self.doc.tabs[self.doc.active_tab].display_title());
     }
 
     /// S8 (Etapa 2): Crea una nueva pestaña en blanco y la activa.
     pub fn new_tab(&mut self) {
         self.sync_active_to_tab();
-        let new_tab = TabDocument::new(self.next_tab_id);
-        self.next_tab_id += 1;
-        self.tabs.push(new_tab);
-        self.load_tab(self.tabs.len() - 1);
-        self.status = "New tab created".to_string();
+        let new_tab = TabDocument::new(self.doc.next_tab_id);
+        self.doc.next_tab_id += 1;
+        self.doc.tabs.push(new_tab);
+        self.load_tab(self.doc.tabs.len() - 1);
+        self.doc.status = "New tab created".to_string();
     }
 
     /// S8 (Etapa 2): Cierra la pestaña en `idx`. Si es la única pestaña, la resetea en blanco.
     pub fn close_tab(&mut self, idx: usize) {
-        if idx >= self.tabs.len() {
+        if idx >= self.doc.tabs.len() {
             return;
         }
 
-        if self.tabs.len() == 1 {
-            let reset_tab = TabDocument::new(self.next_tab_id);
-            self.next_tab_id += 1;
-            self.tabs[0] = reset_tab;
+        if self.doc.tabs.len() == 1 {
+            let reset_tab = TabDocument::new(self.doc.next_tab_id);
+            self.doc.next_tab_id += 1;
+            self.doc.tabs[0] = reset_tab;
             self.load_tab(0);
             return;
         }
 
         self.sync_active_to_tab();
-        self.tabs.remove(idx);
+        self.doc.tabs.remove(idx);
 
-        if self.active_tab >= self.tabs.len() {
-            self.active_tab = self.tabs.len() - 1;
-        } else if idx < self.active_tab {
-            self.active_tab -= 1;
+        if self.doc.active_tab >= self.doc.tabs.len() {
+            self.doc.active_tab = self.doc.tabs.len() - 1;
+        } else if idx < self.doc.active_tab {
+            self.doc.active_tab -= 1;
         }
 
-        self.load_tab(self.active_tab);
+        self.load_tab(self.doc.active_tab);
     }
 
-    /// Retorna `true` si el buffer actual no contiene texto real (vacío o solo whitespace).
-    pub fn is_buffer_empty(&self) -> bool {
-        self.lines.is_empty() || (self.lines.len() == 1 && self.lines[0].trim().is_empty())
-    }
 
     /// S8 (Etapa 2): Intenta cerrar una pestaña. Si tiene cambios sin guardar
     /// y contenido real no vacío, pide confirmación estableciendo `tab_close_pending`.
     pub fn try_close_tab(&mut self, idx: usize) {
-        if idx >= self.tabs.len() {
+        if idx >= self.doc.tabs.len() {
             return;
         }
 
-        let is_empty = if idx == self.active_tab {
-            self.is_buffer_empty()
+        let is_empty = if idx == self.doc.active_tab {
+            self.doc.is_buffer_empty()
         } else {
-            self.tabs[idx].is_empty()
+            self.doc.tabs[idx].is_empty()
         };
 
-        let is_dirty = if idx == self.active_tab {
-            self.dirty
+        let is_dirty = if idx == self.doc.active_tab {
+            self.doc.dirty
         } else {
-            self.tabs[idx].dirty
+            self.doc.tabs[idx].dirty
         };
 
         if is_dirty && !is_empty {
-            self.tab_close_pending = Some(idx);
+            self.doc.tab_close_pending = Some(idx);
         } else {
             self.close_tab(idx);
         }
     }
 
-    /// S1/S8: Retorna el índice de la primera pestaña que tenga cambios sin guardar.
-    /// Prioriza la pestaña activa si está sucia para atender primero lo que ve el usuario.
-    pub fn first_dirty_tab_index(&self) -> Option<usize> {
-        if self.dirty {
-            return Some(self.active_tab);
-        }
-        self.tabs.iter().enumerate().position(|(idx, t)| {
-            if idx == self.active_tab {
-                self.dirty
-            } else {
-                t.dirty
-            }
-        })
-    }
-
-    /// S1/S8: Retorna la cantidad total de pestañas con cambios sin guardar.
-    pub fn dirty_tabs_count(&self) -> usize {
-        self.tabs
-            .iter()
-            .enumerate()
-            .filter(|(idx, t)| {
-                if *idx == self.active_tab {
-                    self.dirty
-                } else {
-                    t.dirty
-                }
-            })
-            .count()
-    }
-
-    /// Retorna `true` si todas las pestañas marcadas como sucias están vacías (sin contenido real).
-    pub fn all_dirty_tabs_are_empty(&self) -> bool {
-        self.tabs.iter().enumerate().all(|(idx, t)| {
-            let is_dirty = if idx == self.active_tab { self.dirty } else { t.dirty };
-            let is_empty = if idx == self.active_tab { self.is_buffer_empty() } else { t.is_empty() };
-            !is_dirty || is_empty
-        })
-    }
-    /// Reconstruye el texto completo a partir de `lines` — es O(n),
-    /// así que solo se llama en momentos puntuales (snapshot, guardar),
-    /// nunca en cada tecla.
-    pub fn current_text(&self) -> String {
-        self.lines.join("\n")
-    }
-
-    /// El texto del buffer serializado con el estilo de fin de línea
-    /// que registró el archivo al abrirse (S9): así un .txt que llega
-    /// con CRLF sale a disco EXACTAMENTE como estaba, sin '\r'
-    /// escondidos en el medio (el buffer solo usa '\n').
-    pub fn current_text_with_ending(&self) -> String {
-        let text = self.current_text();
-        serialize_line_ending(&text, self.line_ending)
-    }
 
     /// Reemplaza el contenido completo del buffer a partir de un
     /// String (abrir archivo, deshacer, rehacer). También se usa
@@ -661,8 +382,8 @@ impl EditorApp {
     /// conserva: es contenido del texto, no un salto).
     pub fn set_text(&mut self, text: &str) {
         let text = text.replace("\r\n", "\n");
-        self.buffer.set_text(&text);
-        self.lines = if text.is_empty() {
+        self.doc.buffer.set_text(&text);
+        self.doc.lines = if text.is_empty() {
             vec![String::new()]
         } else {
             text.split('\n').map(|l| l.to_string()).collect()
@@ -671,20 +392,12 @@ impl EditorApp {
         self.editor_state.cursor_col = 0;
         self.editor_state.sel_anchor = None;
         self.editor_state.scroll = 0.0;
-        self.chunk_tracker.reset();
-        self.recalc_view_bytes();
+        self.doc.chunk_tracker.reset();
+        self.doc.recalc_view_bytes();
         self.update_ast();
         self.update_lsp();
     }
 
-    /// Recalcula el tamaño "en vivo" que muestra la barra de estado.
-    /// O(n) en memoria leída (sin alocar el texto entero), y solo se
-    /// corre cuando el buffer cambia de verdad: al editar (una vez por
-    /// tecla, no por frame), abrir, deshacer o rehacer.
-    pub fn recalc_view_bytes(&mut self) {
-        self.view_bytes = self.lines.iter().map(|l| l.len()).sum::<usize>()
-            + self.lines.len().saturating_sub(1);
-    }
 
     /// S3 (Roadmap v0.2.9): encarga el parseo del AST al worker de FONDO.
     /// Ya no corre tree-sitter en la UI: manda el snapshot del texto con
@@ -696,7 +409,7 @@ impl EditorApp {
     pub fn update_ast(&mut self) {
         self.ast_request_rev = self.ast_request_rev.wrapping_add(1);
         if self.current_language() == crate::syntax::Language::Rust {
-            let code = self.current_text();
+            let code = self.doc.current_text();
             self.ast_worker.request(self.ast_request_rev, &code);
         } else {
             // Lenguaje sin AST (genéricamente solo Rust): descarta los
@@ -739,23 +452,23 @@ impl EditorApp {
         }
 
         if self.lsp_client.is_none() {
-            let client = karkinos_core::lsp::LspClient::spawn("rust-analyzer", &[], &self.browse_dir)
+            let client = karkinos_core::lsp::LspClient::spawn("rust-analyzer", &[], &self.doc.browse_dir)
                 .unwrap_or_else(|_| karkinos_core::lsp::LspClient::mock());
             self.lsp_client = Some(client);
         }
 
-        if let (Some(ref client), Some(ref path)) = (&self.lsp_client, &self.current_file) {
+        if let (Some(ref client), Some(ref path)) = (&self.lsp_client, &self.doc.current_file) {
             let uri = karkinos_core::path_to_uri(path);
-            let text = self.current_text();
+            let text = self.doc.current_text();
             client.did_change(&uri, 2, &text);
             self.editor_state.diagnostics = client.diagnostics_for_file(&uri);
 
             if let Some(diag) = self.editor_state.diagnostics.iter().find(|d| d.range.start.line == self.editor_state.cursor_line) {
                 self.editor_state.hover_text = Some(diag.message.clone());
-                self.status = format!("LSP: {}", diag.message);
+                self.doc.status = format!("LSP: {}", diag.message);
             }
 
-            let line_count = self.lines.len();
+            let line_count = self.doc.lines.len();
             client.request_inlay_hints(
                 &uri,
                 karkinos_core::lsp::LspRange {
@@ -768,22 +481,22 @@ impl EditorApp {
 
     /// S4 (Etapa 5): Ejecuta un comando registrado por plugins sobre el documento activo.
     pub fn execute_plugin_command(&mut self, cmd_id: &str) -> bool {
-        let mut doc = karkinos_core::Document::new(self.active_tab);
-        doc.file_path = self.current_file.clone();
-        doc.set_text(&self.current_text());
+        let mut doc = karkinos_core::Document::new(self.doc.active_tab);
+        doc.file_path = self.doc.current_file.clone();
+        doc.set_text(&self.doc.current_text());
 
         let mut ctx = karkinos_core::plugin::PluginContext::new();
-        ctx.active_file = self.current_file.clone();
+        ctx.active_file = self.doc.current_file.clone();
 
         let handled = self.plugin_manager.execute_command(cmd_id, &mut doc, &mut ctx);
         if handled {
             let new_text = doc.buffer.to_string();
-            if new_text != self.current_text() {
+            if new_text != self.doc.current_text() {
                 self.set_text(&new_text);
-                self.dirty = true;
+                self.doc.dirty = true;
             }
             if let Some(msg) = ctx.status_message {
-                self.status = msg;
+                self.doc.status = msg;
             }
         }
         handled
@@ -791,10 +504,10 @@ impl EditorApp {
 
     /// S1 (Rust IDE): Ejecuta un comando de Cargo en el directorio de trabajo del proyecto
     pub fn run_cargo(&mut self, action: karkinos_core::cargo::CargoAction) {
-        let dir = self.current_file
+        let dir = self.doc.current_file
             .as_ref()
             .and_then(|p| p.parent())
-            .unwrap_or(&self.browse_dir)
+            .unwrap_or(&self.doc.browse_dir)
             .to_path_buf();
         self.cargo_panel_open = true;
         let _ = self.cargo_runner.spawn(action, &dir, &[]);
@@ -806,13 +519,13 @@ impl EditorApp {
             let full_path = if path.is_absolute() {
                 path.clone()
             } else {
-                self.browse_dir.join(path)
+                self.doc.browse_dir.join(path)
             };
             self.open_path(full_path);
             self.editor_state.cursor_line = diag.line;
             self.editor_state.cursor_col = diag.col;
             self.editor_state.needs_autoscroll = true;
-            self.status = format!("Jumped to {}: line {}", diag.level, diag.line + 1);
+            self.doc.status = format!("Jumped to {}: line {}", diag.level, diag.line + 1);
         }
     }
 
@@ -821,10 +534,10 @@ impl EditorApp {
         if self.current_language() != crate::syntax::Language::Rust {
             return;
         }
-        if let (Some(ref client), Some(ref path)) = (&self.lsp_client, &self.current_file) {
+        if let (Some(ref client), Some(ref path)) = (&self.lsp_client, &self.doc.current_file) {
             let uri = karkinos_core::path_to_uri(path);
             client.request_definition(&uri, self.editor_state.cursor_line, self.editor_state.cursor_col);
-            self.status = "Resolving definition (F12)…".to_string();
+            self.doc.status = "Resolving definition (F12)…".to_string();
         }
     }
 
@@ -833,7 +546,7 @@ impl EditorApp {
         if self.current_language() != crate::syntax::Language::Rust {
             return;
         }
-        if let (Some(ref client), Some(ref path)) = (&self.lsp_client, &self.current_file) {
+        if let (Some(ref client), Some(ref path)) = (&self.lsp_client, &self.doc.current_file) {
             let uri = karkinos_core::path_to_uri(path);
             client.request_hover(&uri, self.editor_state.cursor_line, self.editor_state.cursor_col);
         }
@@ -859,19 +572,19 @@ impl EditorApp {
             self.editor_state.cursor_line = target.range.start.line;
             self.editor_state.cursor_col = target.range.start.character;
             self.editor_state.needs_autoscroll = true;
-            self.status = format!("Jumped to definition at line {}", target.range.start.line + 1);
+            self.doc.status = format!("Jumped to definition at line {}", target.range.start.line + 1);
         }
 
         if let Some(hover) = hover {
             let first_line = hover.contents.lines().find(|l| !l.trim().is_empty()).unwrap_or(&hover.contents);
-            self.status = format!("Docs: {}", first_line.trim());
+            self.doc.status = format!("Docs: {}", first_line.trim());
             self.editor_state.hover_text = Some(hover.contents);
         }
 
         if !actions.is_empty() {
             self.code_actions = actions;
             self.code_actions_menu_open = true;
-            self.status = format!("Found {} code actions (Ctrl+.)", self.code_actions.len());
+            self.doc.status = format!("Found {} code actions (Ctrl+.)", self.code_actions.len());
         }
 
         if !hints.is_empty() {
@@ -888,7 +601,7 @@ impl EditorApp {
         if self.current_language() != crate::syntax::Language::Rust {
             return;
         }
-        if let (Some(ref client), Some(ref path)) = (&self.lsp_client, &self.current_file) {
+        if let (Some(ref client), Some(ref path)) = (&self.lsp_client, &self.doc.current_file) {
             let uri = karkinos_core::path_to_uri(path);
             let range = karkinos_core::lsp::LspRange {
                 start: karkinos_core::lsp::LspPosition {
@@ -902,7 +615,7 @@ impl EditorApp {
             };
             let diags = self.editor_state.diagnostics.clone();
             client.request_code_actions(&uri, range, &diags);
-            self.status = "Querying code actions (Ctrl+.)…".to_string();
+            self.doc.status = "Querying code actions (Ctrl+.)…".to_string();
         }
     }
 
@@ -914,7 +627,7 @@ impl EditorApp {
         let action = self.code_actions[action_idx].clone();
         if let Some(ref edit) = action.edit {
             self.apply_workspace_edit(edit);
-            self.status = format!("Applied: {}", action.title);
+            self.doc.status = format!("Applied: {}", action.title);
         }
         self.code_actions_menu_open = false;
         self.code_actions.clear();
@@ -926,9 +639,9 @@ impl EditorApp {
         if self.current_language() != crate::syntax::Language::Rust {
             return;
         }
-        if let (Some(ref client), Some(ref path)) = (&self.lsp_client, &self.current_file) {
+        if let (Some(ref client), Some(ref path)) = (&self.lsp_client, &self.doc.current_file) {
             let uri = karkinos_core::path_to_uri(path);
-            let line_count = self.lines.len();
+            let line_count = self.doc.lines.len();
             let range = karkinos_core::lsp::LspRange {
                 start: karkinos_core::lsp::LspPosition { line: 0, character: 0 },
                 end: karkinos_core::lsp::LspPosition { line: line_count, character: 0 },
@@ -942,14 +655,14 @@ impl EditorApp {
         if self.current_language() != crate::syntax::Language::Rust || new_name.trim().is_empty() {
             return;
         }
-        if let (Some(ref client), Some(ref path)) = (&self.lsp_client, &self.current_file) {
+        if let (Some(ref client), Some(ref path)) = (&self.lsp_client, &self.doc.current_file) {
             let uri = karkinos_core::path_to_uri(path);
             let pos = karkinos_core::lsp::LspPosition {
                 line: self.editor_state.cursor_line,
                 character: self.editor_state.cursor_col,
             };
             client.request_rename(&uri, pos, new_name.trim());
-            self.status = format!("Renaming symbol to '{}'...", new_name.trim());
+            self.doc.status = format!("Renaming symbol to '{}'...", new_name.trim());
         }
     }
 
@@ -958,7 +671,7 @@ impl EditorApp {
         if edits.is_empty() {
             return;
         }
-        self.snapshot_if_changed();
+        self.doc.snapshot_if_changed();
         let mut sorted = edits.to_vec();
         sorted.sort_by(|a, b| {
             (b.range.start.line, b.range.start.character)
@@ -967,35 +680,37 @@ impl EditorApp {
 
         for edit in sorted {
             let start_char = self
+                .doc
                 .buffer
                 .line_col_to_char(edit.range.start.line, edit.range.start.character);
             let end_char = self
+                .doc
                 .buffer
                 .line_col_to_char(edit.range.end.line, edit.range.end.character);
 
             if start_char < end_char {
-                self.buffer.remove(start_char..end_char);
+                self.doc.buffer.remove(start_char..end_char);
             }
             if !edit.new_text.is_empty() {
-                self.buffer.insert(start_char, &edit.new_text);
+                self.doc.buffer.insert(start_char, &edit.new_text);
             }
         }
 
-        let full_text = self.buffer.to_string();
-        self.lines = full_text.split('\n').map(|s| s.to_string()).collect();
-        if self.lines.is_empty() {
-            self.lines.push(String::new());
+        let full_text = self.doc.buffer.to_string();
+        self.doc.lines = full_text.split('\n').map(|s| s.to_string()).collect();
+        if self.doc.lines.is_empty() {
+            self.doc.lines.push(String::new());
         }
-        self.recalc_view_bytes();
-        self.dirty = true;
-        self.snapshot_if_changed();
+        self.doc.recalc_view_bytes();
+        self.doc.dirty = true;
+        self.doc.snapshot_if_changed();
         self.update_ast();
         self.update_lsp();
     }
 
     /// Applies LSP text edits to a specific open tab.
     pub fn apply_text_edits_to_tab(&mut self, tab_idx: usize, edits: &[karkinos_core::lsp::LspTextEdit]) {
-        if let Some(tab) = self.tabs.get_mut(tab_idx) {
+        if let Some(tab) = self.doc.tabs.get_mut(tab_idx) {
             let mut sorted = edits.to_vec();
             sorted.sort_by(|a, b| {
                 (b.range.start.line, b.range.start.character)
@@ -1035,7 +750,7 @@ impl EditorApp {
             let file_path = karkinos_core::uri_to_path(&uri);
 
             // Check if it's the current file
-            let is_current = self.current_file.as_ref().map(|p| p == &file_path).unwrap_or(false);
+            let is_current = self.doc.current_file.as_ref().map(|p| p == &file_path).unwrap_or(false);
             if is_current {
                 self.apply_text_edits_to_active(&edits);
                 affected_files += 1;
@@ -1044,7 +759,7 @@ impl EditorApp {
 
             // Check if it matches an open tab
             let mut found_tab = false;
-            for (idx, tab) in self.tabs.iter().enumerate() {
+            for (idx, tab) in self.doc.tabs.iter().enumerate() {
                 if tab.current_file.as_ref().map(|p| p == &file_path).unwrap_or(false) {
                     self.apply_text_edits_to_tab(idx, &edits);
                     found_tab = true;
@@ -1062,13 +777,13 @@ impl EditorApp {
                 }
             }
         }
-        self.status = format!("Applied edits across {} file(s)", affected_files);
+        self.doc.status = format!("Applied edits across {} file(s)", affected_files);
     }
 
     /// S4 (Rust IDE): Toggles a breakpoint on the current file and specified line.
     pub fn toggle_breakpoint(&mut self, line: usize) {
-        let Some(path) = self.current_file.clone() else {
-            self.status = "Cannot set breakpoint on unsaved file".to_string();
+        let Some(path) = self.doc.current_file.clone() else {
+            self.doc.status = "Cannot set breakpoint on unsaved file".to_string();
             return;
         };
 
@@ -1094,7 +809,7 @@ impl EditorApp {
             client.set_breakpoints(&path, &active_lines);
         }
 
-        self.status = format!(
+        self.doc.status = format!(
             "Breakpoint {} at line {}",
             if added { "set" } else { "removed" },
             line + 1
@@ -1103,7 +818,7 @@ impl EditorApp {
 
     /// S4 (Rust IDE): Synchronizes breakpoints and stopped line state with active editor state.
     pub fn sync_editor_breakpoints(&mut self) {
-        if let Some(ref path) = self.current_file {
+        if let Some(ref path) = self.doc.current_file {
             self.editor_state.breakpoints = self
                 .breakpoints
                 .iter()
@@ -1133,13 +848,14 @@ impl EditorApp {
         if let Some(ref client) = self.dap_client {
             if client.state().is_stopped {
                 client.continue_execution();
-                self.status = "Debugger: Resumed execution".to_string();
+                self.doc.status = "Debugger: Resumed execution".to_string();
                 return;
             }
         }
 
         // Locate executable target: target/debug/<name> or current dir
         let target_bin = self
+            .doc
             .browse_dir
             .join("target")
             .join("debug")
@@ -1147,10 +863,10 @@ impl EditorApp {
         let bin_path = if target_bin.exists() {
             target_bin
         } else {
-            self.browse_dir.join("target").join("debug").join("app")
+            self.doc.browse_dir.join("target").join("debug").join("app")
         };
 
-        let client = karkinos_core::DapClient::spawn("lldb-dap", &[], &self.browse_dir)
+        let client = karkinos_core::DapClient::spawn("lldb-dap", &[], &self.doc.browse_dir)
             .unwrap_or_else(|_| karkinos_core::DapClient::mock());
 
         // Sync all breakpoints
@@ -1165,14 +881,14 @@ impl EditorApp {
 
         client.launch(&bin_path, &[]);
         self.dap_client = Some(client);
-        self.status = format!("Debugger started: {}", bin_path.display());
+        self.doc.status = format!("Debugger started: {}", bin_path.display());
     }
 
     /// S4 (Rust IDE): Steps over current instruction (next).
     pub fn step_over(&mut self) {
         if let Some(ref client) = self.dap_client {
             client.step_over();
-            self.status = "Debugger: Step over".to_string();
+            self.doc.status = "Debugger: Step over".to_string();
         }
     }
 
@@ -1180,7 +896,7 @@ impl EditorApp {
     pub fn step_in(&mut self) {
         if let Some(ref client) = self.dap_client {
             client.step_in();
-            self.status = "Debugger: Step in".to_string();
+            self.doc.status = "Debugger: Step in".to_string();
         }
     }
 
@@ -1188,7 +904,7 @@ impl EditorApp {
     pub fn step_out(&mut self) {
         if let Some(ref client) = self.dap_client {
             client.step_out();
-            self.status = "Debugger: Step out".to_string();
+            self.doc.status = "Debugger: Step out".to_string();
         }
     }
 
@@ -1196,7 +912,7 @@ impl EditorApp {
     pub fn pause_debugger(&mut self) {
         if let Some(ref client) = self.dap_client {
             client.pause();
-            self.status = "Debugger: Pausing target…".to_string();
+            self.doc.status = "Debugger: Pausing target…".to_string();
         }
     }
 
@@ -1204,7 +920,7 @@ impl EditorApp {
     pub fn stop_debugging(&mut self) {
         if let Some(ref client) = self.dap_client {
             client.disconnect();
-            self.status = "Debugger: Stopped".to_string();
+            self.doc.status = "Debugger: Stopped".to_string();
         }
         self.dap_client = None;
         self.debug_stopped_line = None;
@@ -1218,7 +934,7 @@ impl EditorApp {
             if st.is_stopped {
                 if let Some(ref frame) = st.current_frame {
                     if let Some(ref path) = frame.source_path {
-                        if self.current_file.as_ref() != Some(path) && path.exists() {
+                        if self.doc.current_file.as_ref() != Some(path) && path.exists() {
                             self.open_path(path.clone());
                         }
                         self.debug_stopped_line = Some((path.clone(), frame.line));
@@ -1226,7 +942,7 @@ impl EditorApp {
                         self.editor_state.cursor_line = frame.line;
                         self.editor_state.cursor_col = frame.column;
                         self.editor_state.needs_autoscroll = true;
-                        self.status = format!(
+                        self.doc.status = format!(
                             "Stopped at line {} ({})",
                             frame.line + 1,
                             frame.name
@@ -1295,10 +1011,10 @@ impl EditorApp {
         let path = Self::extensions_dir().join(filename);
         if path.exists() {
             if std::fs::remove_file(&path).is_ok() {
-                self.status = format!("Uninstalled .vsix extension: {}", filename);
+                self.doc.status = format!("Uninstalled .vsix extension: {}", filename);
                 true
             } else {
-                self.status = format!("Failed to delete: {}", filename);
+                self.doc.status = format!("Failed to delete: {}", filename);
                 false
             }
         } else {
@@ -1309,7 +1025,7 @@ impl EditorApp {
     /// Uninstalls an in-memory plugin from the plugin manager.
     pub fn uninstall_plugin(&mut self, plugin_name: &str) -> bool {
         if self.plugin_manager.uninstall(plugin_name) {
-            self.status = format!("Uninstalled plugin: {}", plugin_name);
+            self.doc.status = format!("Uninstalled plugin: {}", plugin_name);
             true
         } else {
             false
@@ -1363,11 +1079,11 @@ impl EditorApp {
                 match result {
                     Ok(msg) => {
                         self.open_vsx_status = Some(msg.clone());
-                        self.status = msg;
+                        self.doc.status = msg;
                     }
                     Err(err) => {
                         self.open_vsx_error = Some(err.clone());
-                        self.status = err;
+                        self.doc.status = err;
                     }
                 }
                 self.open_vsx_download_rx = None;
@@ -1375,52 +1091,7 @@ impl EditorApp {
         }
     }
 
-    /// Listado de `self.browse_dir` con caché (ver el campo
-    /// `dir_cache`): mismo estado que antes, salvo que en frames
-    /// repetidos con el desplegable abierto no hay I/O de disco.
-    pub fn cached_list_dir(&mut self) -> (Vec<String>, Vec<String>) {
-        let mtime = std::fs::metadata(&self.browse_dir)
-            .ok()
-            .and_then(|m| m.modified().ok());
-        let hit = match &self.dir_cache {
-            Some((dir, mt, dirs, files)) if *dir == self.browse_dir && *mt == mtime => {
-                Some((dirs.clone(), files.clone()))
-            }
-            _ => None,
-        };
-        if let Some(hit) = hit {
-            return hit;
-        }
-        let listing = Self::list_dir(&self.browse_dir);
-        self.dir_cache = Some((self.browse_dir.clone(), mtime, listing.0.clone(), listing.1.clone()));
-        listing
-    }
 
-    pub fn is_empty_buffer(&self) -> bool {
-        self.lines.len() <= 1 && self.lines.first().map(|l| l.is_empty()).unwrap_or(true)
-    }
-
-    /// S3: Registra un snapshot explícito para un texto dado. Si coincide
-    /// con el último snapshot, no hace nada (evita pasos vacíos).
-    pub fn snapshot_text(&mut self, text: &str) {
-        let next_snapshot = Rope::from_str(text);
-        if next_snapshot != self.last_snapshot {
-            self.undo_stack.push(Edit {
-                before: self.last_snapshot.clone(),
-                after: next_snapshot.clone(),
-            });
-            self.last_snapshot = next_snapshot;
-            self.dirty = true;
-            self.chunk_tracker.reset();
-        }
-    }
-
-    /// Si el texto cambió desde el último snapshot, guarda un Edit
-    /// (texto antes / texto después) en el UndoStack.
-    pub fn snapshot_if_changed(&mut self) {
-        let current = self.current_text();
-        self.snapshot_text(&current);
-    }
 
     /// S3 (revisión 2026-10-29): restaura el texto de un paso undo/redo
     /// SIN resetear la vista. set_text sirve a abrir/nuevo documento
@@ -1436,44 +1107,44 @@ impl EditorApp {
         );
         self.set_text(text);
         self.editor_state.scroll = scroll;
-        let last_line = self.lines.len().saturating_sub(1);
+        let last_line = self.doc.lines.len().saturating_sub(1);
         if line > last_line {
             // La línea vieja ya no existe: el contenido Ty se ajusta a
             // que el cursor aterrice al FIN de la última línea nueva.
             self.editor_state.cursor_line = last_line;
             self.editor_state.cursor_col =
-                self.lines[last_line].chars().count();
+                self.doc.lines[last_line].chars().count();
         } else {
             self.editor_state.cursor_line = line;
-            let line_len = self.lines[line].chars().count();
+            let line_len = self.doc.lines[line].chars().count();
             self.editor_state.cursor_col = col.min(line_len);
         }
     }
 
     pub fn undo(&mut self) {
-        self.snapshot_if_changed();
-        self.chunk_tracker.reset();
-        if let Some(edit) = self.undo_stack.undo() {
+        self.doc.snapshot_if_changed();
+        self.doc.chunk_tracker.reset();
+        if let Some(edit) = self.doc.undo_stack.undo() {
             let snap = edit.before.clone();
             let text = snap.to_string();
             self.restore_text_keeping_view(&text);
-            self.last_snapshot = snap;
-            self.status = "Undone".to_string();
+            self.doc.last_snapshot = snap;
+            self.doc.status = "Undone".to_string();
         } else {
-            self.status = "Nothing to undo".to_string();
+            self.doc.status = "Nothing to undo".to_string();
         }
     }
 
     pub fn redo(&mut self) {
-        self.chunk_tracker.reset();
-        if let Some(edit) = self.undo_stack.redo() {
+        self.doc.chunk_tracker.reset();
+        if let Some(edit) = self.doc.undo_stack.redo() {
             let snap = edit.after.clone();
             let text = snap.to_string();
             self.restore_text_keeping_view(&text);
-            self.last_snapshot = snap;
-            self.status = "Redone".to_string();
+            self.doc.last_snapshot = snap;
+            self.doc.status = "Redone".to_string();
         } else {
-            self.status = "Nothing to redo".to_string();
+            self.doc.status = "Nothing to redo".to_string();
         }
     }
 
@@ -1491,7 +1162,7 @@ impl EditorApp {
         } else {
             self.find_query.to_lowercase()
         };
-        for (li, line) in self.lines.iter().enumerate() {
+        for (li, line) in self.doc.lines.iter().enumerate() {
             let hay = if self.find_case_sensitive {
                 line.clone()
             } else {
@@ -1552,15 +1223,15 @@ impl EditorApp {
         if self.find_matches.is_empty() {
             return;
         }
-        self.snapshot_if_changed();
+        self.doc.snapshot_if_changed();
         if let Some(&(line, col)) = self.find_matches.get(self.find_current) {
             let qlen = self.find_query.chars().count();
-            let sb = crate::editor_widget::char_to_byte_pub(&self.lines[line], col);
-            let eb = crate::editor_widget::char_to_byte_pub(&self.lines[line], col + qlen);
-            self.lines[line].replace_range(sb..eb, &self.find_replace);
-            self.dirty = true;
-            self.recalc_view_bytes();
-            self.snapshot_if_changed();
+            let sb = crate::editor_widget::char_to_byte_pub(&self.doc.lines[line], col);
+            let eb = crate::editor_widget::char_to_byte_pub(&self.doc.lines[line], col + qlen);
+            self.doc.lines[line].replace_range(sb..eb, &self.find_replace);
+            self.doc.dirty = true;
+            self.doc.recalc_view_bytes();
+            self.doc.snapshot_if_changed();
             self.find_update_matches();
             if !self.find_matches.is_empty() {
                 if self.find_current >= self.find_matches.len() {
@@ -1577,20 +1248,20 @@ impl EditorApp {
         if self.find_matches.is_empty() {
             return;
         }
-        self.snapshot_if_changed();
+        self.doc.snapshot_if_changed();
         let qlen = self.find_query.chars().count();
         let count = self.find_matches.len();
         // Reemplazar de atrás hacia adelante evita recalcular offsets.
         for &(line, col) in self.find_matches.iter().rev() {
-            let sb = crate::editor_widget::char_to_byte_pub(&self.lines[line], col);
-            let eb = crate::editor_widget::char_to_byte_pub(&self.lines[line], col + qlen);
-            self.lines[line].replace_range(sb..eb, &self.find_replace);
+            let sb = crate::editor_widget::char_to_byte_pub(&self.doc.lines[line], col);
+            let eb = crate::editor_widget::char_to_byte_pub(&self.doc.lines[line], col + qlen);
+            self.doc.lines[line].replace_range(sb..eb, &self.find_replace);
         }
-        self.dirty = true;
-        self.recalc_view_bytes();
-        self.snapshot_if_changed();
+        self.doc.dirty = true;
+        self.doc.recalc_view_bytes();
+        self.doc.snapshot_if_changed();
         self.find_update_matches();
-        self.status = format!("Replaced {} occurrences", count);
+        self.doc.status = format!("Replaced {} occurrences", count);
     }
 
     /// Abre `path` directamente (usado por el explorador de
@@ -1599,285 +1270,45 @@ impl EditorApp {
     pub fn open_path(&mut self, path: PathBuf) {
         // S8 (Etapa 2): Si ya está abierto en alguna pestaña, activarla
         self.sync_active_to_tab();
-        if let Some(pos) = self.tabs.iter().position(|t| t.current_file.as_ref() == Some(&path)) {
+        if let Some(pos) = self.doc.tabs.iter().position(|t| t.current_file.as_ref() == Some(&path)) {
             self.switch_tab(pos);
-            self.status = "File already open in tab".to_string();
+            self.doc.status = "File already open in tab".to_string();
             return;
         }
 
         // Si la pestaña actual está intacta y vacía, la reutilizamos; si no, creamos nueva pestaña
-        let can_reuse_current = self.current_file.is_none() && !self.dirty && self.lines == [""];
+        let can_reuse_current = self.doc.current_file.is_none() && !self.doc.dirty && self.doc.lines == [""];
         if !can_reuse_current {
-            let new_tab = TabDocument::new(self.next_tab_id);
-            self.next_tab_id += 1;
-            self.tabs.push(new_tab);
-            self.active_tab = self.tabs.len() - 1;
+            let new_tab = TabDocument::new(self.doc.next_tab_id);
+            self.doc.next_tab_id += 1;
+            self.doc.tabs.push(new_tab);
+            self.doc.active_tab = self.doc.tabs.len() - 1;
         }
 
-        match Self::read_file(&path) {
+        match DocumentService::read_file(&path) {
             Ok((content, ending, mtime)) => {
                 if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                    self.file_path_input = name.to_string();
+                    self.doc.file_path_input = name.to_string();
                 }
-                self.current_file = Some(path);
+                self.doc.current_file = Some(path);
                 self.set_text(&content);
-                self.last_snapshot = Rope::from_str(&content);
-                self.line_ending = ending;
-                self.last_disk_mtime = mtime;
-                self.external_changed = false;
-                self.last_mtime_check = None;
-                self.dirty = false;
-                self.status = "File opened".to_string();
+                self.doc.last_snapshot = Rope::from_str(&content);
+                self.doc.line_ending = ending;
+                self.doc.last_disk_mtime = mtime;
+                self.doc.external_changed = false;
+                self.doc.last_mtime_check = None;
+                self.doc.dirty = false;
+                self.doc.status = "File opened".to_string();
                 self.sync_active_to_tab();
             }
             Err(e) => {
-                self.status = format!("Error opening file: {}", e);
+                self.doc.status = format!("Error opening file: {}", e);
             }
         }
     }
 
-    /// Lee un archivo del disco: contenido ya normalizado a '\n' para
-    /// el buffer, el estilo de fin de línea ORIGINAL y su mtime — los
-    /// tres juntos, de una sola pasada de I/O.
-    fn read_file(
-        path: &std::path::Path,
-    ) -> std::io::Result<(String, LineEnding, Option<SystemTime>)> {
-        use std::io::Read;
 
-        let mut bytes = Vec::new();
-        fs::File::open(path)?.read_to_end(&mut bytes)?;
-        let raw = String::from_utf8(bytes)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        let ending = detect_line_ending(&raw);
-        let content = raw.replace("\r\n", "\n");
-        let mtime = fs::metadata(path).ok().and_then(|m| m.modified().ok());
-        Ok((content, ending, mtime))
-    }
 
-    /// Abre lo que haya escrito en el campo "Archivo" (botón "Abrir"
-    /// o Enter). Interpreta ese texto como ruta relativa a la carpeta
-    /// desde donde se lanzó el programa.
-    #[allow(dead_code)]
-    pub fn open(&mut self) {
-        self.open_path(PathBuf::from(&self.file_path_input));
-    }
-
-    /// Heurística simple para distinguir texto de binario (la misma
-    /// que usa Git): si los primeros bytes del archivo no tienen
-    /// ningún byte nulo, lo tratamos como texto. No depende de la
-    /// extensión — agarra .md, .rs, .log, archivos sin extensión,
-    /// etc., y deja afuera binarios de verdad (imágenes, ejecutables).
-    pub fn is_probably_text(path: &std::path::Path) -> bool {
-        use std::io::Read;
-        if let Ok(mut file) = std::fs::File::open(path) {
-            let mut buf = [0u8; 8192];
-            if let Ok(n) = file.read(&mut buf) {
-                return !buf[..n].contains(&0u8);
-            }
-        }
-        false
-    }
-
-    /// Lista el contenido de `dir`: subcarpetas y archivos de texto,
-    /// cada lista ordenada alfabéticamente por separado (subcarpetas
-    /// primero al mostrarlas, como cualquier explorador de archivos).
-    pub fn list_dir(dir: &std::path::Path) -> (Vec<String>, Vec<String>) {
-        let mut dirs = Vec::new();
-        let mut files = Vec::new();
-        if let Ok(entries) = std::fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                let name = match path.file_name().and_then(|n| n.to_str()) {
-                    Some(n) => n.to_string(),
-                    None => continue,
-                };
-                if path.is_dir() {
-                    dirs.push(name);
-                } else if path.is_file() && Self::is_probably_text(&path) {
-                    files.push(name);
-                }
-            }
-        }
-        dirs.sort();
-        files.sort();
-        (dirs, files)
-    }
-
-    /// Intenta guardar el documento. Si el buffer actual no tiene archivo ni nombre asignado,
-    /// abre el diálogo modal para que el usuario ingrese un nombre personalizado.
-    pub fn try_save(&mut self) -> bool {
-        if self.current_file.is_none() && self.file_path_input.trim().is_empty() {
-            self.save_name_input.clear();
-            self.save_name_pending = true;
-            false
-        } else {
-            self.save()
-        }
-    }
-
-    /// Confirma el nombre ingresado en el diálogo modal y procede al guardado.
-    /// Si el campo se dejó en blanco o contiene solo espacios, guarda automáticamente como `nuevo.txt`
-    /// (o correlativo sin pisar archivos existentes).
-    pub fn confirm_save_name(&mut self) -> bool {
-        self.save_name_pending = false;
-        let name = self.save_name_input.trim();
-        if !name.is_empty() {
-            self.file_path_input = name.to_string();
-            self.current_file = None;
-        }
-        self.save()
-    }
-
-    /// S5: Abre el diálogo modal para guardar el documento actual con un nombre nuevo ("Guardar como...").
-    pub fn save_as(&mut self) {
-        if let Some(name) = self
-            .current_file
-            .as_ref()
-            .and_then(|p| p.file_name())
-            .and_then(|n| n.to_str())
-        {
-            self.save_name_input = name.to_string();
-        } else {
-            self.save_name_input = self.file_path_input.clone();
-        }
-        self.save_name_pending = true;
-    }
-
-    /// Cancela el diálogo de guardado con nombre sin modificar el estado.
-    pub fn cancel_save_name(&mut self) {
-        self.save_name_pending = false;
-        self.save_name_input.clear();
-    }
-
-    /// Guarda el documento con su estilo de fin de línea original
-    /// (S9). Devuelve true SOLO si realmente puso un guardado en
-    /// marcha (el callback de cierre lo usa: si no se pudo empezar
-    /// a guardar —ruta vacía o otro guardado en curso— el diálogo
-    /// de cierre no debe pegar cerrar solo).
-    pub fn save(&mut self) -> bool {
-        if self.save_progress.is_some() {
-            return false; // ya hay un guardado en curso, no arranquemos otro encima
-        }
-
-        self.snapshot_if_changed();
-        let path = if let Some(p) = &self.current_file {
-            p.clone()
-        } else if self.file_path_input.is_empty() {
-            // Archivo nuevo sin nombre: pide a default_new_file_path
-            // el primero libre "nuevo.txt"/"nuevo (N).txt" en la
-            // carpeta mostrada por el explorador. El path quedará ABSOLUTO
-            // (no a través del input, que muestra solo el nombre).
-            let exists = |p: &std::path::Path| std::fs::metadata(p).is_ok();
-            let p = default_new_file_path(&self.browse_dir, &exists);
-            if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
-                self.file_path_input = name.to_string();
-            }
-            p
-        } else {
-            let p = PathBuf::from(&self.file_path_input);
-            if p.is_relative() {
-                self.browse_dir.join(p)
-            } else {
-                p
-            }
-        };
-        if path.as_os_str().is_empty() {
-            self.status = "Please provide a file path before saving".to_string();
-            return false;
-        }
-
-        let data = self.current_text_with_ending().into_bytes();
-        let total = data.len();
-        let progress = Arc::new(Mutex::new(SaveProgress { written: 0, total, done: false, error: None }));
-        self.save_progress = Some(Arc::clone(&progress));
-        self.current_file = Some(path.clone());
-
-        // Escribimos en un hilo aparte, en pedacitos, reportando
-        // cuánto se lleva escrito — así la ventana de progreso tiene
-        // algo real que mostrar (y no bloqueamos la interfaz
-        // mientras se guarda un archivo grande o un disco lento).
-        thread::spawn(move || {
-            let result = (|| -> std::io::Result<()> {
-                use std::io::Write;
-                let mut file = std::fs::File::create(&path)?;
-                // Repartimos en ~20 pasos parejos (mínimo 1 byte por
-                // paso) para que la barra se vea animarse incluso en
-                // archivos chicos, en vez de completarse de golpe.
-                let steps = 20usize;
-                let chunk_size = (total / steps).max(1);
-                let mut written = 0usize;
-                while written < total {
-                    let end = (written + chunk_size).min(total);
-                    file.write_all(&data[written..end])?;
-                    written = end;
-                    if let Ok(mut p) = progress.lock() {
-                        p.written = written;
-                    }
-                    thread::sleep(Duration::from_millis(15));
-                }
-                file.flush()
-            })();
-
-            if let Ok(mut p) = progress.lock() {
-                p.done = true;
-                if let Err(e) = result {
-                    p.error = Some(e.to_string());
-                }
-            }
-        });
-        true
-    }
-
-    /// Fin de un guardado: refresca el mtime recordado del archivo
-    /// (el disco cambió al escribir!) para que la detección de
-    /// cambios externos (S1) no marque como "tocado por afuera" el
-    /// archivo que ACABAMOS de guardar. Con error no refresca y, si
-    /// la ventana estaba esperando cerrar tras guardar, se queda
-    /// abierta para que el usuario vea el problema.
-    pub fn note_save_done(&mut self) {
-        let had_error = match &self.save_progress {
-            Some(p) => p.lock().map(|p| p.error.is_some()).unwrap_or(false),
-            None => false,
-        };
-        if had_error {
-            self.close_after_save = false;
-            self.new_after_save = false;
-        } else if let Some(path) = &self.current_file {
-            self.last_disk_mtime = fs::metadata(path).ok().and_then(|m| m.modified().ok());
-        }
-    }
-
-    // ---- S1 / S8: confirmación con cambios sin guardar ----
-
-    /// El usuario pidió cancelar el diálogo de confirmación: lo usan
-    /// el botón "Cancelar" y la tecla Esc.
-    pub fn cancel_close(&mut self) {
-        self.close_pending = false;
-        self.close_after_save = false;
-        self.new_doc_pending = false;
-        self.new_after_save = false;
-    }
-
-    /// Botón "Descartar" del diálogo: tiran los cambios sin guardar;
-    /// el llamador (ui.rs) ejecuta a continuación el cierre real de
-    /// la ventana (necesita el egui::Context).
-    pub fn confirm_close_discard(&mut self) {
-        self.close_pending = false;
-        self.close_after_save = false;
-    }
-
-    /// Botón "Guardar" del diálogo: re-lanzar guardado y cerrar en
-    /// cuanto baje. Si el guardado no pudo arrancar (ruta vacía,
-    /// otro guardado en curso) el diálogo queda abierto: mentirle
-    /// cerrando la ventana perdería datos.
-    pub fn confirm_close_save(&mut self) {
-        self.close_pending = false;
-        self.close_after_save = true;
-        if !self.save() {
-            self.close_after_save = false;
-            self.close_pending = true;
-        }
-    }
 
     // ---- S8: nuevo documento ----
 
@@ -1886,76 +1317,40 @@ impl EditorApp {
     /// historial de deshacer.
     pub fn new_document(&mut self) {
         self.set_text("");
-        self.current_file = None;
-        self.file_path_input.clear();
-        self.dirty = false;
-        self.last_snapshot = Rope::from_str("");
-        self.last_disk_mtime = None;
-        self.line_ending = LineEnding::Lf;
-        self.undo_stack = UndoStack::new();
-        self.chunk_tracker.reset();
+        self.doc.current_file = None;
+        self.doc.file_path_input.clear();
+        self.doc.dirty = false;
+        self.doc.last_snapshot = Rope::from_str("");
+        self.doc.last_disk_mtime = None;
+        self.doc.line_ending = LineEnding::Lf;
+        self.doc.undo_stack = UndoStack::new();
+        self.doc.chunk_tracker.reset();
         self.find_matches.clear();
-        self.status = "New document".to_string();
+        self.doc.status = "New document".to_string();
         self.sync_active_to_tab();
     }
 
     /// S8: Intenta crear un nuevo documento. Si el buffer actual está sucio y con contenido
     /// o guardándose, pide confirmación previa en lugar de descartar datos.
     pub fn try_new_document(&mut self) {
-        if (self.dirty && !self.is_buffer_empty()) || self.save_progress.is_some() {
-            self.new_doc_pending = true;
+        if (self.doc.dirty && !self.doc.is_buffer_empty()) || self.doc.save_progress.is_some() {
+            self.doc.new_doc_pending = true;
         } else {
             self.new_document();
         }
     }
 
-    /// Confirmación "Guardar" al intentar abrir un nuevo documento.
-    pub fn confirm_new_doc_save(&mut self) {
-        self.new_doc_pending = false;
-        self.new_after_save = true;
-        if !self.save() {
-            self.new_after_save = false;
-            self.new_doc_pending = true;
-        }
-    }
 
-    // ---- S1: archivo cambiado por afuera ----
-
-    /// Compara el mtime del archivo en disco con el recordado de la
-    /// última apertura o del último guardado (S1). Limitado a UN
-    /// stat por segundo: corre en cada frame y una syscall por cada
-    /// frame sería I/O innecesario.
-    pub fn check_external_changes(&mut self) {
-        // Mientras se guarda, el archivo en disco está SIEMPRE
-        // "distinto" del memo: esperar a que el guardado baje para
-        // no ofrecer "Recargar" a la mitad de un write propio.
-        if self.save_progress.is_some() {
-            return;
-        }
-        let now = Instant::now();
-        if let Some(last) = self.last_mtime_check {
-            if now.duration_since(last) < Duration::from_secs(1) {
-                return;
-            }
-        }
-        self.last_mtime_check = Some(now);
-        let Some(path) = self.current_file.clone() else {
-            self.external_changed = false;
-            return;
-        };
-        let disk = fs::metadata(&path).ok().and_then(|m| m.modified().ok());
-        self.external_changed = mtime_is_stale(disk, self.last_disk_mtime);
-    }
 
     /// Reabre el archivo del disco actual (botón "Recargar" de la
     /// barra). NO hace nada si hay cambios sin guardar: pisar el
     /// buffer perdería trabajo del usuario.
     pub fn reload(&mut self) {
-        let Some(path) = self.current_file.clone() else {
+        let Some(path) = self.doc.current_file.clone() else {
             return;
         };
-        if self.dirty {
-            self.status = "Unsaved changes present: please save before reloading".to_string();
+        if self.doc.dirty {
+            self.doc.status = "Unsaved changes present: please save before reloading".to_string();
             return;
         }
         self.open_path(path);
@@ -1971,13 +1366,18 @@ impl EditorApp {
             return; // ya en el tope: no spamear el status
         }
         self.font_size = next;
-        self.status = format!("Zoom: {} px", next.round());
+        self.doc.status = format!("Zoom: {} px", next.round());
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Nombres que la T5a movió a document_service.rs / karkinos-core:
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, SystemTime};
+    use crate::document_service::{mtime_is_stale, SaveProgress};
+    use karkinos_core::{default_new_file_path, detect_line_ending, serialize_line_ending};
 
     // ---- S10: Zoom de fuente ----
 
@@ -2011,7 +1411,7 @@ mod tests {
         let base = app.font_size;
         app.zoom(true);
         assert!((app.font_size - (base + 1.0)).abs() < EPS);
-        assert!(app.status.contains("Zoom"));
+        assert!(app.doc.status.contains("Zoom"));
 
         app.zoom(false);
         assert!((app.font_size - base).abs() < EPS);
@@ -2060,9 +1460,9 @@ mod tests {
         let mut app = EditorApp::default();
         app.open_path(path.clone());
         // Dentro del buffer quedan líneas SIN \r escondido.
-        assert_eq!(app.lines, vec!["uno", "dos", "", "tres"]);
+        assert_eq!(app.doc.lines, vec!["uno", "dos", "", "tres"]);
         // Y el serializer trae de vuelta el archivo EXACTO original.
-        assert_eq!(app.current_text_with_ending(), "uno\r\ndos\r\n\r\ntres");
+        assert_eq!(app.doc.current_text_with_ending(), "uno\r\ndos\r\n\r\ntres");
         std::fs::remove_file(path)?;
         Ok(())
     }
@@ -2074,7 +1474,7 @@ mod tests {
         std::fs::write(&path, "a\nb")?;
         let mut app = EditorApp::default();
         app.open_path(path.clone());
-        assert_eq!(app.current_text_with_ending(), "a\nb");
+        assert_eq!(app.doc.current_text_with_ending(), "a\nb");
         std::fs::remove_file(path)?;
         Ok(())
     }
@@ -2090,18 +1490,18 @@ mod tests {
         let _ = std::fs::remove_file(dir.join("untitled.txt"));
 
         let mut app = EditorApp::default();
-        app.browse_dir = dir.clone();
-        app.dirty = true;
+        app.doc.browse_dir = dir.clone();
+        app.doc.dirty = true;
         // Sin ruta y sin archivo: save() ELIGE "untitled.txt" como
         // nombre default (bugfix 2026-10-29), así que el diálogo
         // ahora sí puede prometer el cierre: el guardado arranca
         // sobre un destino concreto en vez de abortar.
-        app.confirm_close_save();
-        assert!(!app.close_pending, "el diálogo sí puede cerrar: el save arrancó");
-        assert!(app.close_after_save);
+        app.doc.confirm_close_save();
+        assert!(!app.doc.close_pending, "el diálogo sí puede cerrar: el save arrancó");
+        assert!(app.doc.close_after_save);
         // El destino queda fijado a dir/untitled.txt antes del async.
-        assert_eq!(app.current_file, Some(dir.join("untitled.txt")));
-        if let Some(progress) = &app.save_progress {
+        assert_eq!(app.doc.current_file, Some(dir.join("untitled.txt")));
+        if let Some(progress) = &app.doc.save_progress {
             while !progress.lock().unwrap().done {
                 std::thread::sleep(std::time::Duration::from_millis(5));
             }
@@ -2118,26 +1518,26 @@ mod tests {
         let path = dir.join(format!("karkinos_save_{}.txt", std::process::id()));
         std::fs::write(&path, "contenido")?;
         let mut app = EditorApp::default();
-        app.current_file = Some(path.clone());
+        app.doc.current_file = Some(path.clone());
         // Memo viejo (como si el buffer hubiera venido de un archivo
         // distinto): tras un guardado ok tiene que quedar "no stale".
-        app.last_disk_mtime = None;
+        app.doc.last_disk_mtime = None;
         let progress = Arc::new(Mutex::new(SaveProgress {
             written: 9,
             total: 9,
             done: true,
             error: None,
         }));
-        app.save_progress = Some(Arc::clone(&progress));
-        app.close_after_save = true;
-        app.note_save_done();
-        assert!(app.last_disk_mtime.is_some(), "post-guardado el memo tiene mtime nuevo");
-        assert!(app.close_after_save, "success: sigue el plan de cerrar");
+        app.doc.save_progress = Some(Arc::clone(&progress));
+        app.doc.close_after_save = true;
+        app.doc.note_save_done();
+        assert!(app.doc.last_disk_mtime.is_some(), "post-guardado el memo tiene mtime nuevo");
+        assert!(app.doc.close_after_save, "success: sigue el plan de cerrar");
 
         // Con error: cancelar el cierre automático y NO refrescar memo.
         progress.lock().unwrap().error = Some("disco lleno".to_string());
-        app.note_save_done();
-        assert!(!app.close_after_save);
+        app.doc.note_save_done();
+        assert!(!app.doc.close_after_save);
         std::fs::remove_file(path)?;
         Ok(())
     }
@@ -2168,25 +1568,25 @@ mod tests {
     fn undo_y_redo_conservan_cursor_y_scroll_en_su_lugar() {
         let mut app = EditorApp::default();
         app.set_text("uno\ndos\ntres");
-        app.snapshot_if_changed();
+        app.doc.snapshot_if_changed();
 
         // Simulo que el usuario tipeó más y la vista se movió abajo.
         app.set_text("uno\ndos\ntres\nCUATRO");
-        app.snapshot_if_changed();
+        app.doc.snapshot_if_changed();
         app.editor_state.cursor_line = 1;
         app.editor_state.cursor_col = 1;
         app.editor_state.scroll = 99.0;
 
         app.undo();
         // El texto vuelve al paso anterior...
-        assert_eq!(app.current_text(), "uno\ndos\ntres");
+        assert_eq!(app.doc.current_text(), "uno\ndos\ntres");
         // ...pero la vista NO se resetea a (0,0) / scroll 0.
         assert_eq!(app.editor_state.cursor_line, 1);
         assert_eq!(app.editor_state.cursor_col, 1);
         assert!((app.editor_state.scroll - 99.0).abs() < f32::EPSILON);
 
         app.redo();
-        assert_eq!(app.current_text(), "uno\ndos\ntres\nCUATRO");
+        assert_eq!(app.doc.current_text(), "uno\ndos\ntres\nCUATRO");
         assert_eq!(app.editor_state.cursor_line, 1);
         assert_eq!(app.editor_state.cursor_col, 1);
         assert!((app.editor_state.scroll - 99.0).abs() < f32::EPSILON);
@@ -2196,9 +1596,9 @@ mod tests {
     fn undo_restaura_cursor_clamp_fuera_del_buffer_reparado() {
         let mut app = EditorApp::default();
         app.set_text("sola una linea");
-        app.snapshot_if_changed();
+        app.doc.snapshot_if_changed();
         app.set_text("uno\ndos\ntres");
-        app.snapshot_if_changed();
+        app.doc.snapshot_if_changed();
         // Captura el estado del cursor fuera de rango (para ver como
         // aterrizaría sobre el buffer deshecho de UNA sola línea).
         app.editor_state.cursor_line = 2;
@@ -2207,7 +1607,7 @@ mod tests {
         app.undo();
         // El buffer deshecho tiene UNA línea: la 2 no existe y el
         // cursor aterriza al FIN de esa línea, no crashea ni va a 0.
-        assert_eq!(app.current_text(), "sola una linea");
+        assert_eq!(app.doc.current_text(), "sola una linea");
         assert_eq!(app.editor_state.cursor_line, 0);
         assert_eq!(app.editor_state.cursor_col, "sola una linea".chars().count());
         assert!((app.editor_state.scroll - 40.0).abs() < f32::EPSILON);
@@ -2259,16 +1659,16 @@ mod tests {
         let _ = std::fs::remove_file(dir.join("untitled.txt"));
 
         let mut app = EditorApp::default();
-        app.browse_dir = dir.clone();
+        app.doc.browse_dir = dir.clone();
         app.set_text("contenido sin nombre");
-        app.dirty = true;
+        app.doc.dirty = true;
         // current_file None y file_path_input vacío: el caso reportado.
-        app.file_path_input.clear();
+        app.doc.file_path_input.clear();
 
-        assert!(app.save());
+        assert!(app.doc.save());
         // Elige dir/untitled.txt y muestra en el input el nombre elegido.
-        assert_eq!(app.current_file, Some(dir.join("untitled.txt")));
-        assert_eq!(app.file_path_input, "untitled.txt");
+        assert_eq!(app.doc.current_file, Some(dir.join("untitled.txt")));
+        assert_eq!(app.doc.file_path_input, "untitled.txt");
         // Espera acotado al guardado asincrónico hasta que el disco
         // tenga el contenido completo.
         use std::io::Read;
@@ -2365,19 +1765,19 @@ mod tests {
 
         // Reemplazar primer match
         app.find_replace_current();
-        assert_eq!(app.current_text(), "lobo y perro y gato");
+        assert_eq!(app.doc.current_text(), "lobo y perro y gato");
 
         // Reemplazar todo lo que queda
         app.find_replace_all();
-        assert_eq!(app.current_text(), "lobo y perro y lobo");
+        assert_eq!(app.doc.current_text(), "lobo y perro y lobo");
 
         // Undo revierte el replace all
         app.undo();
-        assert_eq!(app.current_text(), "lobo y perro y gato");
+        assert_eq!(app.doc.current_text(), "lobo y perro y gato");
 
         // Undo revierte el replace individual
         app.undo();
-        assert_eq!(app.current_text(), "gato y perro y gato");
+        assert_eq!(app.doc.current_text(), "gato y perro y gato");
     }
 
     // ---- S8: Botón Nuevo documento ----
@@ -2386,55 +1786,55 @@ mod tests {
     fn nuevo_documento_resetea_buffer_y_metadatos() {
         let mut app = EditorApp::default();
         app.set_text("texto previo");
-        app.current_file = Some(PathBuf::from("dummy.txt"));
-        app.file_path_input = "dummy.txt".to_string();
-        app.dirty = true;
+        app.doc.current_file = Some(PathBuf::from("dummy.txt"));
+        app.doc.file_path_input = "dummy.txt".to_string();
+        app.doc.dirty = true;
         app.new_document();
 
-        assert_eq!(app.current_text(), "");
-        assert_eq!(app.lines, vec![String::new()]);
-        assert_eq!(app.current_file, None);
-        assert_eq!(app.file_path_input, "");
-        assert!(!app.dirty);
-        assert_eq!(app.status, "New document");
+        assert_eq!(app.doc.current_text(), "");
+        assert_eq!(app.doc.lines, vec![String::new()]);
+        assert_eq!(app.doc.current_file, None);
+        assert_eq!(app.doc.file_path_input, "");
+        assert!(!app.doc.dirty);
+        assert_eq!(app.doc.status, "New document");
     }
 
     #[test]
     fn try_nuevo_documento_con_dirty_pide_confirmacion() {
         let mut app = EditorApp::default();
         app.set_text("Some unsaved text");
-        app.dirty = true;
+        app.doc.dirty = true;
         app.try_new_document();
-        assert!(app.new_doc_pending);
+        assert!(app.doc.new_doc_pending);
 
         // Sin cambios: crea de una sin pedir confirmación
         let mut app_clean = EditorApp::default();
         app_clean.try_new_document();
-        assert!(!app_clean.new_doc_pending);
+        assert!(!app_clean.doc.new_doc_pending);
 
         // Buffer vacío aunque esté dirty: no pide confirmación
         let mut app_empty_dirty = EditorApp::default();
-        app_empty_dirty.dirty = true;
+        app_empty_dirty.doc.dirty = true;
         app_empty_dirty.try_new_document();
-        assert!(!app_empty_dirty.new_doc_pending);
+        assert!(!app_empty_dirty.doc.new_doc_pending);
     }
 
     #[test]
     fn test_empty_file_exit_does_not_prompt_close() {
         let mut app = EditorApp::default();
         // Even if dirty is marked true, empty buffer means all dirty tabs are empty
-        app.dirty = true;
-        assert!(app.all_dirty_tabs_are_empty());
+        app.doc.dirty = true;
+        assert!(app.doc.all_dirty_tabs_are_empty());
 
         // Closing an empty dirty tab closes without pending confirmation
         app.try_close_tab(0);
-        assert!(app.tab_close_pending.is_none());
+        assert!(app.doc.tab_close_pending.is_none());
 
         // With text, all_dirty_tabs_are_empty is false
         app.set_text("Actual content");
-        app.dirty = true;
-        assert!(!app.all_dirty_tabs_are_empty());
-        assert_eq!(app.first_dirty_tab_index(), Some(0));
+        app.doc.dirty = true;
+        assert!(!app.doc.all_dirty_tabs_are_empty());
+        assert_eq!(app.doc.first_dirty_tab_index(), Some(0));
     }
 
     // ---- S8 (Etapa 2): Pestañas / Múltiples documentos ----
@@ -2442,30 +1842,30 @@ mod tests {
     #[test]
     fn tabs_creacion_cambio_y_cierre() {
         let mut app = EditorApp::default();
-        assert_eq!(app.tabs.len(), 1);
-        assert_eq!(app.active_tab, 0);
+        assert_eq!(app.doc.tabs.len(), 1);
+        assert_eq!(app.doc.active_tab, 0);
 
         app.set_text("Texto en pestaña 1");
-        app.dirty = true;
+        app.doc.dirty = true;
 
         app.new_tab();
-        assert_eq!(app.tabs.len(), 2);
-        assert_eq!(app.active_tab, 1);
-        assert_eq!(app.current_text(), "");
+        assert_eq!(app.doc.tabs.len(), 2);
+        assert_eq!(app.doc.active_tab, 1);
+        assert_eq!(app.doc.current_text(), "");
 
         app.set_text("Texto en pestaña 2");
         app.switch_tab(0);
-        assert_eq!(app.active_tab, 0);
-        assert_eq!(app.current_text(), "Texto en pestaña 1");
+        assert_eq!(app.doc.active_tab, 0);
+        assert_eq!(app.doc.current_text(), "Texto en pestaña 1");
 
         app.switch_tab(1);
-        assert_eq!(app.active_tab, 1);
-        assert_eq!(app.current_text(), "Texto en pestaña 2");
+        assert_eq!(app.doc.active_tab, 1);
+        assert_eq!(app.doc.current_text(), "Texto en pestaña 2");
 
         app.close_tab(0);
-        assert_eq!(app.tabs.len(), 1);
-        assert_eq!(app.active_tab, 0);
-        assert_eq!(app.current_text(), "Texto en pestaña 2");
+        assert_eq!(app.doc.tabs.len(), 1);
+        assert_eq!(app.doc.active_tab, 0);
+        assert_eq!(app.doc.current_text(), "Texto en pestaña 2");
     }
 
     #[test]
@@ -2479,20 +1879,20 @@ mod tests {
         let mut app = EditorApp::default();
         // Abrir en pestaña inicial limpia debe reutilizarla
         app.open_path(path_a.clone());
-        assert_eq!(app.tabs.len(), 1);
-        assert_eq!(app.current_file, Some(path_a.clone()));
+        assert_eq!(app.doc.tabs.len(), 1);
+        assert_eq!(app.doc.current_file, Some(path_a.clone()));
 
         // Abrir segundo archivo debe crear pestaña nueva
         app.open_path(path_b.clone());
-        assert_eq!(app.tabs.len(), 2);
-        assert_eq!(app.active_tab, 1);
-        assert_eq!(app.current_file, Some(path_b.clone()));
+        assert_eq!(app.doc.tabs.len(), 2);
+        assert_eq!(app.doc.active_tab, 1);
+        assert_eq!(app.doc.current_file, Some(path_b.clone()));
 
         // Abrir el archivo A nuevamente debe cambiar a la pestaña 0 sin duplicar
         app.open_path(path_a.clone());
-        assert_eq!(app.tabs.len(), 2);
-        assert_eq!(app.active_tab, 0);
-        assert_eq!(app.current_file, Some(path_a.clone()));
+        assert_eq!(app.doc.tabs.len(), 2);
+        assert_eq!(app.doc.active_tab, 0);
+        assert_eq!(app.doc.current_file, Some(path_a.clone()));
 
         std::fs::remove_file(path_a)?;
         std::fs::remove_file(path_b)?;
@@ -2507,23 +1907,23 @@ mod tests {
         std::fs::create_dir_all(&dir)?;
 
         let mut app = EditorApp::default();
-        app.browse_dir = dir.clone();
+        app.doc.browse_dir = dir.clone();
         app.set_text("codigo de prueba");
-        app.dirty = true;
+        app.doc.dirty = true;
 
         // 1. try_save() en archivo sin nombre debe abrir el modal y no guardar aún
-        assert!(!app.try_save());
-        assert!(app.save_name_pending);
+        assert!(!app.doc.try_save());
+        assert!(app.doc.save_name_pending);
 
         // 2. Confirmar con nombre "mi_programa.rs"
-        app.save_name_input = "mi_programa.rs".to_string();
-        assert!(app.confirm_save_name());
-        assert!(!app.save_name_pending);
-        assert_eq!(app.current_file, Some(dir.join("mi_programa.rs")));
-        assert_eq!(app.file_path_input, "mi_programa.rs");
+        app.doc.save_name_input = "mi_programa.rs".to_string();
+        assert!(app.doc.confirm_save_name());
+        assert!(!app.doc.save_name_pending);
+        assert_eq!(app.doc.current_file, Some(dir.join("mi_programa.rs")));
+        assert_eq!(app.doc.file_path_input, "mi_programa.rs");
 
         // Esperar a que termine el guardado asíncrono
-        if let Some(progress) = &app.save_progress {
+        if let Some(progress) = &app.doc.save_progress {
             while !progress.lock().unwrap().done {
                 std::thread::sleep(std::time::Duration::from_millis(5));
             }
@@ -2531,20 +1931,20 @@ mod tests {
 
         // 3. Otro documento sin nombre: dejar en blanco debe asignar "untitled.txt"
         let mut app2 = EditorApp::default();
-        app2.browse_dir = dir.clone();
+        app2.doc.browse_dir = dir.clone();
         app2.set_text("otro texto");
-        app2.dirty = true;
-        assert!(!app2.try_save());
-        assert!(app2.save_name_pending);
+        app2.doc.dirty = true;
+        assert!(!app2.doc.try_save());
+        assert!(app2.doc.save_name_pending);
 
         // Dejar vacío
-        app2.save_name_input = "   ".to_string();
-        assert!(app2.confirm_save_name());
-        assert!(!app2.save_name_pending);
-        assert_eq!(app2.current_file, Some(dir.join("untitled.txt")));
-        assert_eq!(app2.file_path_input, "untitled.txt");
+        app2.doc.save_name_input = "   ".to_string();
+        assert!(app2.doc.confirm_save_name());
+        assert!(!app2.doc.save_name_pending);
+        assert_eq!(app2.doc.current_file, Some(dir.join("untitled.txt")));
+        assert_eq!(app2.doc.file_path_input, "untitled.txt");
 
-        if let Some(progress) = &app2.save_progress {
+        if let Some(progress) = &app2.doc.save_progress {
             while !progress.lock().unwrap().done {
                 std::thread::sleep(std::time::Duration::from_millis(5));
             }
@@ -2561,34 +1961,34 @@ mod tests {
         let mut app = EditorApp::default();
         app.new_tab();
         app.new_tab();
-        assert_eq!(app.tabs.len(), 3);
-        assert_eq!(app.active_tab, 2);
+        assert_eq!(app.doc.tabs.len(), 3);
+        assert_eq!(app.doc.active_tab, 2);
 
         // Ciclar adelante
         app.next_tab();
-        assert_eq!(app.active_tab, 0);
+        assert_eq!(app.doc.active_tab, 0);
         app.next_tab();
-        assert_eq!(app.active_tab, 1);
+        assert_eq!(app.doc.active_tab, 1);
 
         // Ciclar atrás
         app.prev_tab();
-        assert_eq!(app.active_tab, 0);
+        assert_eq!(app.doc.active_tab, 0);
         app.prev_tab();
-        assert_eq!(app.active_tab, 2);
+        assert_eq!(app.doc.active_tab, 2);
 
         // Detección de pestañas sucias
-        assert_eq!(app.dirty_tabs_count(), 0);
-        assert_eq!(app.first_dirty_tab_index(), None);
+        assert_eq!(app.doc.dirty_tabs_count(), 0);
+        assert_eq!(app.doc.first_dirty_tab_index(), None);
 
         // Marcar pestaña 1 como sucia
-        app.tabs[1].dirty = true;
-        assert_eq!(app.dirty_tabs_count(), 1);
-        assert_eq!(app.first_dirty_tab_index(), Some(1));
+        app.doc.tabs[1].dirty = true;
+        assert_eq!(app.doc.dirty_tabs_count(), 1);
+        assert_eq!(app.doc.first_dirty_tab_index(), Some(1));
 
         // Si la activa (2) también está sucia, first_dirty_tab_index debe priorizar la activa
-        app.dirty = true;
-        assert_eq!(app.dirty_tabs_count(), 2);
-        assert_eq!(app.first_dirty_tab_index(), Some(2));
+        app.doc.dirty = true;
+        assert_eq!(app.doc.dirty_tabs_count(), 2);
+        assert_eq!(app.doc.first_dirty_tab_index(), Some(2));
     }
 
     #[test]
@@ -2597,20 +1997,20 @@ mod tests {
         std::fs::create_dir_all(&dir)?;
 
         let mut app = EditorApp::default();
-        app.browse_dir = dir.clone();
+        app.doc.browse_dir = dir.clone();
         app.set_text("codigo inicial");
-        app.current_file = Some(dir.join("archivo_original.txt"));
-        app.file_path_input = "archivo_original.txt".to_string();
+        app.doc.current_file = Some(dir.join("archivo_original.txt"));
+        app.doc.file_path_input = "archivo_original.txt".to_string();
 
-        app.save_as();
-        assert!(app.save_name_pending);
-        assert_eq!(app.save_name_input, "archivo_original.txt");
+        app.doc.save_as();
+        assert!(app.doc.save_name_pending);
+        assert_eq!(app.doc.save_name_input, "archivo_original.txt");
 
-        app.save_name_input = "archivo_copia.txt".to_string();
-        assert!(app.confirm_save_name());
-        assert_eq!(app.current_file, Some(dir.join("archivo_copia.txt")));
+        app.doc.save_name_input = "archivo_copia.txt".to_string();
+        assert!(app.doc.confirm_save_name());
+        assert_eq!(app.doc.current_file, Some(dir.join("archivo_copia.txt")));
 
-        if let Some(progress) = &app.save_progress {
+        if let Some(progress) = &app.doc.save_progress {
             while !progress.lock().unwrap().done {
                 std::thread::sleep(std::time::Duration::from_millis(5));
             }
@@ -2624,7 +2024,7 @@ mod tests {
     #[test]
     fn test_editor_app_ast_worker_spans_and_folding_ranges() {
         let mut app = EditorApp::default();
-        app.current_file = Some(PathBuf::from("main.rs"));
+        app.doc.current_file = Some(PathBuf::from("main.rs"));
         app.set_text("fn calculate() -> i32 {\n    let a = 10;\n    a * 2\n}");
 
         // S3 (Roadmap v0.2.9): el parseo corre en FONDO: se espera la
@@ -2658,7 +2058,7 @@ mod tests {
 
         let mut app = EditorApp::default();
         let path = PathBuf::from("main.rs");
-        app.current_file = Some(path);
+        app.doc.current_file = Some(path);
 
         let client = LspClient::mock();
         client.set_diagnostics_for_file(
@@ -2680,7 +2080,7 @@ mod tests {
 
         assert_eq!(app.editor_state.diagnostics.len(), 1);
         assert_eq!(app.editor_state.diagnostics[0].severity, Some(DiagnosticSeverity::Error));
-        assert!(app.status.contains("failed to resolve"));
+        assert!(app.doc.status.contains("failed to resolve"));
     }
 
     #[test]
@@ -2690,12 +2090,12 @@ mod tests {
 
         let handled = app.execute_plugin_command("uppercase_document");
         assert!(handled);
-        assert_eq!(app.current_text(), "RUST PROGRAMMING LANGUAGE");
-        assert!(app.status.contains("UPPERCASE"));
+        assert_eq!(app.doc.current_text(), "RUST PROGRAMMING LANGUAGE");
+        assert!(app.doc.status.contains("UPPERCASE"));
 
         let word_count_handled = app.execute_plugin_command("word_count");
         assert!(word_count_handled);
-        assert!(app.status.contains("3 words"));
+        assert!(app.doc.status.contains("3 words"));
     }
 
     #[test]
@@ -2703,7 +2103,7 @@ mod tests {
         use karkinos_core::lsp::{DiagnosticSeverity, LspClient, LspDiagnostic, LspPosition, LspRange};
 
         let mut app = EditorApp::default();
-        app.current_file = Some(PathBuf::from("tab1.rs"));
+        app.doc.current_file = Some(PathBuf::from("tab1.rs"));
         app.set_text("fn tab_one() {}");
 
         let client = LspClient::mock();
@@ -2740,7 +2140,7 @@ mod tests {
 
         // Create tab 2 with Rust code
         app.new_tab();
-        app.current_file = Some(PathBuf::from("tab2.rs"));
+        app.doc.current_file = Some(PathBuf::from("tab2.rs"));
         app.set_text("fn tab_two() {}");
         app.update_lsp();
         assert_eq!(app.editor_state.diagnostics.len(), 1);
@@ -2783,7 +2183,7 @@ mod tests {
         assert_eq!(app.editor_state.cursor_line, 7);
         assert_eq!(app.editor_state.cursor_col, 4);
         assert!(app.editor_state.needs_autoscroll);
-        assert!(app.status.contains("Jumped to error: line 8"));
+        assert!(app.doc.status.contains("Jumped to error: line 8"));
     }
 
     #[test]
@@ -2815,7 +2215,7 @@ mod tests {
         assert_eq!(app.editor_state.cursor_line, 0);
         assert_eq!(app.editor_state.cursor_col, 3);
         assert!(app.editor_state.needs_autoscroll);
-        assert!(app.status.contains("Docs: fn target() -> ()"));
+        assert!(app.doc.status.contains("Docs: fn target() -> ()"));
         assert_eq!(app.editor_state.hover_text.as_deref(), Some("fn target() -> ()"));
 
         let _ = std::fs::remove_file(target_file);
@@ -2860,7 +2260,7 @@ mod tests {
         let ok = app.uninstall_plugin("Case Transformer");
         assert!(ok);
         assert_eq!(app.plugin_manager.len(), 2);
-        assert!(app.status.contains("Uninstalled plugin: Case Transformer"));
+        assert!(app.doc.status.contains("Uninstalled plugin: Case Transformer"));
 
         // Test uninstall vsix file
         let ext_dir = EditorApp::extensions_dir();
@@ -2874,14 +2274,14 @@ mod tests {
         let uninstalled = app.uninstall_vsix("test-ext-1.0.0.vsix");
         assert!(uninstalled);
         assert!(!test_vsix.exists());
-        assert!(app.status.contains("Uninstalled .vsix extension: test-ext-1.0.0.vsix"));
+        assert!(app.doc.status.contains("Uninstalled .vsix extension: test-ext-1.0.0.vsix"));
     }
 
     #[test]
     fn test_current_language_autodetection_without_extension() {
         let mut app = EditorApp::default();
-        app.current_file = None;
-        app.file_path_input = String::new();
+        app.doc.current_file = None;
+        app.doc.file_path_input = String::new();
 
         // Initially empty buffer -> PlainText
         assert_eq!(app.current_language(), crate::syntax::Language::PlainText);
@@ -2908,7 +2308,7 @@ mod tests {
         use std::collections::HashMap;
 
         let mut app = EditorApp::default();
-        app.current_file = Some(PathBuf::from("main.rs"));
+        app.doc.current_file = Some(PathBuf::from("main.rs"));
         app.set_text("fn main() {\n    let m = HashMap::new();\n}\n");
 
         let client = LspClient::mock();
@@ -2954,10 +2354,10 @@ mod tests {
         // Apply code action
         app.apply_code_action(0);
         assert!(!app.code_actions_menu_open);
-        let text = app.current_text();
+        let text = app.doc.current_text();
         assert!(text.starts_with("use std::collections::HashMap;\nfn main()"));
-        assert!(app.dirty);
-        assert!(app.status.contains("Applied: Import `HashMap`"));
+        assert!(app.doc.dirty);
+        assert!(app.doc.status.contains("Applied: Import `HashMap`"));
     }
 
     #[test]
@@ -2968,7 +2368,7 @@ mod tests {
         use std::collections::HashMap;
 
         let mut app = EditorApp::default();
-        app.current_file = Some(PathBuf::from("lib.rs"));
+        app.doc.current_file = Some(PathBuf::from("lib.rs"));
         app.set_text("pub fn calculate() -> i32 { 42 }\n");
 
         let client = LspClient::mock();
@@ -2992,10 +2392,10 @@ mod tests {
         app.lsp_client = Some(client);
         app.poll_lsp_results();
 
-        let text = app.current_text();
+        let text = app.doc.current_text();
         assert_eq!(text, "pub fn compute_result() -> i32 { 42 }\n");
-        assert!(app.dirty);
-        assert!(app.status.contains("Applied edits across 1 file(s)"));
+        assert!(app.doc.dirty);
+        assert!(app.doc.status.contains("Applied edits across 1 file(s)"));
     }
 
     #[test]
@@ -3004,20 +2404,20 @@ mod tests {
 
         let mut app = EditorApp::default();
         let file_path = PathBuf::from("src/main.rs");
-        app.current_file = Some(file_path.clone());
+        app.doc.current_file = Some(file_path.clone());
         app.set_text("fn main() {\n    let val = 10;\n    println!(\"{}\", val);\n}\n");
 
         // Toggle breakpoint at line 1
         app.toggle_breakpoint(1);
         assert!(app.breakpoints.contains(&(file_path.clone(), 1)));
         assert!(app.editor_state.breakpoints.contains(&1));
-        assert!(app.status.contains("Breakpoint set at line 2"));
+        assert!(app.doc.status.contains("Breakpoint set at line 2"));
 
         // Toggle breakpoint again -> removes it
         app.toggle_breakpoint(1);
         assert!(!app.breakpoints.contains(&(file_path.clone(), 1)));
         assert!(!app.editor_state.breakpoints.contains(&1));
-        assert!(app.status.contains("Breakpoint removed at line 2"));
+        assert!(app.doc.status.contains("Breakpoint removed at line 2"));
 
         // Set breakpoint again
         app.toggle_breakpoint(1);
@@ -3046,17 +2446,17 @@ mod tests {
         assert_eq!(app.debug_stopped_line, Some((file_path.clone(), 1)));
         assert_eq!(app.editor_state.stopped_line, Some(1));
         assert_eq!(app.editor_state.cursor_line, 1);
-        assert!(app.status.contains("Stopped at line 2"));
+        assert!(app.doc.status.contains("Stopped at line 2"));
 
         // Test step over
         app.step_over();
-        assert!(app.status.contains("Debugger: Step over"));
+        assert!(app.doc.status.contains("Debugger: Step over"));
 
         // Test stop debugging
         app.stop_debugging();
         assert!(app.dap_client.is_none());
         assert!(app.debug_stopped_line.is_none());
         assert!(app.editor_state.stopped_line.is_none());
-        assert!(app.status.contains("Debugger: Stopped"));
+        assert!(app.doc.status.contains("Debugger: Stopped"));
     }
 }

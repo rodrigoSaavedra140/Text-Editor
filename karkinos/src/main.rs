@@ -2,6 +2,7 @@
 
 mod app;
 mod ast_worker;
+mod document_service;
 mod editor_widget;
 mod quick_open;
 mod syntax;

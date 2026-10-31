@@ -33,7 +33,7 @@ impl EditorApp {
             .map(|r| r.left_bottom())
             .unwrap_or_else(|| ctx.screen_rect().left_top() + egui::vec2(10.0, 34.0));
 
-        let dir_label = format!("📂 {}", self.browse_dir.display());
+        let dir_label = format!("📂 {}", self.doc.browse_dir.display());
         let mut navigate_to: Option<PathBuf> = None;
         let mut open_file: Option<PathBuf> = None;
 
@@ -50,7 +50,7 @@ impl EditorApp {
                         ui.separator();
 
                         // Subir a la carpeta padre (si existe).
-                        if let Some(parent) = self.browse_dir.parent() {
+                        if let Some(parent) = self.doc.browse_dir.parent() {
                             if ui.selectable_label(false, "⬆ ..").clicked() {
                                 navigate_to = Some(parent.to_path_buf());
                             }
@@ -58,16 +58,16 @@ impl EditorApp {
 
                         // Caché del listado (ver cached_list_dir en
                         // app.rs): sin read_dir por frame.
-                        let (dirs, files) = self.cached_list_dir();
+                        let (dirs, files) = self.doc.cached_list_dir();
 
                         for name in &dirs {
                             if ui.selectable_label(false, format!("📁 {}", name)).clicked() {
-                                navigate_to = Some(self.browse_dir.join(name));
+                                navigate_to = Some(self.doc.browse_dir.join(name));
                             }
                         }
                         for name in &files {
                             if ui.selectable_label(false, name).clicked() {
-                                open_file = Some(self.browse_dir.join(name));
+                                open_file = Some(self.doc.browse_dir.join(name));
                             }
                         }
                         if dirs.is_empty() && files.is_empty() {
@@ -80,7 +80,7 @@ impl EditorApp {
         // Elegir un ARCHIVO cierra el popup (ya se abrió en el
         // editor): es el objetivo final del selector.
         if let Some(dir) = navigate_to {
-            self.browse_dir = dir;
+            self.doc.browse_dir = dir;
         }
         if let Some(path) = open_file {
             self.picker_open = false;
@@ -108,7 +108,7 @@ impl EditorApp {
     /// Dibuja la ventana emergente de progreso mientras haya un
     /// guardado en curso, y la cierra sola cuando termina.
     fn show_save_progress(&mut self, ctx: &egui::Context) {
-        let Some(progress) = &self.save_progress else {
+        let Some(progress) = &self.doc.save_progress else {
             return;
         };
         let (written, total, done, error) = {
@@ -138,41 +138,41 @@ impl EditorApp {
             // (¡el disco acaba de cambiar!) y un guardado fallido
             // cancela el "cerrar tras guardar" para no matar la
             // ventana encima de un error.
-            self.note_save_done();
+            self.doc.note_save_done();
             match error {
-                Some(e) => self.status = format!("Save error: {}", e),
+                Some(e) => self.doc.status = format!("Save error: {}", e),
                 None => {
-                    self.dirty = false;
-                    self.status = "Saved".to_string();
+                    self.doc.dirty = false;
+                    self.doc.status = "Saved".to_string();
                 }
             }
-            self.save_progress = None;
+            self.doc.save_progress = None;
         } else {
             ctx.request_repaint();
         }
 
         // S1: si el usuario pidió guardar-Y-cerrar desde el diálogo y
         // el guardado terminó bien, se revisa si quedan pestañas sucias antes de cerrar.
-        if self.close_after_save && self.save_progress.is_none() {
-            self.close_after_save = false;
-            if let Some(next_dirty) = self.first_dirty_tab_index() {
+        if self.doc.close_after_save && self.doc.save_progress.is_none() {
+            self.doc.close_after_save = false;
+            if let Some(next_dirty) = self.doc.first_dirty_tab_index() {
                 self.switch_tab(next_dirty);
-                self.close_pending = true;
+                self.doc.close_pending = true;
             } else {
-                request_close(ctx, &mut self.closing_since);
+                request_close(ctx, &mut self.doc.closing_since);
             }
         }
         // S3: si se pidió guardar y cerrar una pestaña puntual
-        if let Some(target_idx) = self.tab_close_after_save {
-            if self.save_progress.is_none() {
-                self.tab_close_after_save = None;
+        if let Some(target_idx) = self.doc.tab_close_after_save {
+            if self.doc.save_progress.is_none() {
+                self.doc.tab_close_after_save = None;
                 self.close_tab(target_idx);
             }
         }
         // S8: si el usuario pidió guardar-Y-nuevo desde el diálogo y
         // el guardado terminó bien, limpiamos el editor para el nuevo documento.
-        if self.new_after_save && self.save_progress.is_none() {
-            self.new_after_save = false;
+        if self.doc.new_after_save && self.doc.save_progress.is_none() {
+            self.doc.new_after_save = false;
             self.new_document();
         }
     }
@@ -184,20 +184,21 @@ impl EditorApp {
     /// guardar) y Cancelar (vuelve al editor sin tocar nada). NADA
     /// mata el proceso mientras el diálogo esté abierto.
     fn show_close_confirm(&mut self, ctx: &egui::Context) {
-        if !self.close_pending && !self.new_doc_pending {
+        if !self.doc.close_pending && !self.doc.new_doc_pending {
             return;
         }
         // Esc = Cancelar, convención universal de diálogos.
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-            self.cancel_close();
+            self.doc.cancel_close();
             return;
         }
-        let is_new = self.new_doc_pending;
-        let dirty_count = self.dirty_tabs_count();
+        let is_new = self.doc.new_doc_pending;
+        let dirty_count = self.doc.dirty_tabs_count();
         let title = if is_new { "New Document" } else { "Unsaved Changes" };
         let doc_name = self
+            .doc
             .tabs
-            .get(self.active_tab)
+            .get(self.doc.active_tab)
             .map(|t| t.display_title())
             .unwrap_or_else(|| "this document".to_string());
 
@@ -228,43 +229,43 @@ impl EditorApp {
                 ui.horizontal(|ui| {
                     if ui.button("Save").clicked() {
                         if is_new {
-                            self.confirm_new_doc_save();
+                            self.doc.confirm_new_doc_save();
                         } else {
-                            self.confirm_close_save();
+                            self.doc.confirm_close_save();
                         }
                     }
                     if ui.button("Discard").clicked() {
                         if is_new {
-                            self.new_doc_pending = false;
+                            self.doc.new_doc_pending = false;
                             self.new_document();
                         } else {
-                            self.confirm_close_discard();
-                            self.dirty = false;
-                            if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+                            self.doc.confirm_close_discard();
+                            self.doc.dirty = false;
+                            if let Some(tab) = self.doc.tabs.get_mut(self.doc.active_tab) {
                                 tab.dirty = false;
                             }
-                            if let Some(next_dirty) = self.first_dirty_tab_index() {
+                            if let Some(next_dirty) = self.doc.first_dirty_tab_index() {
                                 self.switch_tab(next_dirty);
-                                self.close_pending = true;
+                                self.doc.close_pending = true;
                             } else {
-                                request_close(ctx, &mut self.closing_since);
+                                request_close(ctx, &mut self.doc.closing_since);
                             }
                         }
                     }
                     if ui.button("Cancel").clicked() {
-                        self.cancel_close();
+                        self.doc.cancel_close();
                     }
                 });
             });
         if !open {
             // La X del propio diálogo cuenta como Cancelar.
-            self.cancel_close();
+            self.doc.cancel_close();
         }
     }
 
     /// S8 (Etapa 2) / S3: Diálogo de confirmación para cerrar pestaña con cambios sin guardar.
     fn show_tab_close_confirm(&mut self, ctx: &egui::Context) {
-        let Some(idx) = self.tab_close_pending else {
+        let Some(idx) = self.doc.tab_close_pending else {
             return;
         };
         let mut save_and_close = false;
@@ -272,6 +273,7 @@ impl EditorApp {
         let mut cancel = false;
 
         let title = self
+            .doc
             .tabs
             .get(idx)
             .map(|t| t.display_title())
@@ -299,34 +301,34 @@ impl EditorApp {
             });
 
         if save_and_close {
-            self.tab_close_pending = None;
-            if idx != self.active_tab {
+            self.doc.tab_close_pending = None;
+            if idx != self.doc.active_tab {
                 self.switch_tab(idx);
             }
-            self.tab_close_after_save = Some(idx);
-            self.try_save();
+            self.doc.tab_close_after_save = Some(idx);
+            self.doc.try_save();
         } else if discard {
-            self.tab_close_pending = None;
-            if idx == self.active_tab {
-                self.dirty = false;
+            self.doc.tab_close_pending = None;
+            if idx == self.doc.active_tab {
+                self.doc.dirty = false;
             }
-            if let Some(tab) = self.tabs.get_mut(idx) {
+            if let Some(tab) = self.doc.tabs.get_mut(idx) {
                 tab.dirty = false;
             }
             self.close_tab(idx);
         } else if cancel || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-            self.tab_close_pending = None;
+            self.doc.tab_close_pending = None;
         }
     }
 
     /// Diálogo modal para solicitar nombre al guardar un archivo sin nombre.
     fn show_save_name_dialog(&mut self, ctx: &egui::Context) {
-        if !self.save_name_pending {
+        if !self.doc.save_name_pending {
             return;
         }
 
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-            self.cancel_save_name();
+            self.doc.cancel_save_name();
             return;
         }
 
@@ -351,7 +353,7 @@ impl EditorApp {
 
                 let field = ui.add_sized(
                     [ui.available_width(), 24.0],
-                    egui::TextEdit::singleline(&mut self.save_name_input)
+                    egui::TextEdit::singleline(&mut self.doc.save_name_input)
                         .hint_text("untitled.txt"),
                 );
                 field.request_focus();
@@ -372,9 +374,9 @@ impl EditorApp {
             });
 
         if !is_open || cancel {
-            self.cancel_save_name();
+            self.doc.cancel_save_name();
         } else if apply {
-            self.confirm_save_name();
+            self.doc.confirm_save_name();
         }
     }
 
@@ -499,22 +501,22 @@ impl EditorApp {
         self.sync_active_to_tab();
 
         // Si el archivo está vacío o todas las pestañas sucias están vacías, salimos de inmediato sin diálogo
-        if self.all_dirty_tabs_are_empty() && self.save_progress.is_none() {
-            request_close(ctx, &mut self.closing_since);
+        if self.doc.all_dirty_tabs_are_empty() && self.doc.save_progress.is_none() {
+            request_close(ctx, &mut self.doc.closing_since);
             return;
         }
 
-        if let Some(dirty_idx) = self.first_dirty_tab_index() {
-            if dirty_idx != self.active_tab {
+        if let Some(dirty_idx) = self.doc.first_dirty_tab_index() {
+            if dirty_idx != self.doc.active_tab {
                 self.switch_tab(dirty_idx);
             }
-            self.close_pending = true;
+            self.doc.close_pending = true;
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-        } else if self.save_progress.is_some() {
-            self.close_pending = true;
+        } else if self.doc.save_progress.is_some() {
+            self.doc.close_pending = true;
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         } else {
-            request_close(ctx, &mut self.closing_since);
+            request_close(ctx, &mut self.doc.closing_since);
         }
     }
 
@@ -881,15 +883,15 @@ impl EditorApp {
         }
         if apply {
             self.goto_pending = false;
-            match crate::util::parse_goto_line(&self.goto_input, self.lines.len()) {
+            match crate::util::parse_goto_line(&self.goto_input, self.doc.lines.len()) {
                 Some(idx) => {
                     self.editor_state.cursor_line = idx;
                     self.editor_state.cursor_col = 0;
                     self.editor_state.sel_anchor = Some((idx, 0));
                     self.editor_state.request_autoscroll();
-                    self.status = format!("Line {}", idx + 1);
+                    self.doc.status = format!("Line {}", idx + 1);
                 }
-                None => self.status = "Please enter a valid line number".to_string(),
+                None => self.doc.status = "Please enter a valid line number".to_string(),
             }
         }
     }
@@ -996,7 +998,7 @@ impl EditorApp {
 
         if open_selected {
             if let Some(rel) = self.quick_open.selected_path() {
-                let full = self.browse_dir.join(rel);
+                let full = self.doc.browse_dir.join(rel);
                 self.quick_open.close();
                 self.open_path(full);
             }
@@ -1429,7 +1431,7 @@ impl eframe::App for EditorApp {
         self.show_save_progress(ctx);
         // S1: comprobación externa de disco (limitada a 1 stat/seg
         // dentro del método; aquí solo es invocarla por frame).
-        self.check_external_changes();
+        self.doc.check_external_changes();
         // S2 (Rust IDE): Procesar respuestas pendientes del LSP (definición, hover)
         self.poll_lsp_results();
         // S3 (Roadmap v0.2.9): resultados del worker de Tree-sitter en
@@ -1449,10 +1451,10 @@ impl eframe::App for EditorApp {
 
         // S3: consolidación de chunks de undo por timeout de inactividad (~700ms).
         let now = std::time::Instant::now();
-        if self.chunk_tracker.check_idle_timeout(now) {
-            self.snapshot_if_changed();
+        if self.doc.chunk_tracker.check_idle_timeout(now) {
+            self.doc.snapshot_if_changed();
         }
-        if let Some(remaining) = self.chunk_tracker.remaining_time(now) {
+        if let Some(remaining) = self.doc.chunk_tracker.remaining_time(now) {
             ctx.request_repaint_after(remaining);
         }
 
@@ -1495,7 +1497,7 @@ impl eframe::App for EditorApp {
             self.new_tab();
         }
         if want_close_tab {
-            self.try_close_tab(self.active_tab);
+            self.try_close_tab(self.doc.active_tab);
         }
         if want_next_tab {
             self.next_tab();
@@ -1508,14 +1510,14 @@ impl eframe::App for EditorApp {
                 self.quick_open.close();
             } else {
                 self.quick_open
-                    .request_open(&self.browse_dir, &mut self.quick_open_services);
+                    .request_open(&self.doc.browse_dir, &mut self.quick_open_services);
             }
         }
         if want_save {
-            self.try_save();
+            self.doc.try_save();
         }
         if want_save_as {
-            self.save_as();
+            self.doc.save_as();
         }
         if want_undo {
             self.undo();
@@ -1596,7 +1598,7 @@ impl eframe::App for EditorApp {
         }
         // S4: Ctrl+G abre "Ir a línea" — precargado con la línea
         // actual para editar el número en vez de escribirlo de cero.
-        if want_goto && !self.close_pending {
+        if want_goto && !self.doc.close_pending {
             self.goto_input = format!("{}", self.editor_state.cursor_line + 1);
             self.goto_pending = true;
         }
@@ -1698,12 +1700,12 @@ impl eframe::App for EditorApp {
                 // Búsqueda rápida de archivos (Ctrl+P)
                 if ui.button("🔍 Search (Ctrl+P)").clicked() {
                     self.quick_open
-                        .request_open(&self.browse_dir, &mut self.quick_open_services);
+                        .request_open(&self.doc.browse_dir, &mut self.quick_open_services);
                 }
 
                 // Guardado rápido
                 if ui.button("💾 Save (Ctrl+S)").clicked() {
-                    self.try_save();
+                    self.doc.try_save();
                 }
 
                 ui.separator();
@@ -1799,20 +1801,20 @@ impl eframe::App for EditorApp {
                     let mut switch_to = None;
                     let mut close_target = None;
 
-                    for (idx, tab) in self.tabs.iter().enumerate() {
-                        let is_active = idx == self.active_tab;
+                    for (idx, tab) in self.doc.tabs.iter().enumerate() {
+                        let is_active = idx == self.doc.active_tab;
                         let title = if is_active {
-                            let base = if let Some(ref p) = self.current_file {
+                            let base = if let Some(ref p) = self.doc.current_file {
                                 p.file_name()
                                     .and_then(|n| n.to_str())
                                     .unwrap_or("file")
                                     .to_string()
-                            } else if !self.file_path_input.is_empty() {
-                                self.file_path_input.clone()
+                            } else if !self.doc.file_path_input.is_empty() {
+                                self.doc.file_path_input.clone()
                             } else {
                                 "Untitled".to_string()
                             };
-                            if self.dirty {
+                            if self.doc.dirty {
                                 format!("{} •", base)
                             } else {
                                 base
@@ -1880,15 +1882,16 @@ impl eframe::App for EditorApp {
 
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                let modified = if self.dirty { " [+]" } else { "" };
+                let modified = if self.doc.dirty { " [+]" } else { "" };
                 let path_str = self
+                    .doc
                     .current_file
                     .as_ref()
                     .map(|p| p.display().to_string())
                     .unwrap_or_else(|| "(unsaved)".to_string());
                 ui.label(format!("{}{}", path_str, modified));
                 ui.separator();
-                ui.label(format_size(self.view_bytes));
+                ui.label(format_size(self.doc.view_bytes));
                 // S7: posición del cursor, 1-based (convención de
                 // editores; cursor_line/cursor_col son índices 0-based
                 // dentro de la línea lógica).
@@ -1902,7 +1905,7 @@ impl eframe::App for EditorApp {
                 ui.label(self.current_language().name());
                 // S1: el archivo cambió "por afuera" y el buffer no le
                 // debe nada (sin cambios propios): ofrecer recarga.
-                if self.external_changed && !self.dirty && self.save_progress.is_none() {
+                if self.doc.external_changed && !self.doc.dirty && self.doc.save_progress.is_none() {
                     ui.separator();
                     ui.label(egui::RichText::new("⚠ File changed on disk")
                         .color(egui::Color32::from_rgb(255, 178, 64)));
@@ -1910,9 +1913,9 @@ impl eframe::App for EditorApp {
                         self.reload();
                     }
                 }
-                if !self.status.is_empty() {
+                if !self.doc.status.is_empty() {
                     ui.separator();
-                    ui.label(&self.status);
+                    ui.label(&self.doc.status);
                 }
             });
         });
@@ -1930,7 +1933,7 @@ impl eframe::App for EditorApp {
                 // Fondo minimalista con el logo, SOLO mientras el
                 // buffer está vacío — apenas empezás a escribir,
                 // desaparece (queda "detrás" del cursor).
-                if self.is_empty_buffer() {
+                if self.doc.is_empty_buffer() {
                     self.draw_watermark(ui, ui.max_rect(), &theme);
                 }
 
@@ -1959,7 +1962,7 @@ impl eframe::App for EditorApp {
                 let language = self.current_language();
                 let response = crate::editor_widget::show(
                     ui,
-                    &mut self.lines,
+                    &mut self.doc.lines,
                     &mut self.editor_state,
                     &theme,
                     language,
@@ -1973,32 +1976,32 @@ impl eframe::App for EditorApp {
                 // mas arriba y el state ya lo tomó arriba.
                 if (self.editor_state.font_size - self.font_size).abs() > f32::EPSILON {
                     self.font_size = self.editor_state.font_size;
-                    self.status = format!("Zoom: {} px", self.editor_state.font_size);
+                    self.doc.status = format!("Zoom: {} px", self.editor_state.font_size);
                 }
                 // S3: corte previo si la acción fue estructural (Enter / Paste).
                 if let Some(prev) = response.pre_break_snapshot {
-                    self.snapshot_text(&prev);
+                    self.doc.snapshot_text(&prev);
                 }
                 if response.changed {
-                    self.dirty = true;
+                    self.doc.dirty = true;
                     // Una vez por edición real (no por frame): refresca
                     // el tamaño de la barra de estado.
-                    self.recalc_view_bytes();
+                    self.doc.recalc_view_bytes();
                     self.update_ast();
                     self.update_lsp();
                     if self.find_open {
                         self.find_update_matches();
                     }
                     if response.force_snapshot {
-                        self.snapshot_if_changed();
+                        self.doc.snapshot_if_changed();
                     } else {
-                        self.chunk_tracker.on_edit(crate::undo::EditAction::Typing, std::time::Instant::now());
+                        self.doc.chunk_tracker.on_edit(crate::undo::EditAction::Typing, std::time::Instant::now());
                     }
                 }
                 // Al perder el foco (click afuera, etc.) tomamos un
                 // snapshot para el historial de undo/redo.
                 if response.lost_focus {
-                    self.snapshot_if_changed();
+                    self.doc.snapshot_if_changed();
                 }
                 // S2: Sincronizar estado completo solo si hubo edición real;
                 // si no, solo sincronizar metadatos ligeros para no clonar líneas ni undo_stack en cada frame.
