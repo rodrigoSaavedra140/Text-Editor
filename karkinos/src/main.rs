@@ -6,6 +6,7 @@ mod cargo_service;
 mod dap_service;
 mod document_service;
 mod editor_widget;
+mod git_diff_worker;
 mod lsp_service;
 mod quick_open;
 mod syntax;

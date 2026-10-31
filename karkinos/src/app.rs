@@ -130,6 +130,14 @@ pub struct EditorApp {
     // Última revisión del worker aplicada al estado — evita revivir
     // resultados viejos si llegan después de un parseo posterior.
     pub ast_applied_rev: u64,
+    // F1 (Roadmap v0.2.27): worker de diff contra HEAD. El pedido se
+    // dispara al abrir y al guardar (archivo limpio), nunca mientras se
+    // escribe, para no correr `git` en cada tecla.
+    pub git_diff_worker: crate::git_diff_worker::GitDiffWorker,
+    // Última ruta para la que se pidió diff y si en el frame anterior el
+    // buffer estaba sucio: juntos evitan pedidos repetidos.
+    git_diff_requested_path: Option<std::path::PathBuf>,
+    git_diff_was_dirty: bool,
 }
 
 impl Default for EditorApp {
@@ -170,6 +178,9 @@ impl Default for EditorApp {
             ast_worker: crate::ast_worker::AstWorker::spawn(),
             ast_request_rev: 0,
             ast_applied_rev: 0,
+            git_diff_worker: crate::git_diff_worker::GitDiffWorker::spawn(),
+            git_diff_requested_path: None,
+            git_diff_was_dirty: false,
         }
     }
 }
@@ -430,6 +441,47 @@ impl EditorApp {
         // cache de galleys se vacía en el próximo sync_ast del render.
         self.editor_state.ast_rev = self.editor_state.ast_rev.wrapping_add(1);
         true
+    }
+
+    /// F1 (Roadmap v0.2.27): pide el diff contra HEAD cuando corresponde —
+    /// al abrir un archivo (ruta distinta) o al terminar de guardar (pasó de
+    /// sucio a limpio). Mientras se escribe no se pide nada, así que `git`
+    /// nunca corre en el hilo de UI ni una vez por tecla.
+    pub fn request_git_diff_if_needed(&mut self) {
+        let Some(path) = self.doc.current_file.clone() else {
+            return;
+        };
+        if self.doc.dirty {
+            self.git_diff_was_dirty = true;
+            return;
+        }
+        let path_changed = self.git_diff_requested_path.as_ref() != Some(&path);
+        let just_saved = self.git_diff_was_dirty;
+        if !path_changed && !just_saved {
+            return;
+        }
+        self.git_diff_requested_path = Some(path.clone());
+        self.git_diff_was_dirty = false;
+        self.git_diff_worker.request(path, self.doc.current_text());
+    }
+
+    /// F1: consume los diffs que terminó el worker y los aplica al estado
+    /// activo y a las pestañas abiertas de esa ruta. `true` si aplicó algo.
+    pub fn poll_git_diff_results(&mut self) -> bool {
+        let mut applied = false;
+        while let Some(result) = self.git_diff_worker.try_recv_result() {
+            if self.doc.current_file.as_ref() == Some(&result.path) {
+                self.editor_state.git_diff = Some(std::sync::Arc::clone(&result.hunks));
+                applied = true;
+            }
+            for tab in &mut self.doc.tabs {
+                if tab.current_file.as_ref() == Some(&result.path) {
+                    tab.editor_state.git_diff = Some(std::sync::Arc::clone(&result.hunks));
+                    applied = true;
+                }
+            }
+        }
+        applied
     }
 
     /// S4 (Etapa 4): Actualiza diagnósticos y estado del cliente LSP.

@@ -1833,6 +1833,13 @@ impl eframe::App for EditorApp {
         if self.poll_ast_results() {
             ctx.request_repaint_after(std::time::Duration::from_millis(16));
         }
+        // F1 (Roadmap v0.2.27): marcas de diff contra HEAD — el worker corre
+        // `git` en fondo; acá solo se pide al abrir/guardar y se aplica lo
+        // que llegó.
+        self.request_git_diff_if_needed();
+        if self.poll_git_diff_results() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(16));
+        }
         // S4 (Roadmap v0.2.9): resultados del worker de Quick Open (escaneo
         // + scoring en fondo) — si aplicó algo nuevo, repintado suave.
         if self.quick_open.poll(&mut self.quick_open_services) {

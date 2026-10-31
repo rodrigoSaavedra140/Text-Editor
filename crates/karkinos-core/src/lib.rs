@@ -12,6 +12,7 @@ pub mod cargo;
 pub mod dap;
 pub mod document;
 pub mod ending;
+pub mod git_diff;
 pub mod lsp;
 pub mod open_vsx;
 pub mod platform;
@@ -26,6 +27,7 @@ pub use cargo::{CargoAction, CargoDiagnostic, CargoOutputLine, CargoRunner, Carg
 pub use dap::{DapBreakpoint, DapClient, DapStackFrame, DapState, DapStopReason, DapVariable};
 pub use document::Document;
 pub use ending::{default_new_file_path, detect_line_ending, serialize_line_ending, LineEnding};
+pub use git_diff::{DiffStatus, FileDiffHunks};
 pub use lsp::{
     DiagnosticSeverity, InlayHintKind, LspClient, LspCodeAction, LspCompletionItem, LspDiagnostic,
     LspHover, LspInlayHint, LspLocation, LspPosition, LspRange, LspTextEdit, LspWorkspaceEdit,

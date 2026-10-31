@@ -236,3 +236,13 @@ Cada feature se implementa como una unidad aislada con tests unitarios y bump de
 - `cargo check --workspace` (0 warnings).
 - `cargo test --workspace` (todos los tests existentes + nuevos tests de la feature pasando).
 - Verificación visual de interactividad y ausencia de drops de FPS.
+
+---
+
+## Log de Ejecución
+
+- **F1 (v0.2.27) — completada**: `crates/karkinos-core/src/git_diff.rs` implementa el diff por líneas con Myers sobre hashes de línea (O(ND), sin matriz completa) y cota de distancia de edición con fallback por bloque. El worker `karkinos/src/git_diff_worker.rs` corre `git show HEAD:<rel>` fuera del hilo de UI. `EditorState.git_diff` alimenta marcas de 3 px en el borde izquierdo del gutter: verde (nueva), ámbar (modificada), rojo (borrada debajo).
+  - Cuándo se pide: solo con el archivo limpio, al abrir (ruta distinta) o al terminar de guardar (sucio → limpio). Mientras se escribe no se pide nada, así que `git` nunca corre por tecla ni en el hilo principal.
+  - Tests: 8 unitarios del diff (idénticos, inserción, modificación, borrado, varios hunks, cabecera vacía, buffer vacío, cambio lejano) + 3 del worker (raíz de repo, fuera de repo, pipeline real contra un repo git temporal).
+  - Evidencia: `cargo check --workspace` 0 warnings; `cargo test --workspace` karkinos 116, karkinos-core 67.
+  - Nota: `crates/karkinos-core/tests/benchmark_runner.rs`, dejado sin trackear por otra sesión, no compilaba contra la API actual del crate (llamaba `TextBuffer::line_count`/`char_count` y `AstEngine::parse`); se apartó a `/tmp/opencode/parked/` en vez de borrarlo.

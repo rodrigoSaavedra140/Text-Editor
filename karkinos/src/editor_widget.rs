@@ -88,6 +88,10 @@ pub struct EditorState {
     // (etiqueta, centésimas del tamaño de fuente). Evita re-tipografiar
     // ": i32" o ": &str" en cada frame por cada hint visible.
     hint_galleys: std::collections::HashMap<(String, u32), std::sync::Arc<egui::Galley>>,
+    // F1 (Roadmap v0.2.27): marcas de diff contra HEAD para el gutter. Lo
+    // llena el worker de fondo; `None` = archivo sin repo, sin versión o
+    // todavía sin resultado.
+    pub git_diff: Option<std::sync::Arc<karkinos_core::git_diff::FileDiffHunks>>,
     pub breakpoints: std::collections::HashSet<usize>,
     pub stopped_line: Option<usize>,
     // S1 (Roadmap v0.2.9): galleys ya tipografiados por (hash del chunk,
@@ -131,6 +135,7 @@ impl Default for EditorState {
             selected_completion: 0,
             inlay_hints: Vec::new(),
             hint_galleys: std::collections::HashMap::new(),
+            git_diff: None,
             breakpoints: std::collections::HashSet::new(),
             stopped_line: None,
             layout_cache: crate::syntax::LineLayoutCache::new(),
@@ -1379,6 +1384,27 @@ pub fn show(
             gutter_painter.rect_filled(gutter_indicator, 0.0, theme.border_focus);
         }
 
+        // F1 (Roadmap v0.2.27): marca de estado git en el borde izquierdo del
+        // gutter — verde línea nueva, ámbar modificada, rojo borrado debajo.
+        if let Some(diff) = state.git_diff.as_ref() {
+            if let Some(status) = diff.status_of(i) {
+                let mark_color = match status {
+                    karkinos_core::git_diff::DiffStatus::Added => egui::Color32::from_rgb(80, 200, 120),
+                    karkinos_core::git_diff::DiffStatus::Modified => {
+                        egui::Color32::from_rgb(230, 180, 80)
+                    }
+                    karkinos_core::git_diff::DiffStatus::DeletedBelow => {
+                        egui::Color32::from_rgb(220, 80, 80)
+                    }
+                };
+                let mark_rect = egui::Rect::from_min_max(
+                    egui::pos2(gutter_rect.left() + 1.0, line_top_y),
+                    egui::pos2(gutter_rect.left() + 4.0, line_top_y + row_height),
+                );
+                gutter_painter.rect_filled(mark_rect, 1.0, mark_color);
+            }
+        }
+
         // S4: el número se alinea a la FILA VISUAL primera de la
         // línea lógica (una línea envuelta muestra su número una
         // sola vez) y right-align , para que los dígitos no bailen.
@@ -1393,7 +1419,7 @@ pub fn show(
         // S3 (Etapa 3): Indicador de plegado AST en el gutter
         if state.folding_ranges.iter().any(|r| r.start_line == i) {
             gutter_painter.text(
-                egui::pos2(gutter_rect.left() + 2.0, line_top_y),
+                egui::pos2(gutter_rect.left() + 7.0, line_top_y),
                 egui::Align2::LEFT_TOP,
                 "▾",
                 egui::FontId::monospace(state.font_size * 0.8),
