@@ -148,6 +148,8 @@ pub struct EditorApp {
     pub explorer: ExplorerState,
     // F7 (Roadmap v0.2.34): selector de símbolos (Ctrl+Shift+O).
     pub symbol_picker: SymbolPickerState,
+    // v0.2.40: Command Palette (Ctrl+Shift+P / F1).
+    pub command_palette: CommandPaletteState,
     // F8 (Roadmap v0.2.35): rama actual y blame inline.
     pub git_status: GitStatusState,
     pub blame_worker: crate::git_status_worker::BlameWorker,
@@ -307,6 +309,166 @@ pub struct SymbolPickerState {
     pub selected: usize,
 }
 
+/// v0.2.40: acción registrable en el Command Palette (`Ctrl+Shift+P` / `F1`).
+#[derive(Debug, Clone)]
+pub struct PaletteCommand {
+    pub id: &'static str,
+    pub title: &'static str,
+    pub category: &'static str, // "Editor", "View", "Cargo", "Debug", "Layout", "Theme", "File"
+    pub shortcut: Option<&'static str>,
+}
+
+/// v0.2.40: estado del modal del Command Palette.
+#[derive(Debug, Default)]
+pub struct CommandPaletteState {
+    pub open: bool,
+    pub query: String,
+    pub selected: usize,
+}
+
+/// v0.2.40: catálogo estático de comandos disponibles en el Command Palette.
+/// El orden define el orden sin filtro y es estable para los tests.
+pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
+    PaletteCommand {
+        id: "layout:split_vertical",
+        title: "View: Split Editor Vertically",
+        category: "Layout",
+        shortcut: Some("Ctrl+\\"),
+    },
+    PaletteCommand {
+        id: "layout:split_horizontal",
+        title: "View: Split Editor Horizontally",
+        category: "Layout",
+        shortcut: Some("Ctrl+Shift+\\"),
+    },
+    PaletteCommand {
+        id: "layout:close_split",
+        title: "View: Close Split Editor",
+        category: "Layout",
+        shortcut: None,
+    },
+    PaletteCommand {
+        id: "editor:toggle_minimap",
+        title: "View: Toggle Minimap",
+        category: "View",
+        shortcut: Some("Ctrl+Shift+M"),
+    },
+    PaletteCommand {
+        id: "sidebar:explorer",
+        title: "View: Show Explorer",
+        category: "View",
+        shortcut: Some("Ctrl+Shift+E"),
+    },
+    PaletteCommand {
+        id: "sidebar:search",
+        title: "View: Search in Workspace",
+        category: "View",
+        shortcut: Some("Ctrl+Shift+F"),
+    },
+    PaletteCommand {
+        id: "sidebar:symbols",
+        title: "View: Show Document Symbols",
+        category: "View",
+        shortcut: Some("Ctrl+Shift+O"),
+    },
+    PaletteCommand {
+        id: "terminal:toggle",
+        title: "Terminal: Toggle Terminal Dock",
+        category: "View",
+        shortcut: Some("Ctrl+`"),
+    },
+    PaletteCommand {
+        id: "cargo:check",
+        title: "Cargo: Run Check",
+        category: "Cargo",
+        shortcut: Some("F7"),
+    },
+    PaletteCommand {
+        id: "cargo:test",
+        title: "Cargo: Run Tests",
+        category: "Cargo",
+        shortcut: None,
+    },
+    PaletteCommand {
+        id: "cargo:clippy",
+        title: "Cargo: Run Clippy",
+        category: "Cargo",
+        shortcut: None,
+    },
+    PaletteCommand {
+        id: "cargo:run",
+        title: "Cargo: Run Project",
+        category: "Cargo",
+        shortcut: Some("F5"),
+    },
+    PaletteCommand {
+        id: "debug:toggle_breakpoint",
+        title: "Debug: Toggle Breakpoint",
+        category: "Debug",
+        shortcut: Some("F9"),
+    },
+    PaletteCommand {
+        id: "debug:start",
+        title: "Debug: Start Debugging",
+        category: "Debug",
+        shortcut: Some("F5"),
+    },
+    PaletteCommand {
+        id: "debug:step_over",
+        title: "Debug: Step Over",
+        category: "Debug",
+        shortcut: Some("F10"),
+    },
+    PaletteCommand {
+        id: "debug:step_into",
+        title: "Debug: Step Into",
+        category: "Debug",
+        shortcut: Some("F11"),
+    },
+    PaletteCommand {
+        id: "debug:stop",
+        title: "Debug: Stop Debugging",
+        category: "Debug",
+        shortcut: None,
+    },
+    PaletteCommand {
+        id: "theme:dark",
+        title: "Preferences: Theme: Dark (Graphite)",
+        category: "Theme",
+        shortcut: None,
+    },
+    PaletteCommand {
+        id: "theme:monokai",
+        title: "Preferences: Theme: Monokai",
+        category: "Theme",
+        shortcut: None,
+    },
+    PaletteCommand {
+        id: "theme:dracula",
+        title: "Preferences: Theme: Dracula",
+        category: "Theme",
+        shortcut: None,
+    },
+    PaletteCommand {
+        id: "editor:format",
+        title: "Editor: Format Document with rustfmt",
+        category: "Editor",
+        shortcut: None,
+    },
+    PaletteCommand {
+        id: "file:save",
+        title: "File: Save Current File",
+        category: "File",
+        shortcut: Some("Ctrl+S"),
+    },
+    PaletteCommand {
+        id: "file:new",
+        title: "File: New Untitled File",
+        category: "File",
+        shortcut: Some("Ctrl+N"),
+    },
+];
+
 /// F8 (Roadmap v0.2.35): rama actual y cache de blame por archivo.
 #[derive(Debug, Default)]
 pub struct GitStatusState {
@@ -367,6 +529,7 @@ impl Default for EditorApp {
             sidebar_tab: SidebarTab::None,
             explorer: ExplorerState::default(),
             symbol_picker: SymbolPickerState::default(),
+            command_palette: CommandPaletteState::default(),
             git_status: GitStatusState::default(),
             blame_worker: crate::git_status_worker::BlameWorker::spawn(),
         }
@@ -798,6 +961,192 @@ impl EditorApp {
         if let Some(split) = self.split.as_mut() {
             split.secondary.show_minimap = visible;
         }
+    }
+
+    /// v0.2.40: abre el Command Palette con la búsqueda limpia. Si ya está
+    /// abierto no reinicia el query: F1 de nuevo no debe borrar lo escrito.
+    pub fn open_command_palette(&mut self) {
+        if self.command_palette.open {
+            return;
+        }
+        // Un solo modal con foco: si Enter ejecutara dos handlers a la vez
+        // (p. ej. el selector de símbolos y el palette) sería ambiguo.
+        self.quick_open.close();
+        self.symbol_picker.open = false;
+        self.lsp.code_actions_menu_open = false;
+        self.lsp.rename_dialog_open = false;
+        self.goto_pending = false;
+        self.picker_open = false;
+        self.command_palette.open = true;
+        self.command_palette.query.clear();
+        self.command_palette.selected = 0;
+    }
+
+    /// v0.2.40: comandos del catálogo filtrados por coincidencia sin
+    /// distinguir mayúsculas sobre `category` y `title`.
+    pub fn filtered_palette_commands(&self) -> Vec<&'static PaletteCommand> {
+        let needle = self.command_palette.query.trim().to_lowercase();
+        PALETTE_COMMANDS
+            .iter()
+            .filter(|command| {
+                needle.is_empty()
+                    || command.category.to_lowercase().contains(&needle)
+                    || command.title.to_lowercase().contains(&needle)
+            })
+            .collect()
+    }
+
+    /// v0.2.40: mueve la selección del palette y la mantiene dentro de la
+    /// lista filtrada (las flechas en los extremos no se escapan).
+    pub fn move_palette_selection(&mut self, delta: isize) {
+        let count = self.filtered_palette_commands().len();
+        if count == 0 {
+            self.command_palette.selected = 0;
+            return;
+        }
+        let next = self.command_palette.selected as isize + delta;
+        self.command_palette.selected = next.clamp(0, count as isize - 1) as usize;
+    }
+
+    /// v0.2.40: ejecuta el comando seleccionado (Enter en el modal).
+    pub fn execute_selected_palette_command(&mut self) {
+        let id = self
+            .filtered_palette_commands()
+            .get(self.command_palette.selected)
+            .map(|command| command.id);
+        if let Some(id) = id {
+            self.execute_palette_command(id);
+        }
+    }
+
+    /// v0.2.40: ejecuta un comando del palette por id. El modal siempre se
+    /// cierra, incluso si el id no existe (no deja la UI colgada).
+    pub fn execute_palette_command(&mut self, id: &str) {
+        self.command_palette.open = false;
+        self.command_palette.query.clear();
+        self.command_palette.selected = 0;
+
+        match id {
+            "layout:split_vertical" => {
+                self.toggle_split(SplitDirection::Vertical);
+            }
+            "layout:split_horizontal" => {
+                self.toggle_split(SplitDirection::Horizontal);
+            }
+            "layout:close_split" => {
+                if self.split.is_some() {
+                    self.split = None;
+                    self.doc.status = "Split closed".to_string();
+                }
+            }
+            "editor:toggle_minimap" => self.toggle_minimap(),
+            "sidebar:explorer" => self.toggle_explorer(),
+            "sidebar:search" => self.open_workspace_search(),
+            "sidebar:symbols" => self.open_symbol_picker(),
+            "terminal:toggle" => {
+                if self.cargo.panel_open && self.cargo.active_tab == 0 {
+                    self.cargo.panel_open = false;
+                } else {
+                    self.cargo.panel_open = true;
+                    self.cargo.active_tab = 0;
+                }
+            }
+            "cargo:check" => self.run_cargo(karkinos_core::cargo::CargoAction::Check),
+            "cargo:test" => self.run_cargo(karkinos_core::cargo::CargoAction::Test),
+            "cargo:clippy" => self.run_cargo(karkinos_core::cargo::CargoAction::Clippy),
+            "cargo:run" => self.run_cargo(karkinos_core::cargo::CargoAction::Run),
+            "debug:toggle_breakpoint" => {
+                let line = self.editor_state.cursor_line;
+                self.toggle_breakpoint(line);
+            }
+            "debug:start" => {
+                self.cargo.panel_open = true;
+                self.cargo.active_tab = 2;
+                self.start_debugging();
+            }
+            "debug:step_over" => self.step_over(),
+            "debug:step_into" => self.step_in(),
+            "debug:stop" => self.stop_debugging(),
+            "theme:dark" => {
+                self.theme_mode = crate::theme::ThemeMode::Dark;
+                self.doc.status = "Theme: Dark".to_string();
+            }
+            "theme:monokai" => {
+                self.theme_mode = crate::theme::ThemeMode::Monokai;
+                self.doc.status = "Theme: Monokai".to_string();
+            }
+            "theme:dracula" => {
+                self.theme_mode = crate::theme::ThemeMode::Dracula;
+                self.doc.status = "Theme: Dracula".to_string();
+            }
+            "editor:format" => self.format_document(),
+            "file:save" => {
+                let _ = self.doc.try_save();
+            }
+            "file:new" => self.try_new_document(),
+            _ => {}
+        }
+    }
+
+    /// v0.2.40: formatea el buffer activo con `rustfmt` (stdin → stdout).
+    /// Solo aplica a Rust; el resto reporta el motivo en la barra de estado.
+    pub fn format_document(&mut self) {
+        use std::io::Write;
+
+        if self.current_language() != crate::syntax::Language::Rust {
+            self.doc.status = "Format: rustfmt only supports Rust files".to_string();
+            return;
+        }
+
+        let original = self.doc.current_text();
+        let mut child = match std::process::Command::new("rustfmt")
+            .args(["--edition", "2021", "--emit", "stdout"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+        {
+            Ok(child) => child,
+            Err(error) => {
+                self.doc.status = format!("Format failed: {error}");
+                return;
+            }
+        };
+
+        if let Some(mut stdin) = child.stdin.take() {
+            if let Err(error) = stdin.write_all(original.as_bytes()) {
+                self.doc.status = format!("Format failed: {error}");
+                return;
+            }
+        }
+
+        match child.wait_with_output() {
+            Ok(output) if output.status.success() => {
+                let formatted = String::from_utf8_lossy(&output.stdout).to_string();
+                if formatted == original {
+                    self.doc.status = "Already formatted".to_string();
+                } else {
+                    self.apply_formatted_text(&formatted);
+                }
+            }
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                self.doc.status = format!("Format failed: {}", stderr.trim());
+            }
+            Err(error) => {
+                self.doc.status = format!("Format failed: {error}");
+            }
+        }
+    }
+
+    /// v0.2.40: aplica el texto ya formateado como una edición undoable,
+    /// preservando cursor y scroll. Mismo contrato que `apply_text_edits`.
+    fn apply_formatted_text(&mut self, formatted: &str) {
+        self.doc.snapshot_if_changed();
+        self.restore_text_keeping_view(formatted);
+        self.doc.snapshot_if_changed();
+        self.doc.dirty = true;
+        self.doc.status = "Formatted with rustfmt".to_string();
     }
 
     /// F6 (Roadmap v0.2.32 / v0.2.39): abre la búsqueda global en la barra lateral unificada y pide foco.
@@ -3215,5 +3564,183 @@ mod tests {
         // Volver a clickear Symbols lo cierra
         app.open_symbol_picker();
         assert_eq!(app.sidebar_tab, SidebarTab::None);
+    }
+
+    // v0.2.40: Command Palette (Ctrl+Shift+P / F1).
+
+    #[test]
+    fn palette_catalogo_tiene_ids_unicos_y_los_comandos_esperados() {
+        let mut ids: Vec<&str> = PALETTE_COMMANDS.iter().map(|command| command.id).collect();
+        let total = ids.len();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), total, "cada id del catálogo es único");
+        assert_eq!(total, 23, "el catálogo de v0.2.40 tiene 23 comandos");
+
+        for expected in [
+            "layout:split_vertical",
+            "layout:split_horizontal",
+            "layout:close_split",
+            "editor:toggle_minimap",
+            "sidebar:explorer",
+            "sidebar:search",
+            "sidebar:symbols",
+            "terminal:toggle",
+            "cargo:check",
+            "cargo:test",
+            "cargo:clippy",
+            "cargo:run",
+            "debug:toggle_breakpoint",
+            "debug:start",
+            "debug:step_over",
+            "debug:step_into",
+            "debug:stop",
+            "theme:dark",
+            "theme:monokai",
+            "theme:dracula",
+            "editor:format",
+            "file:save",
+            "file:new",
+        ] {
+            assert!(
+                PALETTE_COMMANDS.iter().any(|command| command.id == expected),
+                "falta el comando {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn palette_filtra_por_categoria_y_titulo_sin_mayusculas() {
+        let mut app = EditorApp::default();
+        assert_eq!(app.filtered_palette_commands().len(), PALETTE_COMMANDS.len());
+
+        app.command_palette.query = "THEME".to_string();
+        let themes: Vec<&str> = app
+            .filtered_palette_commands()
+            .iter()
+            .map(|command| command.id)
+            .collect();
+        assert_eq!(themes, ["theme:dark", "theme:monokai", "theme:dracula"]);
+
+        app.command_palette.query = "minimap".to_string();
+        let minimap: Vec<&str> = app
+            .filtered_palette_commands()
+            .iter()
+            .map(|command| command.id)
+            .collect();
+        assert_eq!(minimap, ["editor:toggle_minimap"]);
+
+        app.command_palette.query = "  file:  ".to_string();
+        let files: Vec<&str> = app
+            .filtered_palette_commands()
+            .iter()
+            .map(|command| command.id)
+            .collect();
+        assert_eq!(files, ["file:save", "file:new"], "el trim también aplica");
+
+        app.command_palette.query = "sin-coincidencias".to_string();
+        assert!(app.filtered_palette_commands().is_empty());
+    }
+
+    #[test]
+    fn palette_abre_limpia_query_y_no_borra_lo_escrito_si_ya_esta_abierto() {
+        let mut app = EditorApp::default();
+        assert!(!app.command_palette.open);
+
+        app.open_command_palette();
+        assert!(app.command_palette.open);
+        assert!(app.command_palette.query.is_empty());
+        assert_eq!(app.command_palette.selected, 0);
+
+        app.command_palette.query = "cargo".to_string();
+        app.command_palette.selected = 2;
+        app.open_command_palette();
+        assert_eq!(app.command_palette.query, "cargo", "F1 de nuevo no borra el query");
+        assert_eq!(app.command_palette.selected, 2);
+    }
+
+    #[test]
+    fn palette_seleccion_clampa_y_enter_ejecuta_el_seleccionado() {
+        let mut app = EditorApp::default();
+        app.open_command_palette();
+        app.command_palette.query = "theme".to_string();
+
+        app.move_palette_selection(-1);
+        assert_eq!(app.command_palette.selected, 0, "no baja de 0");
+
+        app.move_palette_selection(1);
+        app.move_palette_selection(100);
+        assert_eq!(app.command_palette.selected, 2, "no pasa del último");
+
+        app.execute_selected_palette_command();
+        assert_eq!(
+            app.theme_mode,
+            crate::theme::ThemeMode::Dracula,
+            "Enter ejecuta el comando seleccionado"
+        );
+        assert!(!app.command_palette.open, "ejecutar cierra el modal");
+        assert!(app.command_palette.query.is_empty());
+        assert_eq!(app.command_palette.selected, 0);
+    }
+
+    #[test]
+    fn palette_ejecuta_layout_y_cierra_o_ignora_ids_desconocidos() {
+        let mut app = EditorApp::default();
+        app.open_command_palette();
+
+        app.execute_palette_command("layout:split_vertical");
+        assert_eq!(
+            app.split.as_ref().expect("split abierto").direction,
+            SplitDirection::Vertical
+        );
+        assert!(!app.command_palette.open);
+
+        app.open_command_palette();
+        app.execute_palette_command("layout:close_split");
+        assert!(app.split.is_none());
+
+        app.open_command_palette();
+        app.execute_palette_command("no:existe");
+        assert!(!app.command_palette.open, "un id desconocido no deja la UI colgada");
+        assert!(app.split.is_none());
+    }
+
+    #[test]
+    fn format_document_rechaza_lenguajes_no_rust_sin_tocar_el_buffer() {
+        let mut app = EditorApp::default();
+        app.doc.file_path_input = "notas.txt".to_string();
+        app.set_text("texto plano\n");
+
+        app.format_document();
+
+        assert_eq!(app.doc.current_text(), "texto plano\n");
+        assert!(
+            app.doc.status.starts_with("Format: rustfmt"),
+            "status: {}",
+            app.doc.status
+        );
+        assert!(!app.doc.dirty);
+    }
+
+    #[test]
+    fn format_aplica_texto_como_edicion_undoable_y_preserva_cursor() {
+        let mut app = EditorApp::default();
+        app.set_text("fn  main( ){}\n");
+        app.editor_state.cursor_line = 0;
+        app.editor_state.cursor_col = 8;
+
+        app.apply_formatted_text("fn main() {}\n");
+
+        assert_eq!(app.doc.current_text(), "fn main() {}\n");
+        assert!(app.doc.dirty, "el formateo marca el buffer como sucio");
+        assert_eq!(app.editor_state.cursor_line, 0);
+        assert_eq!(app.editor_state.cursor_col, 8, "el cursor no salta al inicio");
+
+        app.undo();
+        assert_eq!(
+            app.doc.current_text(),
+            "fn  main( ){}\n",
+            "el formateo se puede deshacer"
+        );
     }
 }

@@ -1029,6 +1029,159 @@ impl EditorApp {
         }
     }
 
+    /// v0.2.40: modal del Command Palette (`Ctrl+Shift+P` / `F1`). Filtra el
+    /// catálogo en vivo, navega con ↑/↓ y ejecuta con Enter o click.
+    fn show_command_palette(&mut self, ctx: &egui::Context, theme: &crate::theme::Theme) {
+        if !self.command_palette.open {
+            return;
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.command_palette.open = false;
+            return;
+        }
+
+        let commands = self.filtered_palette_commands();
+        let count = commands.len();
+        if self.command_palette.selected >= count {
+            self.command_palette.selected = count.saturating_sub(1);
+        }
+
+        if ctx.input(|i| i.key_pressed(egui::Key::ArrowUp)) {
+            self.move_palette_selection(-1);
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::ArrowDown)) {
+            self.move_palette_selection(1);
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
+            self.execute_selected_palette_command();
+            return;
+        }
+
+        let mut execute: Option<&'static str> = None;
+        let mut close = false;
+
+        egui::Window::new("command_palette_modal")
+            .title_bar(false)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 60.0))
+            .min_width(560.0)
+            .max_width(560.0)
+            .frame(crate::theme::modal_card_frame(theme))
+            .show(ctx, |ui| {
+                ui.label(
+                    egui::RichText::new("Command Palette (Ctrl+Shift+P / F1)")
+                        .color(theme.text_muted)
+                        .size(12.0),
+                );
+                ui.add_space(4.0);
+
+                let input = ui.add_sized(
+                    [ui.available_width(), 30.0],
+                    egui::TextEdit::singleline(&mut self.command_palette.query)
+                        .id_source("command_palette_input")
+                        .hint_text("> Type a command..."),
+                );
+                input.request_focus();
+                if input.changed() {
+                    self.command_palette.selected = 0;
+                }
+
+                ui.add_space(4.0);
+                ui.separator();
+
+                egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                    for (idx, command) in commands.iter().enumerate() {
+                        let selected = idx == self.command_palette.selected;
+                        let (rect, response) = ui.allocate_exact_size(
+                            egui::vec2(ui.available_width(), 26.0),
+                            egui::Sense::click(),
+                        );
+                        let response =
+                            response.on_hover_cursor(egui::CursorIcon::PointingHand);
+                        let fill = if selected {
+                            theme.active_line
+                        } else if response.hovered() {
+                            theme.badge_bg
+                        } else {
+                            egui::Color32::TRANSPARENT
+                        };
+                        if fill != egui::Color32::TRANSPARENT {
+                            ui.painter().rect_filled(rect, egui::Rounding::same(4.0), fill);
+                        }
+
+                        let painter = ui.painter();
+                        let category_galley = painter.layout_no_wrap(
+                            command.category.to_uppercase(),
+                            egui::FontId::proportional(10.0),
+                            theme.text_muted,
+                        );
+                        let category_pos = egui::pos2(
+                            rect.left() + 8.0,
+                            rect.center().y - category_galley.size().y / 2.0,
+                        );
+                        painter.galley(category_pos, category_galley.clone(), theme.text_muted);
+
+                        let title_galley = painter.layout_no_wrap(
+                            command.title.to_string(),
+                            egui::FontId::proportional(13.0),
+                            theme.text,
+                        );
+                        let title_pos = egui::pos2(
+                            category_pos.x + category_galley.size().x + 10.0,
+                            rect.center().y - title_galley.size().y / 2.0,
+                        );
+                        painter.galley(title_pos, title_galley, theme.text);
+
+                        if let Some(shortcut) = command.shortcut {
+                            let chip_galley = painter.layout_no_wrap(
+                                shortcut.to_string(),
+                                egui::FontId::monospace(10.0),
+                                theme.text_muted,
+                            );
+                            let chip_size = chip_galley.size() + egui::vec2(10.0, 4.0);
+                            let chip_rect = egui::Rect::from_min_size(
+                                egui::pos2(
+                                    rect.right() - 8.0 - chip_size.x,
+                                    rect.center().y - chip_size.y / 2.0,
+                                ),
+                                chip_size,
+                            );
+                            painter.rect_filled(chip_rect, egui::Rounding::same(4.0), theme.badge_bg);
+                            painter.galley(
+                                egui::pos2(chip_rect.left() + 5.0, chip_rect.top() + 2.0),
+                                chip_galley,
+                                theme.text_muted,
+                            );
+                        }
+
+                        if response.clicked() {
+                            execute = Some(command.id);
+                        }
+                    }
+                });
+
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui.button("Close").clicked() {
+                        close = true;
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        Self::kbd_hint(ui, "↵ run", theme);
+                        Self::kbd_hint(ui, "↑↓ navigate", theme);
+                        Self::kbd_hint(ui, "ESC to close", theme);
+                    });
+                });
+            });
+
+        if close {
+            self.command_palette.open = false;
+        }
+        if let Some(id) = execute {
+            self.execute_palette_command(id);
+        }
+    }
+
     /// Pestaña de búsqueda en workspace en la barra lateral unificada (F6 / v0.2.39).
     fn render_search_tab(
         &mut self,
@@ -2795,7 +2948,7 @@ impl eframe::App for EditorApp {
                 i.modifiers.ctrl && i.key_pressed(egui::Key::G),
                 i.modifiers.ctrl && i.key_pressed(egui::Key::F),
                 i.modifiers.ctrl && i.key_pressed(egui::Key::N),
-                i.modifiers.ctrl && i.key_pressed(egui::Key::P),
+                i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(egui::Key::P),
                 i.modifiers.ctrl && i.key_pressed(egui::Key::T),
                 i.modifiers.ctrl && i.key_pressed(egui::Key::W),
                 i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(egui::Key::Tab),
@@ -2816,6 +2969,13 @@ impl eframe::App for EditorApp {
         }
         if want_prev_tab {
             self.prev_tab();
+        }
+        // v0.2.40: Ctrl+Shift+P (y F1) abren el Command Palette.
+        if ctx.input(|i| {
+            i.key_pressed(egui::Key::F1)
+                || (i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(egui::Key::P))
+        }) {
+            self.open_command_palette();
         }
         if want_quick_open {
             if self.quick_open.open {
@@ -2857,7 +3017,8 @@ impl eframe::App for EditorApp {
                 // F5: la consola pasa a Ctrl+`; Ctrl+\ / Ctrl+Shift+\ son split.
                 i.modifiers.ctrl && i.key_pressed(egui::Key::Backtick),
                 i.key_pressed(egui::Key::F12),
-                i.key_pressed(egui::Key::F1) || (i.modifiers.ctrl && i.key_pressed(egui::Key::K)),
+                // v0.2.40: F1 queda para el Command Palette; hover/documentación es Ctrl+K.
+                i.modifiers.ctrl && i.key_pressed(egui::Key::K),
                 (i.modifiers.ctrl && i.key_pressed(egui::Key::Period))
                     || (i.modifiers.alt && i.key_pressed(egui::Key::Enter)),
                 i.key_pressed(egui::Key::F2),
@@ -3576,7 +3737,11 @@ impl eframe::App for EditorApp {
         // dibujados antes no le pisan al campo de entrada).
         self.show_goto_line(ctx);
         // UI-3 (v0.2.21): velo de fondo mientras haya un modal de búsqueda, acciones o rename.
-        if self.quick_open.open || self.lsp.code_actions_menu_open || self.lsp.rename_dialog_open {
+        if self.quick_open.open
+            || self.lsp.code_actions_menu_open
+            || self.lsp.rename_dialog_open
+            || self.command_palette.open
+        {
             Self::paint_modal_backdrop(ctx);
         }
         // S7: diálogo modal de búsqueda rápida de archivos (Ctrl+P).
@@ -3591,6 +3756,8 @@ impl eframe::App for EditorApp {
         self.show_rename_dialog(ctx);
         // F7 (Roadmap v0.2.34): selector de símbolos del documento.
         self.show_symbol_picker(ctx, &theme);
+        // v0.2.40: Command Palette por encima del resto de los modales.
+        self.show_command_palette(ctx, &theme);
     }
 }
 
