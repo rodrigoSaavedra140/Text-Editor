@@ -67,6 +67,26 @@ fn main() -> eframe::Result<()> {
                 app.theme_mode = crate::theme::ThemeMode::from_storage_str(&theme_str);
             }
         }
+        // UI-1 (v0.2.19): sistema de diseño — esquinas de 6px
+        // en todos los widgets, 10px en ventanas y sombra de elevación
+        // para la jerarquía visual de las tarjetas flotantes.
+        let mut style = (*cc.egui_ctx.style()).clone();
+        for widget in [
+            &mut style.visuals.widgets.noninteractive,
+            &mut style.visuals.widgets.inactive,
+            &mut style.visuals.widgets.hovered,
+            &mut style.visuals.widgets.active,
+        ] {
+            widget.rounding = egui::Rounding::same(6.0);
+        }
+        style.visuals.window_rounding = egui::Rounding::same(10.0);
+        style.visuals.window_shadow = egui::epaint::Shadow {
+            offset: egui::vec2(0.0, 8.0),
+            blur: 20.0,
+            spread: 0.0,
+            color: egui::Color32::from_black_alpha(150),
+        };
+        cc.egui_ctx.set_style(style);
         Box::new(app)
     }))
 }

@@ -254,15 +254,17 @@ The current visual experience suffers from three distinct architectural design f
 
 ## Task Matrix & Execution Plan for Peer Agent
 
-| ID | Spec | Description | Target Files | Acceptance Criteria |
-| :--- | :--- | :--- | :--- | :--- |
-| **T-UI1** | UI-1 | Implement Design Tokens, Elevations & Extended Theme Struct | `karkinos/src/theme.rs`, `main.rs` | All 3 themes expose surface/elevated/border colors; `egui::Visuals` rounding configured. Tests pass. |
-| **T-UI2** | UI-2 | Consolidate Top Bar into 2-Tier Header with Search Pill & Modern Tabs | `karkinos/src/ui.rs`, `title_bar.rs` | Top panels merged from 94px to 66px total; active tab has bottom accent stroke; search pill opens QuickOpen. |
-| **T-UI3** | UI-3 | Convert QuickOpen, CodeActions & Rename into Frameless Floating Modals | `karkinos/src/ui.rs` | Modals have dimmed screen backdrops, no window title bars, rounded corners (10px), shadow elevation, and keyboard badges. |
-| **T-UI4** | UI-4 | Modernize Bottom Dock (Segmented Tabs) and Status Bar (Pill Chips) | `karkinos/src/ui.rs` | Bottom dock uses segmented tabs with colored log badges; status bar displays clean pill badges. |
-| **T-UI5** | UI-5 | Polish Active Line Gutter Accent, Geometric Breakpoints & Floating Find | `karkinos/src/editor_widget.rs`, `ui.rs` | Active line has gutter accent; breakpoints drawn as anti-aliased vector circles; find widget is floating top-right. |
+| ID | Spec | Description | Target Files | Acceptance Criteria | Status |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **T-UI1** | UI-1 | Implement Design Tokens, Elevations & Extended Theme Struct | `karkinos/src/theme.rs`, `main.rs` | All 3 themes expose surface/elevated/border colors; `egui::Visuals` rounding configured. Tests pass. | ✅ v0.2.19 |
+| **T-UI2** | UI-2 | Consolidate Top Bar into 2-Tier Header with Search Pill & Modern Tabs | `karkinos/src/ui.rs`, `title_bar.rs` | Top panels merged from 94px to 66px total; active tab has bottom accent stroke; search pill opens QuickOpen. | ⬜ pending |
+| **T-UI3** | UI-3 | Convert QuickOpen, CodeActions & Rename into Frameless Floating Modals | `karkinos/src/ui.rs` | Modals have dimmed screen backdrops, no window title bars, rounded corners (10px), shadow elevation, and keyboard badges. | ⬜ pending |
+| **T-UI4** | UI-4 | Modernize Bottom Dock (Segmented Tabs) and Status Bar (Pill Chips) | `karkinos/src/ui.rs` | Bottom dock uses segmented tabs with colored log badges; status bar displays clean pill badges. | ⬜ pending |
+| **T-UI5** | UI-5 | Polish Active Line Gutter Accent, Geometric Breakpoints & Floating Find | `karkinos/src/editor_widget.rs`, `ui.rs` | Active line has gutter accent; breakpoints drawn as anti-aliased vector circles; find widget is floating top-right. | ⬜ pending |
 
 ---
 
 ## Log & Status Tracking
 - **L1 (2026-10-31)**: Architecture audit completed. Specifications UI-1 through UI-5 drafted in detail for peer execution agent. Ready for execution without ambiguity.
+- **L2 (2026-10-31, user, verbatim)**: "lee las instrucciones que dejo el otro agente y empieza a implementar sin pushear". Scope: implement UI-1..UI-5 locally on `main` as atomic work-unit commits, one version bump each (0.2.18 → 0.2.19 …). No push: publishing stays the user's decision. The landing page (`docs/index.html`) tracks published releases and is not bumped per work unit.
+- **L3 (T-UI1, v0.2.19)**: Route: direct inline (one understood change; no parallel writers and no delegation trigger met). Done: `Theme` extended with the 7 elevation and accent tokens; Dark uses the exact Graphite Modern values (pinned by test); Monokai and Dracula get matching layered tones; global `Visuals` set in `main.rs` (widget rounding 6, window rounding 10, elevation shadow). Egui 0.27 translation: the spec's `Shadow { extrusion }` does not exist in this egui, so it becomes `Shadow { offset, blur, spread, color }`. The 7 new tokens have no reader until T-UI2..T-UI5; each carries a field-level `#[allow(dead_code)]` that its consuming unit removes. Test-first: not followed for this unit (tokens and palette were written before the tests), so no RED was observed; disclosed, not reconstructed. Evidence: `cargo check --workspace` 0 warnings; `cargo test --workspace` karkinos 99 passed, karkinos-core 52 passed. Differential check: N/A (no command or option touched). Risk: none (cosmetic token and style change; no data, security, contract, concurrency or delivery effect). Pixel-level appearance is not covered by tests; visual review is the user's.
