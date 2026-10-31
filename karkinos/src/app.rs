@@ -138,6 +138,25 @@ pub struct EditorApp {
     // buffer estaba sucio: juntos evitan pedidos repetidos.
     git_diff_requested_path: Option<std::path::PathBuf>,
     git_diff_was_dirty: bool,
+    // F5 (Roadmap v0.2.31): split del área central. `None` = un solo panel.
+    pub split: Option<SplitLayout>,
+}
+
+/// F5 (Roadmap v0.2.31): eje por el que se parte el área central.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SplitDirection {
+    Vertical,
+    Horizontal,
+}
+
+/// F5: estado del split. El panel primario sigue siendo `EditorApp.editor_state`
+/// (con el tab activo); el secundario tiene su propio cursor y scroll sobre el
+/// MISMO buffer. Comparar dos pestañas distintas queda fuera de alcance.
+#[derive(Debug, Clone)]
+pub struct SplitLayout {
+    pub direction: SplitDirection,
+    pub ratio: f32,
+    pub secondary: EditorState,
 }
 
 impl Default for EditorApp {
@@ -181,6 +200,7 @@ impl Default for EditorApp {
             git_diff_worker: crate::git_diff_worker::GitDiffWorker::spawn(),
             git_diff_requested_path: None,
             git_diff_was_dirty: false,
+            split: None,
         }
     }
 }
@@ -443,6 +463,31 @@ impl EditorApp {
         // cache de galleys se vacía en el próximo sync_ast del render.
         self.editor_state.ast_rev = self.editor_state.ast_rev.wrapping_add(1);
         true
+    }
+
+    /// F5 (Roadmap v0.2.31): abre, cambia de eje o cierra el split del área
+    /// central. El panel nuevo arranca con el cursor del primario.
+    pub fn toggle_split(&mut self, direction: SplitDirection) {
+        match &self.split {
+            Some(layout) if layout.direction == direction => self.split = None,
+            _ => {
+                let mut secondary = self.editor_state.clone();
+                // Los cursores extra no se duplican: son del primario.
+                secondary.extra_carets.clear();
+                self.split = Some(SplitLayout {
+                    direction,
+                    ratio: 0.5,
+                    secondary,
+                });
+            }
+        }
+    }
+
+    /// F5: mueve el divisor del split dentro de límites razonables.
+    pub fn set_split_ratio(&mut self, ratio: f32) {
+        if let Some(layout) = &mut self.split {
+            layout.ratio = ratio.clamp(0.15, 0.85);
+        }
     }
 
     /// F1 (Roadmap v0.2.27): pide el diff contra HEAD cuando corresponde —
@@ -2439,5 +2484,42 @@ mod tests {
         assert!(app.dap.stopped_line.is_none());
         assert!(app.editor_state.stopped_line.is_none());
         assert!(app.doc.status.contains("Debugger: Stopped"));
+    }
+
+    // F5 (Roadmap v0.2.31): split panes.
+
+    #[test]
+    fn toggle_split_abre_cambia_eje_y_cierra() {
+        let mut app = EditorApp::default();
+        assert!(app.split.is_none(), "por defecto hay un solo panel");
+
+        app.toggle_split(SplitDirection::Vertical);
+        let split = app.split.as_ref().expect("split vertical");
+        assert_eq!(split.direction, SplitDirection::Vertical);
+        assert_eq!(split.ratio, 0.5);
+
+        // Mismo eje: cierra.
+        app.toggle_split(SplitDirection::Vertical);
+        assert!(app.split.is_none());
+
+        // Otro eje: cambia la dirección sin salir del split.
+        app.toggle_split(SplitDirection::Vertical);
+        app.toggle_split(SplitDirection::Horizontal);
+        assert_eq!(
+            app.split.as_ref().expect("split horizontal").direction,
+            SplitDirection::Horizontal
+        );
+    }
+
+    #[test]
+    fn set_split_ratio_clampa_en_rango_util() {
+        let mut app = EditorApp::default();
+        app.toggle_split(SplitDirection::Vertical);
+        app.set_split_ratio(0.01);
+        assert_eq!(app.split.as_ref().unwrap().ratio, 0.15);
+        app.set_split_ratio(0.99);
+        assert_eq!(app.split.as_ref().unwrap().ratio, 0.85);
+        app.set_split_ratio(0.4);
+        assert_eq!(app.split.as_ref().unwrap().ratio, 0.4);
     }
 }

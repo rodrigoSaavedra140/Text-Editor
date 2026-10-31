@@ -254,3 +254,8 @@ Cada feature se implementa como una unidad aislada con tests unitarios y bump de
   - Tests: 5 nuevos del modelo y helpers (normalización de rango, búsqueda de la próxima aparición, inserción múltiple sin desplazar posiciones, borrado de varios rangos, deduplicado).
   - Evidencia: `cargo check --workspace` 0 warnings; `cargo test --workspace` karkinos 121, karkinos-core 70.
   - Límite conocido: las selecciones de cursores extra se dibujan sin ajuste de línea (en líneas largas con wrap la marca puede quedar corrida); la edición y el cursor sí son correctos.
+- **F4 (v0.2.30) — ya estaba implementada** por otra sesión (`e3d3461`): `collapsed_folds` + `is_line_folded` hacen que `rebuild_row_counts` devuelva 0 filas para lo plegado, con chevron ▸/▾ en el gutter, píldora «…» y test de toggle/row_counts. Verificada, sin cambios.
+- **F5 (v0.2.31) — completada**: `SplitDirection { Vertical, Horizontal }` y `SplitLayout { direction, ratio, secondary }` en `app.rs`; `Ctrl+\` abre/cierra el split vertical y `Ctrl+Shift+\` el horizontal, con divisor arrastrable de 6 px y ratio clampeado a [0.15, 0.85]. Cada panel tiene su propio cursor y scroll (`secondary: EditorState`); la respuesta de edición de ambos se fusiona para que el snapshot de undo, el dirty y el zoom sigan funcionando. `Ctrl+\` estaba tomado por la consola Cargo, que pasó a `Ctrl+\`` (tooltips y README actualizados).
+  - Límite conocido: ambos paneles editan el mismo buffer del tab activo. Comparar dos pestañas distintas requeriría un buffer y un undo por panel; queda fuera de alcance.
+  - Tests: 2 nuevos (toggle abre/cambia eje/cierra; ratio clampeado).
+  - Evidencia: `cargo check --workspace` 0 warnings; `cargo test --workspace` karkinos 124, karkinos-core 70.

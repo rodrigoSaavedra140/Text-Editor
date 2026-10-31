@@ -586,6 +586,140 @@ impl EditorApp {
         }
     }
 
+    /// F5 (Roadmap v0.2.31): dibuja el editor en uno o dos paneles. Cada panel
+    /// tiene su propio cursor y scroll; ambos editan el mismo buffer del tab
+    /// activo. Comparar dos pestañas distintas queda fuera de alcance: el
+    /// buffer y el undo siguen siendo uno solo.
+    fn show_editor_panes(
+        &mut self,
+        ui: &mut egui::Ui,
+        theme: &crate::theme::Theme,
+    ) -> crate::editor_widget::EditorResponse {
+        let language = self.current_language();
+        let Some(layout) = self.split.clone() else {
+            let search = if self.find_open && !self.find_query.is_empty() && !self.find_matches.is_empty() {
+                Some(crate::editor_widget::SearchHighlight {
+                    matches: &self.find_matches,
+                    query_len: self.find_query.chars().count(),
+                    current_idx: self.find_current,
+                })
+            } else {
+                None
+            };
+            return crate::editor_widget::show(
+                ui,
+                &mut self.doc.lines,
+                &mut self.editor_state,
+                theme,
+                language,
+                search,
+            );
+        };
+
+        const DIVIDER: f32 = 6.0;
+        let full = ui.available_rect_before_wrap();
+        let direction = layout.direction;
+        let (first_rect, divider_rect, second_rect) = match direction {
+            crate::app::SplitDirection::Vertical => {
+                let usable = (full.width() - DIVIDER).max(0.0);
+                let first_w = (usable * layout.ratio).clamp(80.0, (usable - 80.0).max(80.0));
+                let x = full.left() + first_w;
+                (
+                    egui::Rect::from_min_max(full.min, egui::pos2(x, full.bottom())),
+                    egui::Rect::from_min_max(
+                        egui::pos2(x, full.top()),
+                        egui::pos2(x + DIVIDER, full.bottom()),
+                    ),
+                    egui::Rect::from_min_max(egui::pos2(x + DIVIDER, full.top()), full.max),
+                )
+            }
+            crate::app::SplitDirection::Horizontal => {
+                let usable = (full.height() - DIVIDER).max(0.0);
+                let first_h = (usable * layout.ratio).clamp(60.0, (usable - 60.0).max(60.0));
+                let y = full.top() + first_h;
+                (
+                    egui::Rect::from_min_max(full.min, egui::pos2(full.right(), y)),
+                    egui::Rect::from_min_max(
+                        egui::pos2(full.left(), y),
+                        egui::pos2(full.right(), y + DIVIDER),
+                    ),
+                    egui::Rect::from_min_max(egui::pos2(full.left(), y + DIVIDER), full.max),
+                )
+            }
+        };
+
+        let mut first_ui = ui.child_ui(first_rect, *ui.layout());
+        let search_first = if self.find_open && !self.find_query.is_empty() && !self.find_matches.is_empty() {
+            Some(crate::editor_widget::SearchHighlight {
+                matches: &self.find_matches,
+                query_len: self.find_query.chars().count(),
+                current_idx: self.find_current,
+            })
+        } else {
+            None
+        };
+        let first = crate::editor_widget::show(
+            &mut first_ui,
+            &mut self.doc.lines,
+            &mut self.editor_state,
+            theme,
+            language,
+            search_first,
+        );
+
+        let mut second_ui = ui.child_ui(second_rect, *ui.layout());
+        let search_second = if self.find_open && !self.find_query.is_empty() && !self.find_matches.is_empty() {
+            Some(crate::editor_widget::SearchHighlight {
+                matches: &self.find_matches,
+                query_len: self.find_query.chars().count(),
+                current_idx: self.find_current,
+            })
+        } else {
+            None
+        };
+        let second = {
+            let split = self.split.as_mut().expect("split activo");
+            crate::editor_widget::show(
+                &mut second_ui,
+                &mut self.doc.lines,
+                &mut split.secondary,
+                theme,
+                language,
+                search_second,
+            )
+        };
+
+        // Divisor arrastrable entre los dos paneles.
+        let divider =
+            ui.interact(divider_rect, ui.id().with("split_divider"), egui::Sense::click_and_drag());
+        if divider.hovered() || divider.dragged() {
+            ui.ctx().set_cursor_icon(match direction {
+                crate::app::SplitDirection::Vertical => egui::CursorIcon::ResizeHorizontal,
+                crate::app::SplitDirection::Horizontal => egui::CursorIcon::ResizeVertical,
+            });
+        }
+        if divider.dragged() {
+            if let Some(pos) = divider.interact_pointer_pos() {
+                let ratio = match direction {
+                    crate::app::SplitDirection::Vertical => {
+                        (pos.x - full.left()) / full.width().max(1.0)
+                    }
+                    crate::app::SplitDirection::Horizontal => {
+                        (pos.y - full.top()) / full.height().max(1.0)
+                    }
+                };
+                self.set_split_ratio(ratio);
+            }
+        }
+
+        crate::editor_widget::EditorResponse {
+            changed: first.changed || second.changed,
+            lost_focus: first.lost_focus || second.lost_focus,
+            pre_break_snapshot: first.pre_break_snapshot.or(second.pre_break_snapshot),
+            force_snapshot: first.force_snapshot || second.force_snapshot,
+        }
+    }
+
     /// S2: barra de búsqueda y reemplazo debajo del editor (Ctrl+F).
     /// UI-5 (v0.2.23): tarjeta flotante en la esquina superior derecha con sombra y bordes redondeados.
     fn show_find_bar(&mut self, ctx: &egui::Context) {
@@ -847,7 +981,7 @@ impl EditorApp {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
                             .small_button("▾ Collapse")
-                            .on_hover_text("Close Console (Ctrl+\\)")
+                            .on_hover_text("Close Console (Ctrl+`)")
                             .clicked()
                         {
                             close_panel = true;
@@ -1943,7 +2077,8 @@ impl eframe::App for EditorApp {
             (
                 i.key_pressed(egui::Key::F7),
                 i.key_pressed(egui::Key::F5) && !i.modifiers.shift,
-                i.modifiers.ctrl && i.key_pressed(egui::Key::Backslash),
+                // F5: la consola pasa a Ctrl+`; Ctrl+\ / Ctrl+Shift+\ son split.
+                i.modifiers.ctrl && i.key_pressed(egui::Key::Backtick),
                 i.key_pressed(egui::Key::F12),
                 i.key_pressed(egui::Key::F1) || (i.modifiers.ctrl && i.key_pressed(egui::Key::K)),
                 (i.modifiers.ctrl && i.key_pressed(egui::Key::Period))
@@ -1964,6 +2099,20 @@ impl eframe::App for EditorApp {
         }
         if want_cargo_toggle {
             self.cargo.panel_open = !self.cargo.panel_open;
+        }
+        // F5 (Roadmap v0.2.31): Ctrl+\ parte vertical, Ctrl+Shift+\ horizontal.
+        {
+            let (split_vertical, split_horizontal) = ctx.input(|i| {
+                (
+                    i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(egui::Key::Backslash),
+                    i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(egui::Key::Backslash),
+                )
+            });
+            if split_vertical {
+                self.toggle_split(crate::app::SplitDirection::Vertical);
+            } else if split_horizontal {
+                self.toggle_split(crate::app::SplitDirection::Horizontal);
+            }
         }
         if want_goto_def {
             self.goto_definition();
@@ -2133,7 +2282,7 @@ impl eframe::App for EditorApp {
                         ui.add_space(6.0);
 
                         let panel_toggle_label = if self.cargo.panel_open { "Console ▾" } else { "Console ▸" };
-                        if ui.button(panel_toggle_label).on_hover_text("Toggle Cargo Console (Ctrl+\\)").clicked() {
+                        if ui.button(panel_toggle_label).on_hover_text("Toggle Cargo Console (Ctrl+`)").clicked() {
                             self.cargo.panel_open = !self.cargo.panel_open;
                         }
 
@@ -2528,25 +2677,13 @@ impl eframe::App for EditorApp {
                 // tamaño aplique SIN esperar el frame siguiente.
                 if (self.editor_state.font_size - self.font_size).abs() > f32::EPSILON {
                     self.editor_state.set_font_size(self.font_size);
+                    if let Some(split) = self.split.as_mut() {
+                        split.secondary.set_font_size(self.font_size);
+                    }
                 }
-                let search = if self.find_open && !self.find_query.is_empty() && !self.find_matches.is_empty() {
-                    Some(crate::editor_widget::SearchHighlight {
-                        matches: &self.find_matches,
-                        query_len: self.find_query.chars().count(),
-                        current_idx: self.find_current,
-                    })
-                } else {
-                    None
-                };
-                let language = self.current_language();
-                let response = crate::editor_widget::show(
-                    ui,
-                    &mut self.doc.lines,
-                    &mut self.editor_state,
-                    &theme,
-                    language,
-                    search,
-                );
+                // F5 (Roadmap v0.2.31): uno o dos paneles, con su propio
+                // cursor y scroll sobre el mismo buffer.
+                let response = self.show_editor_panes(ui, &theme);
                 // S10: el Ctrl+Scroll zoomea DIRECTO en el EditorState
                 // mientras dibuja; escribo el resultado de vuelta en
                 // App (fuente de verdad) y aviso en la barra de estado.

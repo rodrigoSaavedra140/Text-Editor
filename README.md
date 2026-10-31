@@ -75,3 +75,10 @@ The resulting executable will be located at `target/release/karkinos`.
 
 This project is distributed under the terms of the [Business Source License 1.1 (BSL 1.1)](LICENSE).
 It grants free use, copying, modification, and compilation for personal, educational, development, and non-commercial evaluation purposes. For any commercial production use or distribution, a commercial license issued by the copyright holder is required.
+
+### Split Panes
+- `Ctrl+\` — Split the editor vertically (side by side); press again to close
+- `Ctrl+Shift+\` — Split the editor horizontally (top / bottom)
+- Drag the 6px divider to change the ratio
+- Each pane keeps its own cursor and scroll over the same buffer
+- `Ctrl+\`` — Toggle the Cargo console (moved from `Ctrl+\`)
