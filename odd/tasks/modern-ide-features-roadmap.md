@@ -9,13 +9,13 @@
 
 ## Matriz de Características y Fases de Implementación
 
-| ID | Feature | Cajas/Servicios Afectados | Complejidad | ROI Arquitectónico |
-| :--- | :--- | :--- | :--- | :--- |
-| **F1** | **Git Diff Gutter Marks** | `karkinos-core::git`, `DocumentService`, `editor_widget.rs` | Media | Alto (feedback visual instantáneo de cambios) |
-| **F2** | **Sticky Scroll (AST Breadcrumbs)** | `karkinos-core::syntax_ast`, `ast_worker.rs`, `editor_widget.rs` | Media | Muy Alto (contexto visual permanente al scrollear) |
-| **F3** | **Multi-Cursor / Multi-Caret (`Ctrl+D`)** | `editor_widget.rs::EditorState`, `app.rs` | Media-Alta | Muy Alto (multi-selección y edición concurrente) |
-| **F4** | **Code Folding (Plegado por AST)** | `ast_worker.rs`, `editor_widget.rs` | Media | Alto (navegabilidad en archivos grandes) |
-| **F5** | **Split Panes (Editor Side-by-Side)** | `ui.rs`, `app.rs`, `editor_widget.rs` | Alta | Máximo (comparar o editar 2 archivos en simultáneo) |
+| ID | Feature | Cajas/Servicios Afectados | Complejidad | ROI Arquitectónico | Estado |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **F1** | **Git Diff Gutter Marks** | `karkinos-core::git_diff`, `editor_widget.rs` | Media | Alto | ✅ Hecho (`v0.2.27`) |
+| **F2** | **Sticky Scroll (AST Breadcrumbs)** | `karkinos-core::syntax_ast`, `editor_widget.rs` | Media | Muy Alto | ✅ Hecho (`v0.2.28`) |
+| **F3** | **Multi-Cursor / Multi-Caret (`Ctrl+D`)** | `editor_widget.rs::EditorState` | Media-Alta | Muy Alto | ✅ Hecho (`v0.2.29`) |
+| **F4** | **Code Folding (Plegado por AST)** | `ast_worker.rs`, `editor_widget.rs` | Media | Alto | ✅ Hecho (`v0.2.30`) |
+| **F5** | **Split Panes (Editor Side-by-Side)** | `ui.rs`, `app.rs`, `editor_widget.rs` | Alta | Máximo | ⏳ Próximo |
 
 ---
 

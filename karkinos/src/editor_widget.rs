@@ -174,6 +174,9 @@ pub struct EditorState {
     // de fondo entrega; el motor tree-sitter ya NO vive en la UI).
     pub ast_spans: Vec<karkinos_core::syntax_ast::AstHighlightSpan>,
     pub folding_ranges: Vec<karkinos_core::syntax_ast::FoldingRange>,
+    // F4 (Roadmap v0.2.30): líneas de inicio de bloques AST que están plegados (colapsados).
+    pub collapsed_folds: Vec<usize>,
+    pub last_collapsed_folds: Vec<usize>,
     // F2 (Roadmap v0.2.28): contenedores activos (impl/fn/struct...) que se
     // pegan arriba del editor al scrollear adentro. Los llena el mismo
     // parseo del worker AST que los spans.
@@ -230,6 +233,8 @@ impl Default for EditorState {
             last_font_size: DEFAULT_FONT_SIZE,
             ast_spans: Vec::new(),
             folding_ranges: Vec::new(),
+            collapsed_folds: Vec::new(),
+            last_collapsed_folds: Vec::new(),
             sticky_scopes: Vec::new(),
             diagnostics: Vec::new(),
             hover_text: None,
@@ -249,6 +254,25 @@ impl Default for EditorState {
 }
 
 impl EditorState {
+    /// F4 (Roadmap v0.2.30): determina si una línea lógica está oculta dentro de un bloque plegado.
+    pub fn is_line_folded(&self, line: usize) -> bool {
+        self.folding_ranges.iter().any(|r| {
+            self.collapsed_folds.contains(&r.start_line)
+                && line > r.start_line
+                && line <= r.end_line
+        })
+    }
+
+    /// F4 (Roadmap v0.2.30): pliega o despliega el bloque que inicia en `start_line`.
+    pub fn toggle_fold(&mut self, start_line: usize) {
+        if let Some(pos) = self.collapsed_folds.iter().position(|&l| l == start_line) {
+            self.collapsed_folds.remove(pos);
+        } else {
+            self.collapsed_folds.push(start_line);
+        }
+        self.request_autoscroll();
+    }
+
     /// Pide desplazar la vista hasta el cursor en el próximo frame.
     pub fn request_autoscroll(&mut self) {
         self.needs_autoscroll = true;
@@ -738,8 +762,18 @@ fn row_count_for(line: &str, wrap_chars: usize) -> usize {
     }
 }
 
-fn rebuild_row_counts(lines: &[String], wrap_chars: usize) -> Vec<usize> {
-    lines.iter().map(|l| row_count_for(l, wrap_chars)).collect()
+fn rebuild_row_counts(lines: &[String], wrap_chars: usize, state: &EditorState) -> Vec<usize> {
+    lines
+        .iter()
+        .enumerate()
+        .map(|(i, l)| {
+            if state.is_line_folded(i) {
+                0
+            } else {
+                row_count_for(l, wrap_chars)
+            }
+        })
+        .collect()
 }
 
 fn rebuild_char_lens(lines: &[String]) -> Vec<usize> {
@@ -856,12 +890,14 @@ pub fn show(
     if state.row_counts.len() != lines.len()
         || state.last_wrap_chars != wrap_chars
         || state.last_gutter != gutter_w
+        || state.last_collapsed_folds != state.collapsed_folds
     {
-        state.row_counts = rebuild_row_counts(lines, wrap_chars);
+        state.row_counts = rebuild_row_counts(lines, wrap_chars, state);
         state.char_lens = rebuild_char_lens(lines);
         state.cum_rows = build_cum_rows(&state.row_counts);
         state.last_wrap_chars = wrap_chars;
         state.last_gutter = gutter_w;
+        state.last_collapsed_folds = state.collapsed_folds.clone();
     }
 
     let total_rows: usize = *state.cum_rows.last().unwrap_or(&0);
@@ -913,11 +949,24 @@ pub fn show(
                     line_and_subrow_at_doc_y(&state.cum_rows, doc_y.max(0.0), row_height);
 
                 if pos.x < text_left {
-                    // S8: Clic en el gutter (banda de números) selecciona la línea completa
-                    let line_end = line_char_count(&lines[clicked_line]);
-                    state.sel_anchor = Some((clicked_line, 0));
-                    state.cursor_line = clicked_line;
-                    state.cursor_col = line_end;
+                    // F4 (Roadmap v0.2.30): clic en el gutter sobre una línea con bloque colapsable pliega o despliega
+                    if response.clicked()
+                        && state
+                            .folding_ranges
+                            .iter()
+                            .any(|r| r.start_line == clicked_line)
+                    {
+                        state.toggle_fold(clicked_line);
+                        state.row_counts = rebuild_row_counts(lines, wrap_chars, state);
+                        state.cum_rows = build_cum_rows(&state.row_counts);
+                        state.last_collapsed_folds = state.collapsed_folds.clone();
+                    } else {
+                        // S8: Clic en el gutter (banda de números) selecciona la línea completa
+                        let line_end = line_char_count(&lines[clicked_line]);
+                        state.sel_anchor = Some((clicked_line, 0));
+                        state.cursor_line = clicked_line;
+                        state.cursor_col = line_end;
+                    }
                 } else {
                     let rel_x = (pos.x - text_left).max(0.0);
                     let col_in_row = (rel_x / char_width).round() as usize;
@@ -973,7 +1022,7 @@ pub fn show(
     macro_rules! resync_rows {
         () => {
             if state.row_counts.len() != lines.len() {
-                state.row_counts = rebuild_row_counts(lines, wrap_chars);
+                state.row_counts = rebuild_row_counts(lines, wrap_chars, state);
                 state.char_lens = rebuild_char_lens(lines);
                 state.cum_rows = build_cum_rows(&state.row_counts);
             } else {
@@ -1123,7 +1172,7 @@ pub fn show(
                             }
                             changed = true;
                             force_snapshot = true;
-                            state.row_counts = rebuild_row_counts(lines, wrap_chars);
+                            state.row_counts = rebuild_row_counts(lines, wrap_chars, state);
                             state.char_lens = rebuild_char_lens(lines);
                             state.cum_rows = build_cum_rows(&state.row_counts);
                         } else if modifiers.shift {
@@ -1420,7 +1469,7 @@ pub fn show(
                         }
                         changed = true;
                         force_snapshot = true;
-                        state.row_counts = rebuild_row_counts(lines, wrap_chars);
+                        state.row_counts = rebuild_row_counts(lines, wrap_chars, state);
                         state.char_lens = rebuild_char_lens(lines);
                         state.cum_rows = build_cum_rows(&state.row_counts);
                     }
@@ -1462,7 +1511,7 @@ pub fn show(
                             toggle_comment_range(lines, start_l, end_l, prefix);
                             changed = true;
                             force_snapshot = true;
-                            state.row_counts = rebuild_row_counts(lines, wrap_chars);
+                            state.row_counts = rebuild_row_counts(lines, wrap_chars, state);
                             state.char_lens = rebuild_char_lens(lines);
                             state.cum_rows = build_cum_rows(&state.row_counts);
                         }
@@ -1609,6 +1658,9 @@ pub fn show(
     for i in start_line..lines.len() {
         let line = &lines[i];
         let rows_here = state.row_counts.get(i).copied().unwrap_or(1);
+        if rows_here == 0 {
+            continue;
+        }
         let line_top_y = rect.top() + PAD_Y + visual_row as f32 * row_height - state.scroll;
 
         if line_top_y > rect.bottom() {
@@ -1688,14 +1740,17 @@ pub fn show(
             theme.gutter_text,
         );
 
-        // S3 (Etapa 3): Indicador de plegado AST en el gutter
+        // F4 (Roadmap v0.2.30): Indicador interactivo de plegado AST en el gutter
         if state.folding_ranges.iter().any(|r| r.start_line == i) {
+            let is_folded = state.collapsed_folds.contains(&i);
+            let chevron = if is_folded { "▸" } else { "▾" };
+            let chevron_color = if is_folded { theme.syntax_type } else { theme.syntax_keyword };
             gutter_painter.text(
                 egui::pos2(gutter_rect.left() + 7.0, line_top_y),
                 egui::Align2::LEFT_TOP,
-                "▾",
+                chevron,
                 egui::FontId::monospace(state.font_size * 0.8),
-                theme.syntax_keyword,
+                chevron_color,
             );
         }
 
@@ -1972,6 +2027,27 @@ pub fn show(
                     egui::Stroke::new(1.5_f32, theme.caret),
                 );
             }
+        }
+
+        // F4 (Roadmap v0.2.30): si la línea está plegada, dibujamos una píldora "..." compacta
+        if state.collapsed_folds.contains(&i) {
+            let badge_x = text_left + char_len as f32 * char_width + 8.0;
+            let badge_rect = egui::Rect::from_min_size(
+                egui::pos2(badge_x, line_top_y + 2.0),
+                egui::vec2(24.0, row_height - 4.0),
+            );
+            painter.rect_filled(
+                badge_rect,
+                3.0,
+                egui::Color32::from_rgba_unmultiplied(80, 100, 140, 100),
+            );
+            painter.text(
+                badge_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "...",
+                egui::FontId::monospace(state.font_size * 0.75),
+                egui::Color32::from_rgb(180, 200, 230),
+            );
         }
 
         visual_row += rows_here;
@@ -2645,5 +2721,52 @@ mod tests {
         dedup_extra_carets(&mut state);
         assert_eq!(state.extra_carets.len(), 1, "solo queda el cursor distinto del primario");
         assert_eq!((state.extra_carets[0].line, state.extra_carets[0].col), (0, 5));
+    }
+
+    #[test]
+    fn test_code_folding_toggle_and_row_counts() {
+        let mut state = EditorState::default();
+        state.folding_ranges = vec![karkinos_core::syntax_ast::FoldingRange {
+            start_line: 1,
+            end_line: 3,
+            kind: karkinos_core::syntax_ast::FoldingKind::Function,
+        }];
+
+        let lines = vec![
+            "fn before() {}".to_string(),
+            "fn fold_me() {".to_string(),
+            "    let a = 1;".to_string(),
+            "}".to_string(),
+            "fn after() {}".to_string(),
+        ];
+
+        // Inicialmente nada está plegado
+        assert!(!state.is_line_folded(0));
+        assert!(!state.is_line_folded(1));
+        assert!(!state.is_line_folded(2));
+        assert!(!state.is_line_folded(3));
+        assert!(!state.is_line_folded(4));
+        let rows_unfolded = rebuild_row_counts(&lines, 80, &state);
+        assert_eq!(rows_unfolded, vec![1, 1, 1, 1, 1]);
+
+        // Plegamos el bloque que inicia en la línea 1
+        state.toggle_fold(1);
+        assert!(state.collapsed_folds.contains(&1));
+        assert!(!state.is_line_folded(1), "la línea cabecera se mantiene visible");
+        assert!(state.is_line_folded(2), "el interior está oculto");
+        assert!(state.is_line_folded(3), "el cierre está oculto");
+        assert!(!state.is_line_folded(4), "el exterior sigue visible");
+
+        // row_counts asigna 0 a las líneas plegadas
+        let rows_folded = rebuild_row_counts(&lines, 80, &state);
+        assert_eq!(rows_folded, vec![1, 1, 0, 0, 1]);
+        let cum = build_cum_rows(&rows_folded);
+        assert_eq!(*cum.last().unwrap(), 3, "el documento se achica a 3 filas visuales");
+
+        // Desplegamos nuevamente
+        state.toggle_fold(1);
+        assert!(!state.collapsed_folds.contains(&1));
+        let rows_restored = rebuild_row_counts(&lines, 80, &state);
+        assert_eq!(rows_restored, vec![1, 1, 1, 1, 1]);
     }
 }
