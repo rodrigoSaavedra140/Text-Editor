@@ -111,12 +111,14 @@ impl DapClient {
 
     /// Spawns a DAP debugger server process (e.g. `lldb-dap` or `codelldb`).
     pub fn spawn(debugger_cmd: &str, args: &[&str], root_path: &Path) -> Result<Self, String> {
-        let mut child = Command::new(debugger_cmd)
-            .args(args)
-            .current_dir(root_path)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+        let mut cmd = Command::new(debugger_cmd);
+        cmd.args(args);
+        cmd.current_dir(root_path);
+        cmd.stdin(Stdio::piped());
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::null());
+        crate::platform::configure_background_command(&mut cmd);
+        let mut child = cmd
             .spawn()
             .map_err(|e| format!("Failed to spawn debugger '{}': {}", debugger_cmd, e))?;
 

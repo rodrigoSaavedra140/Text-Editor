@@ -1,6 +1,6 @@
 [package]
 name = "karkinos-core"
-version = "0.2.5"
+version = "0.2.6"
 edition = "2021"
 description = "Headless high-performance text editing engine for Karkinos"
 license = "BSL-1.1"

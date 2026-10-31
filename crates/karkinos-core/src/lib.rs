@@ -14,6 +14,7 @@ pub mod document;
 pub mod ending;
 pub mod lsp;
 pub mod open_vsx;
+pub mod platform;
 pub mod plugin;
 pub mod syntax_ast;
 pub mod text_ops;
@@ -29,6 +30,7 @@ pub use lsp::{
     LspHover, LspInlayHint, LspLocation, LspPosition, LspRange, LspTextEdit, LspWorkspaceEdit,
 };
 pub use open_vsx::{OpenVsxClient, OpenVsxExtension, OpenVsxSearchResult};
+pub use platform::{configure_background_command, path_to_uri, uri_to_path};
 pub use plugin::{Plugin, PluginCommand, PluginContext, PluginManager};
 pub use syntax_ast::{
     AstEngine, AstHighlightSpan, AstLanguage, AstNodeInfo, FoldingKind, FoldingRange,

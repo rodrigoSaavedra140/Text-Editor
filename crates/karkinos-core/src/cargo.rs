@@ -156,6 +156,7 @@ impl CargoRunner {
         self.current_action = Some(action);
 
         let mut cmd = Command::new("cargo");
+        crate::platform::configure_background_command(&mut cmd);
         cmd.current_dir(working_dir);
         cmd.arg(action.as_str());
 

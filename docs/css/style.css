@@ -594,9 +594,9 @@ section {
 
 .downloads-grid {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 32px;
-  max-width: 960px;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 28px;
+  max-width: 1140px;
   margin: 0 auto;
 }
 
@@ -753,6 +753,10 @@ section {
    ========================================================================== */
 @media (max-width: 1024px) {
   .features-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .downloads-grid {
     grid-template-columns: repeat(2, 1fr);
   }
   

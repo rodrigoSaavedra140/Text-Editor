@@ -306,12 +306,14 @@ impl std::fmt::Debug for LspClient {
 impl LspClient {
     /// Spawns an LSP server process (e.g. `rust-analyzer`) and starts the background worker.
     pub fn spawn(server_cmd: &str, args: &[&str], root_path: &Path) -> Result<Self, String> {
-        let mut child = Command::new(server_cmd)
-            .args(args)
-            .current_dir(root_path)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+        let mut cmd = Command::new(server_cmd);
+        cmd.args(args);
+        cmd.current_dir(root_path);
+        cmd.stdin(Stdio::piped());
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::null());
+        crate::platform::configure_background_command(&mut cmd);
+        let mut child = cmd
             .spawn()
             .map_err(|e| format!("Failed to spawn LSP server '{}': {}", server_cmd, e))?;
 
@@ -386,7 +388,7 @@ impl LspClient {
     /// Sends the `initialize` handshake request.
     fn send_initialize(&self, root_path: &Path) {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
-        let root_uri = format!("file://{}", root_path.display());
+        let root_uri = crate::platform::path_to_uri(root_path);
         let params = json!({
             "processId": std::process::id(),
             "rootUri": root_uri,

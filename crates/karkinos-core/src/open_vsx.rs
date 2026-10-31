@@ -45,7 +45,9 @@ impl OpenVsxClient {
             size.clamp(1, 50)
         );
 
-        let output = std::process::Command::new("curl")
+        let mut cmd = std::process::Command::new("curl");
+        crate::platform::configure_background_command(&mut cmd);
+        let output = cmd
             .arg("-s")
             .arg("-L")
             .arg("--max-time")
@@ -74,7 +76,9 @@ impl OpenVsxClient {
             let _ = std::fs::create_dir_all(parent);
         }
 
-        let output = std::process::Command::new("curl")
+        let mut cmd = std::process::Command::new("curl");
+        crate::platform::configure_background_command(&mut cmd);
+        let output = cmd
             .arg("-s")
             .arg("-L")
             .arg("--max-time")

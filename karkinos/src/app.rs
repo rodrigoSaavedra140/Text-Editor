@@ -497,7 +497,7 @@ impl EditorApp {
 
             // S4: Fast in-memory diagnostics lookup from existing singleton LSP client without process re-spawning
             if let (Some(ref client), Some(ref path)) = (&self.lsp_client, &self.current_file) {
-                let uri = format!("file://{}", path.display());
+                let uri = karkinos_core::path_to_uri(path);
                 self.editor_state.diagnostics = client.diagnostics_for_file(&uri);
             }
 
@@ -703,7 +703,7 @@ impl EditorApp {
         }
 
         if let (Some(ref client), Some(ref path)) = (&self.lsp_client, &self.current_file) {
-            let uri = format!("file://{}", path.display());
+            let uri = karkinos_core::path_to_uri(path);
             let text = self.current_text();
             client.did_change(&uri, 2, &text);
             self.editor_state.diagnostics = client.diagnostics_for_file(&uri);
@@ -780,7 +780,7 @@ impl EditorApp {
             return;
         }
         if let (Some(ref client), Some(ref path)) = (&self.lsp_client, &self.current_file) {
-            let uri = format!("file://{}", path.display());
+            let uri = karkinos_core::path_to_uri(path);
             client.request_definition(&uri, self.editor_state.cursor_line, self.editor_state.cursor_col);
             self.status = "Resolving definition (F12)…".to_string();
         }
@@ -792,7 +792,7 @@ impl EditorApp {
             return;
         }
         if let (Some(ref client), Some(ref path)) = (&self.lsp_client, &self.current_file) {
-            let uri = format!("file://{}", path.display());
+            let uri = karkinos_core::path_to_uri(path);
             client.request_hover(&uri, self.editor_state.cursor_line, self.editor_state.cursor_col);
         }
     }
@@ -812,7 +812,7 @@ impl EditorApp {
         };
 
         if let Some(target) = target {
-            let file_path = PathBuf::from(target.uri.trim_start_matches("file://"));
+            let file_path = karkinos_core::uri_to_path(&target.uri);
             self.open_path(file_path);
             self.editor_state.cursor_line = target.range.start.line;
             self.editor_state.cursor_col = target.range.start.character;
@@ -847,7 +847,7 @@ impl EditorApp {
             return;
         }
         if let (Some(ref client), Some(ref path)) = (&self.lsp_client, &self.current_file) {
-            let uri = format!("file://{}", path.display());
+            let uri = karkinos_core::path_to_uri(path);
             let range = karkinos_core::lsp::LspRange {
                 start: karkinos_core::lsp::LspPosition {
                     line: self.editor_state.cursor_line,
@@ -885,7 +885,7 @@ impl EditorApp {
             return;
         }
         if let (Some(ref client), Some(ref path)) = (&self.lsp_client, &self.current_file) {
-            let uri = format!("file://{}", path.display());
+            let uri = karkinos_core::path_to_uri(path);
             let line_count = self.lines.len();
             let range = karkinos_core::lsp::LspRange {
                 start: karkinos_core::lsp::LspPosition { line: 0, character: 0 },
@@ -901,7 +901,7 @@ impl EditorApp {
             return;
         }
         if let (Some(ref client), Some(ref path)) = (&self.lsp_client, &self.current_file) {
-            let uri = format!("file://{}", path.display());
+            let uri = karkinos_core::path_to_uri(path);
             let pos = karkinos_core::lsp::LspPosition {
                 line: self.editor_state.cursor_line,
                 character: self.editor_state.cursor_col,
@@ -990,7 +990,7 @@ impl EditorApp {
         let changes = edit.all_changes();
         let mut affected_files = 0;
         for (uri, edits) in changes {
-            let file_path = PathBuf::from(uri.trim_start_matches("file://"));
+            let file_path = karkinos_core::uri_to_path(&uri);
 
             // Check if it's the current file
             let is_current = self.current_file.as_ref().map(|p| p == &file_path).unwrap_or(false);
