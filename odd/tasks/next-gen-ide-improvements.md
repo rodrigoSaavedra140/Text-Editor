@@ -1,0 +1,180 @@
+# Roadmap: Next-Gen IDE Features — Fase 2 (F6 - F10)
+
+**Objetivo**: Continuar la evolución de Karkinos IDE hacia el nivel de ergonomía de Zed y Cursor, implementando las 5 mejoras arquitectónicas de alto ROI definidas tras el release `v0.2.31`.
+**Branch**: `main` (conventional commits por unidad de trabajo).
+**Versionado**: Bumping estricto de dígitos menores/parche (`0.X.Y`), conservando siempre el primer dígito en `0`.
+**Calidad**: Cero compiler warnings (`cargo check --workspace`), 100% tests pasando (`cargo test --workspace`).
+
+---
+
+## Matriz de Tareas
+
+| ID | Feature | Cajas / Módulos Afectados | Complejidad | Versión Estimada |
+| :--- | :--- | :--- | :--- | :--- |
+| **F6** | **Búsqueda Global en Workspace (`Ctrl+Shift+F`)** | `karkinos-core::workspace_search`, `karkinos::ui`, `app.rs` | Media-Alta | `v0.2.32` |
+| **F7** | **Selector de Símbolos (`Ctrl+Shift+O` / `@`)** | `karkinos-core::syntax_ast`, `karkinos::app` | Media | `v0.2.33` |
+| **F8** | **Git Blame Inline & Branch Status** | `karkinos-core::git_status`, `karkinos::editor_widget`, `ui.rs` | Media | `v0.2.34` |
+| **F9** | **Minimap Lateral de Código** | `karkinos::editor_widget` | Media | `v0.2.35` |
+| **F10** | **Terminal Multi-tab** | `karkinos-core::terminal`, `karkinos::app`, `ui.rs` | Media-Alta | `v0.2.36` |
+
+---
+
+## Blueprint de Implementación Detallado
+
+### Tarea F6: Búsqueda Global en Workspace (`Ctrl+Shift+F`)
+
+#### 1. Concepto
+Un panel lateral ("Buscar") accesible desde la barra lateral o con `Ctrl+Shift+F`. Permite buscar texto o expresiones regulares en todos los archivos de texto del proyecto abierto, respetando exclusiones estándar (`target/`, `.git/`, `node_modules/`).
+
+#### 2. Componente Core (`crates/karkinos-core/src/workspace_search.rs`)
+- Estructuras:
+  ```rust
+  #[derive(Debug, Clone)]
+  pub struct SearchQuery {
+      pub query: String,
+      pub case_sensitive: bool,
+      pub match_word: bool,
+      pub use_regex: bool,
+      pub max_results: usize, // e.g. 500 para evitar saturación
+  }
+
+  #[derive(Debug, Clone)]
+  pub struct SearchMatch {
+      pub line_number: usize,
+      pub col_start: usize,
+      pub col_end: usize,
+      pub line_content: String,
+  }
+
+  #[derive(Debug, Clone)]
+  pub struct FileMatches {
+      pub path: std::path::PathBuf,
+      pub relative_display: String,
+      pub matches: Vec<SearchMatch>,
+  }
+  ```
+- Motor de búsqueda asíncrono con canal `crossbeam-channel` o `std::sync::mpsc`:
+  - Recorre el directorio raíz usando `ignore::WalkBuilder` (o `walkdir` filtrando `.git`, `target`, `node_modules`).
+  - Emite resultados progresivos en streaming para que la UI los muestre en tiempo real sin bloquear.
+
+#### 3. Integración en UI (`karkinos/src/ui.rs` & `app.rs`)
+- Agregar icono de lupa en la barra lateral izquierda (activa vista `SidePanelTab::Search`).
+- Atajo global `Ctrl+Shift+F` enfoca el campo de búsqueda global.
+- UI:
+  - Input field con debounce de 250ms o trigger al presionar Enter.
+  - Toggles: Case Sensitive (`Aa`), Whole Word (`\b`), Use Regex (`.*`).
+  - Árbol colapsable: Encabezado por archivo `nombre_archivo.rs (N coincidencias)` y lista de renglones coincidentes.
+  - Al hacer clic en un resultado, abre la pestaña correspondiente y posiciona el cursor en la línea y columna exactas.
+
+---
+
+### Tarea F7: Selector de Símbolos de Documento (`Ctrl+Shift+O` / `@`)
+
+#### 1. Concepto
+Navegación instantánea a funciones, structs, enums, traits y métodos dentro del documento activo sin necesidad de LSP externo, utilizando el motor Tree-sitter que ya tenemos en memoria.
+
+#### 2. Extracción de Símbolos (`crates/karkinos-core/src/syntax_ast.rs`)
+- Extender `AstEngine` para extraer símbolos estructurados:
+  ```rust
+  #[derive(Debug, Clone, PartialEq, Eq)]
+  pub enum SymbolKind {
+      Function,
+      Struct,
+      Enum,
+      Trait,
+      Method,
+      Constant,
+  }
+
+  #[derive(Debug, Clone)]
+  pub struct DocumentSymbol {
+      pub name: String,
+      pub kind: SymbolKind,
+      pub line: usize,
+      pub character: usize,
+  }
+
+  impl AstEngine {
+      pub fn extract_document_symbols(&self, source: &str) -> Vec<DocumentSymbol> {
+          // Recorre el árbol AST buscando nodos tipo function_item, struct_item, enum_item, etc.
+      }
+  }
+  ```
+
+#### 3. Quick Open Integration (`karkinos/src/app.rs`)
+- Al presionar `Ctrl+Shift+O` o al tipear `@` en el Quick Open (`Ctrl+P`):
+  - El modal pasa a modo "Símbolos del Documento".
+  - Filtro fuzzy por nombre del símbolo.
+  - Badge visual con ícono/letra (`ƒ` función, `S` struct, `E` enum, `T` trait).
+  - Al navegar con flechas o presionar Enter, el editor scrollea suavemente al símbolo seleccionado.
+
+---
+
+### Tarea F8: Git Blame Inline & Branch Status
+
+#### 1. Concepto
+- **Barra de estado**: Mostrar la rama actual activa (` main`) y conteo de archivos modificados/staged.
+- **Ghost text en el editor**: Al posar el cursor en una línea, mostrar texto tenue al final de esa línea con el autor, tiempo relativo y mensaje del commit (`Linus Torvalds, 2 days ago • fix: buffer boundary`).
+
+#### 2. Módulo Git Status (`crates/karkinos-core/src/git_status.rs`)
+- Detección de rama activa leyendo `.git/HEAD` sin invocar subprocesos pesados.
+- Worker no bloqueante para `git blame`:
+  - Cache LRU de blame por archivo / revisión.
+  - Consulta perezosa: solo solicita el blame de la línea donde el cursor permanece quieto por más de 300ms.
+
+#### 3. Renderizado (`karkinos/src/editor_widget.rs` & `ui.rs`)
+- En el footer status bar: Widget con ícono de branch e indicador de estado de sync.
+- En el editor: Dibujado de texto tenue (`egui::Color32::from_gray(100)`) a la derecha del último caracter del renglón activo.
+
+---
+
+### Tarea F9: Minimap Lateral de Código
+
+#### 1. Concepto
+Una franja lateral derecha (~100-120px) que proporciona una visión panorámica de todo el archivo para orientación espacial rápida y scroll instantáneo.
+
+#### 2. Algoritmo de Renderizado (`karkinos/src/editor_widget.rs`)
+- Relación de aspecto: Cada línea de código equivale a 2px o 3px de alto en el minimap.
+- Renderizado sintético rápido:
+  - En lugar de dibujar texto con fuentes completas, dibujar micro-rectángulos o líneas horizontales proporcionales al largo de los tokens y con sus colores de sintaxis.
+  - Omitir espacios en blanco.
+- Rectángulo de Viewport:
+  - Resalta en color translúcido (`rgba(255, 255, 255, 0.08)`) el rango de líneas actualmente visible en el viewport principal.
+- Interactividad:
+  - Click o arrastre en el minimap reposiciona el scroll vertical proporcionalmente en tiempo real.
+
+---
+
+### Tarea F10: Pestañas Múltiples en la Terminal PTY
+
+#### 1. Concepto
+Evolucionar el panel inferior PTY (`PtyTerminal`) para admitir múltiples pestañas de consola independientes (`Terminal 1`, `Terminal 2`, `htop`, `cargo watch`), permitiendo crear, renombrar y cerrar consolas interactivas sin perder su estado.
+
+#### 2. Arquitectura de Pestañas (`crates/karkinos-core/src/terminal.rs` & `karkinos/src/app.rs`)
+- Estructura:
+  ```rust
+  pub struct TerminalInstance {
+      pub id: usize,
+      pub title: String,
+      pub pty: PtyTerminal,
+      pub cache: TerminalSnapshotCache,
+  }
+
+  pub struct TerminalDockState {
+      pub instances: Vec<TerminalInstance>,
+      pub active_index: usize,
+  }
+  ```
+- Ciclo de vida:
+  - Botón `+` en el encabezado del dock para instanciar un nuevo PTY en background.
+  - Botón `x` o atajo `Ctrl+Shift+W` para matar el shell y liberar recursos.
+  - Tabs conmutables con un solo click. Cero overhead en pestañas inactivas (no renderizan snapshot si están ocultas).
+
+---
+
+## Protocolo de Ejecución Recomendado
+
+1. **Implementar una tarea a la vez** respetando la arquitectura hexagonal de Karkinos.
+2. Mantener la suite de tests al 100% verde (`cargo test --workspace`).
+3. Commit convencional por tarea (ej. `feat(search): implement multi-threaded workspace search (v0.2.32)`).
+4. Incrementar la versión en `Cargo.toml` (`0.2.32`, `0.2.33`, etc.).
