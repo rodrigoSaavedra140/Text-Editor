@@ -590,10 +590,10 @@ impl EditorApp {
     /// extensiones, consola Cargo y debugger. Reemplaza la ausencia de una
     /// barra izquierda que el blueprint de F6 daba por hecha.
     fn show_activity_bar(&mut self, ctx: &egui::Context, theme: &crate::theme::Theme) {
-        // UI-8 (v0.2.38): indicador de herramienta activa con barra de acento.
-        let explorer_active = self.explorer.open;
-        let search_active = self.workspace_search.open;
-        let symbols_active = self.symbol_picker.open;
+        // UI-8 (v0.2.38 / v0.2.39): indicador de herramienta activa en la barra lateral unificada.
+        let explorer_active = self.sidebar_tab == crate::app::SidebarTab::Explorer;
+        let search_active = self.sidebar_tab == crate::app::SidebarTab::Search;
+        let symbols_active = self.sidebar_tab == crate::app::SidebarTab::Symbols;
         let extensions_active = self.extensions_modal_open;
         let cargo_active = self.cargo.panel_open && self.cargo.active_tab != 2;
         let debug_active = self.cargo.panel_open && self.cargo.active_tab == 2;
@@ -677,14 +677,53 @@ impl EditorApp {
             });
     }
 
-    /// Barra lateral: explorador de archivos en árbol (UI-6, v0.2.38).
-    /// Carpetas colapsables con chevron, iconos por extensión, indentación por
-    /// nivel y el archivo activo resaltado en acento.
-    fn show_explorer_panel(&mut self, ctx: &egui::Context, theme: &crate::theme::Theme) {
-        if !self.explorer.open {
+    /// Barra lateral unificada (v0.2.39): muestra el panel lateral izquierdo con
+    /// la herramienta activa (Explorador, Búsqueda en Workspace o Símbolos del documento).
+    fn show_sidebar_panel(&mut self, ctx: &egui::Context, theme: &crate::theme::Theme) {
+        if self.sidebar_tab == crate::app::SidebarTab::None {
             return;
         }
 
+        let mut close_panel = false;
+
+        egui::SidePanel::left("unified_sidebar_panel")
+            .resizable(true)
+            .default_width(260.0)
+            .min_width(200.0)
+            .max_width(550.0)
+            .frame(
+                egui::Frame::none()
+                    .fill(theme.surface_bg)
+                    .inner_margin(egui::Margin::same(8.0)),
+            )
+            .show(ctx, |ui| match self.sidebar_tab {
+                crate::app::SidebarTab::Explorer => {
+                    self.render_explorer_tab(ui, theme, &mut close_panel);
+                }
+                crate::app::SidebarTab::Search => {
+                    self.render_search_tab(ui, ctx, theme, &mut close_panel);
+                }
+                crate::app::SidebarTab::Symbols => {
+                    self.render_symbols_tab(ui, theme, &mut close_panel);
+                }
+                crate::app::SidebarTab::None => {}
+            });
+
+        if close_panel {
+            self.sidebar_tab = crate::app::SidebarTab::None;
+            self.explorer.open = false;
+            self.workspace_search.open = false;
+            self.symbol_picker.open = false;
+        }
+    }
+
+    /// Pestaña del Explorador de archivos (UI-6 / v0.2.39).
+    fn render_explorer_tab(
+        &mut self,
+        ui: &mut egui::Ui,
+        theme: &crate::theme::Theme,
+        close_panel: &mut bool,
+    ) {
         let tree =
             crate::app::FileTreeNode::build_from_paths(&self.doc.browse_dir, &self.explorer.files);
         let root_name = self
@@ -700,65 +739,50 @@ impl EditorApp {
         let mut toggle_dir = None;
         let mut refresh = false;
         let mut collapse_all = false;
-        let mut close = false;
 
-        egui::SidePanel::left("explorer_panel")
-            .resizable(true)
-            .default_width(240.0)
-            .min_width(180.0)
-            .frame(
-                egui::Frame::none()
-                    .fill(theme.panel_bg)
-                    .inner_margin(egui::Margin::same(8.0)),
-            )
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new("EXPLORER")
-                            .color(theme.text_muted)
-                            .size(10.0)
-                            .strong(),
-                    );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("✕").on_hover_text("Close").clicked() {
-                            close = true;
-                        }
-                        if ui.button("⊟").on_hover_text("Collapse All").clicked() {
-                            collapse_all = true;
-                        }
-                        if ui.button("⟳").on_hover_text("Refresh").clicked() {
-                            refresh = true;
-                        }
-                    });
-                });
-                ui.add_space(2.0);
-                ui.label(
-                    egui::RichText::new(format!("📂 {root_name}"))
-                        .color(theme.text)
-                        .size(12.0)
-                        .strong(),
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("EXPLORER")
+                    .color(theme.text_muted)
+                    .size(10.0)
+                    .strong(),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("✕").on_hover_text("Close").clicked() {
+                    *close_panel = true;
+                }
+                if ui.button("⊟").on_hover_text("Collapse All").clicked() {
+                    collapse_all = true;
+                }
+                if ui.button("⟳").on_hover_text("Refresh").clicked() {
+                    refresh = true;
+                }
+            });
+        });
+        ui.add_space(2.0);
+        ui.label(
+            egui::RichText::new(format!("📂 {root_name}"))
+                .color(theme.text)
+                .size(12.0)
+                .strong(),
+        );
+        ui.separator();
+
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                Self::draw_file_tree(
+                    ui,
+                    &tree,
+                    0,
+                    &self.explorer.collapsed_dirs,
+                    active_path.as_deref(),
+                    theme,
+                    &mut toggle_dir,
+                    &mut open_file,
                 );
-                ui.separator();
-
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        Self::draw_file_tree(
-                            ui,
-                            &tree,
-                            0,
-                            &self.explorer.collapsed_dirs,
-                            active_path.as_deref(),
-                            theme,
-                            &mut toggle_dir,
-                            &mut open_file,
-                        );
-                    });
             });
 
-        if close {
-            self.explorer.open = false;
-        }
         if refresh {
             self.explorer.loaded_for = None;
             self.explorer.collapsed_dirs.clear();
@@ -779,7 +803,9 @@ impl EditorApp {
         }
     }
 
-    /// Filas recursivas del árbol del explorador (UI-6).
+    /// Filas recursivas del árbol del explorador (UI-6 / v0.2.39).
+    /// Tanto carpetas como archivos son interactivos en todo el ancho del renglón para que
+    /// hacer clic en cualquier punto de la fila amplíe o esconda la carpeta o abra el archivo.
     fn draw_file_tree(
         ui: &mut egui::Ui,
         nodes: &[crate::app::FileTreeNode],
@@ -795,26 +821,49 @@ impl EditorApp {
                 crate::app::FileTreeNode::Directory { name, path, children } => {
                     let is_collapsed = collapsed.contains(path);
                     let indent = depth as f32 * 14.0 + 4.0;
-                    ui.horizontal(|ui| {
-                        ui.add_space(indent);
-                        let text = format!(
-                            "{} {} {name}",
-                            if is_collapsed { "▸" } else { "▾" },
-                            if is_collapsed { "📁" } else { "📂" }
+                    let row_height = 22.0;
+
+                    let (rect, response) = ui.allocate_exact_size(
+                        egui::vec2(ui.available_width(), row_height),
+                        egui::Sense::click(),
+                    );
+
+                    let hovered = response.hovered();
+                    if hovered {
+                        ui.painter().rect_filled(
+                            rect,
+                            egui::Rounding::same(4.0),
+                            theme.active_line.gamma_multiply(2.5),
                         );
-                        let row = ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(text).color(theme.text).size(11.5),
-                            )
-                            .sense(egui::Sense::click()),
-                        );
-                        if row.clicked() {
-                            *toggle_dir = Some(path.clone());
-                        }
-                    });
+                    }
+
+                    if response.clicked() {
+                        *toggle_dir = Some(path.clone());
+                    }
+
+                    let icon_chevron = if is_collapsed { "▸" } else { "▾" };
+                    let icon_folder = if is_collapsed { "📁" } else { "📂" };
+                    let label = format!("{icon_chevron} {icon_folder} {name}");
+
+                    ui.painter().text(
+                        egui::pos2(rect.left() + indent, rect.center().y),
+                        egui::Align2::LEFT_CENTER,
+                        label,
+                        egui::FontId::proportional(11.5),
+                        if hovered { theme.text } else { theme.text.gamma_multiply(0.9) },
+                    );
+
+                    response.on_hover_cursor(egui::CursorIcon::PointingHand);
+
                     if !is_collapsed {
                         Self::draw_file_tree(
-                            ui, children, depth + 1, collapsed, active, theme, toggle_dir,
+                            ui,
+                            children,
+                            depth + 1,
+                            collapsed,
+                            active,
+                            theme,
+                            toggle_dir,
                             open_file,
                         );
                     }
@@ -826,29 +875,50 @@ impl EditorApp {
                 } => {
                     let indent = (depth as f32 + 1.0) * 14.0 + 4.0;
                     let is_active = active == Some(path.as_path());
-                    ui.horizontal(|ui| {
-                        ui.add_space(indent);
-                        let color = if is_active {
+                    let row_height = 22.0;
+
+                    let (rect, response) = ui.allocate_exact_size(
+                        egui::vec2(ui.available_width(), row_height),
+                        egui::Sense::click(),
+                    );
+
+                    let hovered = response.hovered();
+                    if is_active {
+                        ui.painter().rect_filled(
+                            rect,
+                            egui::Rounding::same(4.0),
+                            theme.accent.gamma_multiply(0.2),
+                        );
+                    } else if hovered {
+                        ui.painter().rect_filled(
+                            rect,
+                            egui::Rounding::same(4.0),
+                            theme.active_line.gamma_multiply(1.8),
+                        );
+                    }
+
+                    if response.clicked() {
+                        *open_file = Some(path.clone());
+                    }
+
+                    let icon = explorer_file_icon(extension);
+                    let label = format!("{icon} {name}");
+
+                    ui.painter().text(
+                        egui::pos2(rect.left() + indent, rect.center().y),
+                        egui::Align2::LEFT_CENTER,
+                        label,
+                        egui::FontId::proportional(11.5),
+                        if is_active {
                             theme.accent
+                        } else if hovered {
+                            theme.text
                         } else {
                             theme.text_muted
-                        };
-                        let mut text = egui::RichText::new(format!(
-                            "{} {name}",
-                            explorer_file_icon(extension)
-                        ))
-                        .color(color)
-                        .size(11.5);
-                        if is_active {
-                            text = text.strong();
-                        }
-                        if ui
-                            .add(egui::Label::new(text).sense(egui::Sense::click()))
-                            .clicked()
-                        {
-                            *open_file = Some(path.clone());
-                        }
-                    });
+                        },
+                    );
+
+                    response.on_hover_cursor(egui::CursorIcon::PointingHand);
                 }
             }
         }
@@ -959,155 +1029,141 @@ impl EditorApp {
         }
     }
 
-    /// F6 (Roadmap v0.2.32): panel lateral de búsqueda global en el workspace.
-    /// Resultados en streaming por archivo, agrupados y colapsables; un clic
-    /// abre el archivo y posiciona el cursor en la coincidencia.
-    fn show_workspace_search(&mut self, ctx: &egui::Context, theme: &crate::theme::Theme) {
-        if !self.workspace_search.open {
-            return;
-        }
-
-        let mut close_panel = false;
+    /// Pestaña de búsqueda en workspace en la barra lateral unificada (F6 / v0.2.39).
+    fn render_search_tab(
+        &mut self,
+        ui: &mut egui::Ui,
+        _ctx: &egui::Context,
+        theme: &crate::theme::Theme,
+        close_panel: &mut bool,
+    ) {
         let mut edited = false;
         let mut trigger = false;
         let mut jump: Option<(std::path::PathBuf, karkinos_core::SearchMatch)> = None;
         let mut toggle: Option<std::path::PathBuf> = None;
 
-        egui::SidePanel::right("workspace_search_panel")
-            .resizable(true)
-            .default_width(340.0)
-            .min_width(240.0)
-            .frame(
-                egui::Frame::none()
-                    .fill(theme.surface_bg)
-                    .inner_margin(egui::Margin::same(8.0)),
-            )
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new("🔎 Search in Workspace")
-                            .color(theme.text)
-                            .strong(),
-                    );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui
-                            .button("✕")
-                            .on_hover_text("Close (Ctrl+Shift+F)")
-                            .clicked()
-                        {
-                            close_panel = true;
-                        }
-                    });
-                });
-                ui.add_space(4.0);
-
-                ui.horizontal(|ui| {
-                    let input = ui.add_sized(
-                        [ui.available_width(), 24.0],
-                        egui::TextEdit::singleline(&mut self.workspace_search.input)
-                            .id_source("workspace_search_input")
-                            .hint_text("Search... (Enter)"),
-                    );
-                    if self.workspace_search.focus_requested {
-                        input.request_focus();
-                        self.workspace_search.focus_requested = false;
-                    }
-                    if input.changed() {
-                        edited = true;
-                    }
-                    if input.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                        trigger = true;
-                    }
-                });
-
-                ui.horizontal(|ui| {
-                    if ui
-                        .toggle_value(&mut self.workspace_search.case_sensitive, "Aa")
-                        .on_hover_text("Case sensitive")
-                        .changed()
-                    {
-                        trigger = true;
-                    }
-                    if ui
-                        .toggle_value(&mut self.workspace_search.match_word, "\\b")
-                        .on_hover_text("Whole word")
-                        .changed()
-                    {
-                        trigger = true;
-                    }
-                    if ui
-                        .toggle_value(&mut self.workspace_search.use_regex, ".*")
-                        .on_hover_text("Use regex")
-                        .changed()
-                    {
-                        trigger = true;
-                    }
-                    if ui.button("Search").clicked() {
-                        trigger = true;
-                    }
-                });
-                ui.separator();
-
-                let status = if let Some(err) = &self.workspace_search.error {
-                    format!("⚠ {err}")
-                } else if self.workspace_search.searching {
-                    "Searching…".to_string()
-                } else {
-                    format!(
-                        "{} matches in {} files ({} scanned)",
-                        self.workspace_search.total_matches,
-                        self.workspace_search.results.len(),
-                        self.workspace_search.files_scanned
-                    )
-                };
-                ui.label(egui::RichText::new(status).color(theme.text_muted).size(11.0));
-                ui.add_space(2.0);
-
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    for file in &self.workspace_search.results {
-                        let expanded = !self.workspace_search.collapsed.contains(&file.path);
-                        let header = format!(
-                            "{} {} ({})",
-                            if expanded { "▾" } else { "▸" },
-                            file.relative_display,
-                            file.matches.len()
-                        );
-                        if ui
-                            .add(
-                                egui::Button::new(
-                                    egui::RichText::new(header).color(theme.text).size(12.0),
-                                )
-                                .frame(false),
-                            )
-                            .clicked()
-                        {
-                            toggle = Some(file.path.clone());
-                        }
-                        if !expanded {
-                            continue;
-                        }
-                        for m in &file.matches {
-                            let text = format!("{:>4}: {}", m.line_number, m.line_content.trim());
-                            let row = ui.add(
-                                egui::Label::new(
-                                    egui::RichText::new(text)
-                                        .color(theme.text_muted)
-                                        .size(11.0)
-                                        .monospace(),
-                                )
-                                .sense(egui::Sense::click()),
-                            );
-                            if row.clicked() {
-                                jump = Some((file.path.clone(), m.clone()));
-                            }
-                        }
-                    }
-                });
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("SEARCH IN WORKSPACE")
+                    .color(theme.text_muted)
+                    .size(10.0)
+                    .strong(),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .button("✕")
+                    .on_hover_text("Close (Ctrl+Shift+F)")
+                    .clicked()
+                {
+                    *close_panel = true;
+                }
             });
+        });
+        ui.add_space(4.0);
 
-        if close_panel {
-            self.workspace_search.open = false;
-        }
+        ui.horizontal(|ui| {
+            let input = ui.add_sized(
+                [ui.available_width(), 24.0],
+                egui::TextEdit::singleline(&mut self.workspace_search.input)
+                    .id_source("workspace_search_input")
+                    .hint_text("Search... (Enter)"),
+            );
+            if self.workspace_search.focus_requested {
+                input.request_focus();
+                self.workspace_search.focus_requested = false;
+            }
+            if input.changed() {
+                edited = true;
+            }
+            if input.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                trigger = true;
+            }
+        });
+
+        ui.horizontal(|ui| {
+            if ui
+                .toggle_value(&mut self.workspace_search.case_sensitive, "Aa")
+                .on_hover_text("Case sensitive")
+                .changed()
+            {
+                trigger = true;
+            }
+            if ui
+                .toggle_value(&mut self.workspace_search.match_word, "\\b")
+                .on_hover_text("Whole word")
+                .changed()
+            {
+                trigger = true;
+            }
+            if ui
+                .toggle_value(&mut self.workspace_search.use_regex, ".*")
+                .on_hover_text("Use regex")
+                .changed()
+            {
+                trigger = true;
+            }
+            if ui.button("Search").clicked() {
+                trigger = true;
+            }
+        });
+        ui.separator();
+
+        let status = if let Some(err) = &self.workspace_search.error {
+            format!("⚠ {err}")
+        } else if self.workspace_search.searching {
+            "Searching…".to_string()
+        } else {
+            format!(
+                "{} matches in {} files ({} scanned)",
+                self.workspace_search.total_matches,
+                self.workspace_search.results.len(),
+                self.workspace_search.files_scanned
+            )
+        };
+        ui.label(egui::RichText::new(status).color(theme.text_muted).size(11.0));
+        ui.add_space(2.0);
+
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            for file in &self.workspace_search.results {
+                let expanded = !self.workspace_search.collapsed.contains(&file.path);
+                let header = format!(
+                    "{} {} ({})",
+                    if expanded { "▾" } else { "▸" },
+                    file.relative_display,
+                    file.matches.len()
+                );
+                if ui
+                    .add(
+                        egui::Button::new(
+                            egui::RichText::new(header).color(theme.text).size(12.0),
+                        )
+                        .frame(false),
+                    )
+                    .clicked()
+                {
+                    toggle = Some(file.path.clone());
+                }
+                if !expanded {
+                    continue;
+                }
+                for m in &file.matches {
+                    let text = format!("{:>4}: {}", m.line_number, m.line_content.trim());
+                    let row = ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(text)
+                                .color(theme.text_muted)
+                                .size(11.0)
+                                .monospace(),
+                        )
+                        .sense(egui::Sense::click()),
+                    );
+                    if row.clicked() {
+                        jump = Some((file.path.clone(), m.clone()));
+                    }
+                }
+            }
+        });
+
         if let Some(path) = toggle {
             if !self.workspace_search.collapsed.remove(&path) {
                 self.workspace_search.collapsed.insert(path);
@@ -1121,6 +1177,127 @@ impl EditorApp {
         }
         if trigger {
             self.trigger_workspace_search();
+        }
+    }
+
+    /// Pestaña de símbolos del documento en la barra lateral unificada (F7 / v0.2.39).
+    fn render_symbols_tab(
+        &mut self,
+        ui: &mut egui::Ui,
+        theme: &crate::theme::Theme,
+        close_panel: &mut bool,
+    ) {
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("DOCUMENT SYMBOLS")
+                    .color(theme.text_muted)
+                    .size(10.0)
+                    .strong(),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("✕").on_hover_text("Close").clicked() {
+                    *close_panel = true;
+                }
+            });
+        });
+        ui.add_space(4.0);
+
+        ui.add_sized(
+            [ui.available_width(), 24.0],
+            egui::TextEdit::singleline(&mut self.symbol_picker.query)
+                .hint_text("Filter symbols..."),
+        );
+        ui.separator();
+
+        let filtered: Vec<karkinos_core::syntax_ast::DocumentSymbol> =
+            self.filtered_symbols().into_iter().cloned().collect();
+
+        if filtered.is_empty() {
+            ui.label(
+                egui::RichText::new("No symbols found in current document")
+                    .color(theme.text_muted)
+                    .size(11.0),
+            );
+            return;
+        }
+
+        let mut jump: Option<karkinos_core::syntax_ast::DocumentSymbol> = None;
+
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                for sym in filtered {
+                    let (kind_str, kind_color) = match sym.kind {
+                        karkinos_core::syntax_ast::SymbolKind::Function => {
+                            ("ƒ", egui::Color32::from_rgb(220, 180, 80))
+                        }
+                        karkinos_core::syntax_ast::SymbolKind::Method => {
+                            ("m", egui::Color32::from_rgb(180, 200, 90))
+                        }
+                        karkinos_core::syntax_ast::SymbolKind::Struct => {
+                            ("S", egui::Color32::from_rgb(80, 180, 220))
+                        }
+                        karkinos_core::syntax_ast::SymbolKind::Enum => {
+                            ("E", egui::Color32::from_rgb(200, 120, 220))
+                        }
+                        karkinos_core::syntax_ast::SymbolKind::Trait => {
+                            ("T", egui::Color32::from_rgb(120, 220, 160))
+                        }
+                        karkinos_core::syntax_ast::SymbolKind::Constant => {
+                            ("c", egui::Color32::from_rgb(220, 120, 120))
+                        }
+                    };
+
+                    let row_height = 22.0;
+                    let (rect, response) = ui.allocate_exact_size(
+                        egui::vec2(ui.available_width(), row_height),
+                        egui::Sense::click(),
+                    );
+                    if response.hovered() {
+                        ui.painter().rect_filled(
+                            rect,
+                            egui::Rounding::same(4.0),
+                            theme.active_line.gamma_multiply(2.0),
+                        );
+                    }
+                    if response.clicked() {
+                        jump = Some(sym.clone());
+                    }
+
+                    // Badge kind
+                    ui.painter().text(
+                        egui::pos2(rect.left() + 4.0, rect.center().y),
+                        egui::Align2::LEFT_CENTER,
+                        kind_str,
+                        egui::FontId::monospace(11.0),
+                        kind_color,
+                    );
+                    // Name
+                    ui.painter().text(
+                        egui::pos2(rect.left() + 24.0, rect.center().y),
+                        egui::Align2::LEFT_CENTER,
+                        &sym.name,
+                        egui::FontId::proportional(11.5),
+                        if response.hovered() {
+                            theme.text
+                        } else {
+                            theme.text.gamma_multiply(0.9)
+                        },
+                    );
+                    // Line number on right
+                    ui.painter().text(
+                        egui::pos2(rect.right() - 6.0, rect.center().y),
+                        egui::Align2::RIGHT_CENTER,
+                        format!(":{}", sym.line + 1),
+                        egui::FontId::monospace(10.0),
+                        theme.text_muted,
+                    );
+                    response.on_hover_cursor(egui::CursorIcon::PointingHand);
+                }
+            });
+
+        if let Some(sym) = jump {
+            self.jump_to_symbol(&sym);
         }
     }
 
@@ -3311,11 +3488,9 @@ impl eframe::App for EditorApp {
         self.show_find_bar(ctx);
         // S1 (Rust IDE): panel inferior de ejecución y diagnósticos de Cargo (F7 / F5 / Ctrl+`).
         self.show_cargo_panel(ctx, &theme);
-        // Barra lateral (v0.2.33): navegación y explorador antes del área central.
+        // Barra lateral unificada (v0.2.39): actividad y panel lateral compartido.
         self.show_activity_bar(ctx, &theme);
-        self.show_explorer_panel(ctx, &theme);
-        // F6 (Roadmap v0.2.32): panel lateral de búsqueda global.
-        self.show_workspace_search(ctx, &theme);
+        self.show_sidebar_panel(ctx, &theme);
 
         // Sin márgenes propios: así el área de texto puede ocupar
         // el panel central entero, sin ese borde gris alrededor.

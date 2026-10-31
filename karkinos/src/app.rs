@@ -143,7 +143,8 @@ pub struct EditorApp {
     // F6 (Roadmap v0.2.32): búsqueda global en el workspace.
     pub workspace_search: WorkspaceSearchState,
     pub workspace_search_engine: karkinos_core::WorkspaceSearch,
-    // Barra lateral (v0.2.33): explorador de archivos del proyecto.
+    // Barra lateral unificada (v0.2.39): explorador, búsqueda y símbolos en el mismo panel.
+    pub sidebar_tab: SidebarTab,
     pub explorer: ExplorerState,
     // F7 (Roadmap v0.2.34): selector de símbolos (Ctrl+Shift+O).
     pub symbol_picker: SymbolPickerState,
@@ -189,6 +190,16 @@ pub struct WorkspaceSearchState {
     pub focus_requested: bool,
     /// Momento del último cambio de texto, para el debounce.
     pub last_edit_at: Option<std::time::Instant>,
+}
+
+/// Barra lateral unificada (v0.2.39): herramienta activa en el panel lateral compartido.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SidebarTab {
+    #[default]
+    None,
+    Explorer,
+    Search,
+    Symbols,
 }
 
 /// Barra lateral (v0.2.33): estado del explorador de archivos del proyecto.
@@ -353,6 +364,7 @@ impl Default for EditorApp {
             split: None,
             workspace_search: WorkspaceSearchState::default(),
             workspace_search_engine: karkinos_core::WorkspaceSearch::spawn(),
+            sidebar_tab: SidebarTab::None,
             explorer: ExplorerState::default(),
             symbol_picker: SymbolPickerState::default(),
             git_status: GitStatusState::default(),
@@ -650,10 +662,15 @@ impl EditorApp {
         }
     }
 
-    /// Barra lateral (v0.2.33): abre/cierra el explorador y refresca su lista.
+    /// Barra lateral unificada (v0.2.39): abre/cierra el explorador y refresca su lista.
     pub fn toggle_explorer(&mut self) {
-        self.explorer.open = !self.explorer.open;
-        if self.explorer.open {
+        if self.sidebar_tab == SidebarTab::Explorer {
+            self.sidebar_tab = SidebarTab::None;
+            self.explorer.open = false;
+        } else {
+            self.sidebar_tab = SidebarTab::Explorer;
+            self.explorer.open = true;
+            self.workspace_search.open = false;
             self.refresh_explorer();
         }
     }
@@ -667,6 +684,12 @@ impl EditorApp {
         }
         let mut files = karkinos_core::workspace_search::walk_files(&root);
         files.sort();
+        let tree = FileTreeNode::build_from_paths(&root, &files);
+        if self.explorer.collapsed_dirs.is_empty() {
+            let mut dirs = Vec::new();
+            FileTreeNode::collect_directories(&tree, &mut dirs);
+            self.explorer.collapsed_dirs.extend(dirs);
+        }
         self.explorer.files = files;
         self.explorer.loaded_for = Some(root);
     }
@@ -731,11 +754,19 @@ impl EditorApp {
             .map(|blame| karkinos_core::git_status::format_blame_line(blame, now_unix));
     }
 
-    /// F7 (Roadmap v0.2.34): abre el selector de símbolos del documento.
+    /// F7 (Roadmap v0.2.34 / v0.2.39): abre el selector de símbolos en la barra lateral unificada.
     pub fn open_symbol_picker(&mut self) {
-        self.symbol_picker.open = true;
-        self.symbol_picker.query.clear();
-        self.symbol_picker.selected = 0;
+        if self.sidebar_tab == SidebarTab::Symbols {
+            self.sidebar_tab = SidebarTab::None;
+            self.symbol_picker.open = false;
+        } else {
+            self.sidebar_tab = SidebarTab::Symbols;
+            self.symbol_picker.open = true;
+            self.symbol_picker.query.clear();
+            self.symbol_picker.selected = 0;
+            self.explorer.open = false;
+            self.workspace_search.open = false;
+        }
     }
 
     /// F7: símbolos filtrados por el texto del selector (sin distinguir
@@ -769,10 +800,18 @@ impl EditorApp {
         }
     }
 
-    /// F6 (Roadmap v0.2.32): abre el panel de búsqueda global y pide foco.
+    /// F6 (Roadmap v0.2.32 / v0.2.39): abre la búsqueda global en la barra lateral unificada y pide foco.
     pub fn open_workspace_search(&mut self) {
-        self.workspace_search.open = true;
-        self.workspace_search.focus_requested = true;
+        if self.sidebar_tab == SidebarTab::Search {
+            self.sidebar_tab = SidebarTab::None;
+            self.workspace_search.open = false;
+        } else {
+            self.sidebar_tab = SidebarTab::Search;
+            self.workspace_search.open = true;
+            self.explorer.open = false;
+            self.symbol_picker.open = false;
+            self.workspace_search.focus_requested = true;
+        }
     }
 
     /// F6: dispara una búsqueda nueva en el worker. Sube la generación para
@@ -3145,5 +3184,36 @@ mod tests {
         app.toggle_minimap();
         assert!(!app.editor_state.show_minimap);
         assert!(!app.split.as_ref().unwrap().secondary.show_minimap);
+    }
+
+    // Barra lateral unificada (v0.2.39): pestañas compartidas y alternancia limpia.
+
+    #[test]
+    fn sidebar_tab_switching_unifies_panel() {
+        let mut app = EditorApp::default();
+        assert_eq!(app.sidebar_tab, SidebarTab::None);
+        assert!(!app.explorer.open);
+        assert!(!app.workspace_search.open);
+
+        // Abrir Explorer
+        app.toggle_explorer();
+        assert_eq!(app.sidebar_tab, SidebarTab::Explorer);
+        assert!(app.explorer.open);
+        assert!(!app.workspace_search.open);
+
+        // Cambiar a Search (se abre en la misma ventana, cierra Explorer)
+        app.open_workspace_search();
+        assert_eq!(app.sidebar_tab, SidebarTab::Search);
+        assert!(app.workspace_search.open);
+        assert!(!app.explorer.open);
+
+        // Cambiar a Symbols
+        app.open_symbol_picker();
+        assert_eq!(app.sidebar_tab, SidebarTab::Symbols);
+        assert!(!app.workspace_search.open);
+
+        // Volver a clickear Symbols lo cierra
+        app.open_symbol_picker();
+        assert_eq!(app.sidebar_tab, SidebarTab::None);
     }
 }
