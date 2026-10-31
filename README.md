@@ -63,7 +63,10 @@ The resulting executable will be located at `target/release/karkinos`.
 - `Ctrl+F` — Find & Replace bar
 - `Ctrl+G` — Go to line number
 - `Ctrl+/` — Toggle line or block comment
-- `Ctrl+D` — Duplicate line or selection downward
+- `Ctrl+D` — Select the word under the caret; press again to add the next occurrence as an extra cursor
+- `Alt+Click` — Add an extra cursor at the clicked position
+- `Esc` — Collapse all extra cursors back to the primary one
+- `Ctrl+Shift+D` — Duplicate line or selection downward
 - `Tab` / `Shift+Tab` — Indent / dedent selected block or line
 - `Ctrl+=` / `Ctrl+-` or `Ctrl+Wheel` — Editor font size zoom
 - **Gutter click (line numbers)** — Selects the entire clicked line

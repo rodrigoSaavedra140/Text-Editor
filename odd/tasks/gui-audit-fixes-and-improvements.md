@@ -23,8 +23,8 @@
   - Aceptación: Atajo `Ctrl+Shift+S` y botón en la toolbar para guardar el documento actual con un nuevo nombre o ruta.
 - **S6** — Comentar / descomentar líneas (`Ctrl+/`):
   - Aceptación: Alterna comentarios de línea según el lenguaje detectado (`//` para Rust/C/C++/Java/JS, `--` para SQL, etc.).
-- **S7** — Duplicar línea o bloque (`Ctrl+D`):
-  - Aceptación: `Ctrl+D` duplica la línea actual bajo el cursor o el bloque seleccionado manteniendo la consistencia de undo.
+- **S7** — Duplicar línea o bloque (`Ctrl+Shift+D`, desde F3; antes `Ctrl+D`):
+  - Aceptación: `Ctrl+Shift+D` duplica la línea actual bajo el cursor o el bloque seleccionado manteniendo la consistencia de undo. `Ctrl+D` quedó para el multi-cursor (F3).
 - **S8** — Selección de línea completa desde el gutter:
   - Aceptación: Al hacer clic sobre el número de línea en el gutter se selecciona la línea completa.
 
@@ -49,4 +49,4 @@
   2. Optimización de frame: `sync_active_metadata_to_tab` elimina clonación de líneas y stacks de undo en frames ociosos.
   3. Pestañas: acción "Guardar y cerrar" en confirmación de cierre y ciclado cíclico `Ctrl+Tab` / `Ctrl+Shift+Tab`.
   4. Guardado: "Guardar como..." (`Ctrl+Shift+S`) y botón en barra de herramientas con reinicio de ruta anterior.
-  5. Edición: comentar/descomentar con `Ctrl+/` según prefijo del lenguaje, duplicar con `Ctrl+D` y selección completa por clic en el gutter.
+  5. Edición: comentar/descomentar con `Ctrl+/` según prefijo del lenguaje, duplicar con `Ctrl+Shift+D` y selección completa por clic en el gutter.

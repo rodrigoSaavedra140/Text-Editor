@@ -1,7 +1,5 @@
 use eframe::egui;
 
-/// Estado del cursor/selección/scroll del editor — vive en EditorApp,
-/// no acá, porque tiene que sobrevivir entre frames.
 /// S10: límites y tamaño por defecto de la fuente del editor.
 pub const MIN_FONT_SIZE: f32 = 8.0;
 pub const MAX_FONT_SIZE: f32 = 32.0;
@@ -28,6 +26,102 @@ pub fn smooth_scroll_step(scroll: f32, target: f32) -> (f32, bool) {
     }
 }
 
+/// F3 (Roadmap v0.2.29): cursor adicional. El primario sigue siendo
+/// `cursor_line`/`cursor_col`/`sel_anchor` del estado; estos son los extra,
+/// así la edición de un solo cursor no cambia de comportamiento.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Caret {
+    pub line: usize,
+    pub col: usize,
+    pub anchor: Option<(usize, usize)>,
+}
+
+impl Caret {
+    /// Rango normalizado del cursor, si tiene selección.
+    pub fn range(&self) -> Option<((usize, usize), (usize, usize))> {
+        let end = (self.line, self.col);
+        let anchor = self.anchor?;
+        if anchor == end {
+            return None;
+        }
+        Some(if anchor <= end { (anchor, end) } else { (end, anchor) })
+    }
+}
+
+/// F3: próxima aparición de `needle` después de `after`, en orden de
+/// documento. Solo busca dentro de una línea (Ctrl+D selecciona una palabra).
+pub fn find_next_occurrence(
+    lines: &[String],
+    needle: &str,
+    after: (usize, usize),
+) -> Option<((usize, usize), (usize, usize))> {
+    if needle.is_empty() || needle.contains('\n') {
+        return None;
+    }
+    let needle_chars: Vec<char> = needle.chars().collect();
+    for (line_idx, line) in lines.iter().enumerate().skip(after.0) {
+        let chars: Vec<char> = line.chars().collect();
+        let from = if line_idx == after.0 { after.1 } else { 0 };
+        if from >= chars.len() {
+            continue;
+        }
+        let mut col = from;
+        while col + needle_chars.len() <= chars.len() {
+            if chars[col..col + needle_chars.len()] == needle_chars[..] {
+                return Some(((line_idx, col), (line_idx, col + needle_chars.len())));
+            }
+            col += 1;
+        }
+    }
+    None
+}
+
+/// F3: inserta el mismo texto en cada posición, de abajo hacia arriba y de
+/// derecha a izquierda, para que las posiciones anteriores no se corran.
+/// Devuelve las posiciones nuevas en el mismo orden que `positions`.
+pub fn insert_text_multi(
+    lines: &mut Vec<String>,
+    positions: &[(usize, usize)],
+    text: &str,
+) -> Vec<(usize, usize)> {
+    let mut order: Vec<usize> = (0..positions.len()).collect();
+    order.sort_by(|&a, &b| positions[b].cmp(&positions[a]));
+    let mut result = positions.to_vec();
+    for idx in order {
+        result[idx] = insert_text(lines, positions[idx], text);
+    }
+    result
+}
+
+/// F3: borra cada rango (en orden descendente) y devuelve, por cada uno, la
+/// posición donde queda su cursor (el inicio del rango borrado).
+pub fn delete_ranges_multi(
+    lines: &mut Vec<String>,
+    ranges: &[((usize, usize), (usize, usize))],
+) -> Vec<(usize, usize)> {
+    let mut order: Vec<usize> = (0..ranges.len()).collect();
+    order.sort_by(|&a, &b| ranges[b].0.cmp(&ranges[a].0));
+    for idx in order {
+        let (start, end) = ranges[idx];
+        delete_range(lines, start, end);
+    }
+    ranges.iter().map(|(start, _)| *start).collect()
+}
+
+/// F3: quita cursores repetidos entre sí y los que coinciden con el primario.
+fn dedup_extra_carets(state: &mut EditorState) {
+    let mut seen: Vec<(usize, usize)> = vec![(state.cursor_line, state.cursor_col)];
+    state.extra_carets.retain(|caret| {
+        let pos = (caret.line, caret.col);
+        if seen.contains(&pos) {
+            false
+        } else {
+            seen.push(pos);
+            true
+        }
+    });
+}
+
 /// Estado del cursor/selección/scroll del editor — vive en EditorApp,
 /// no acá, porque tiene que sobrevivir entre frames.
 #[derive(Debug, Clone)]
@@ -35,6 +129,9 @@ pub struct EditorState {
     pub cursor_line: usize,
     pub cursor_col: usize, // índice de CARÁCTER (no byte) dentro de la línea LÓGICA
     pub sel_anchor: Option<(usize, usize)>,
+    // F3 (Roadmap v0.2.29): cursores extra de Ctrl+D / Alt+Click. El
+    // primario son los tres campos de arriba; esto son solo los adicionales.
+    pub extra_carets: Vec<Caret>,
     pub scroll: f32, // vertical, en píxeles (ya no hay scroll horizontal: el texto se ajusta de línea)
     // OPT-3 (v0.2.26): el scroll de rueda escribe acá y el render interpola
     // hacia este destino. `applied_scroll` guarda lo último que escribió el
@@ -118,6 +215,7 @@ impl Default for EditorState {
             cursor_line: 0,
             cursor_col: 0,
             sel_anchor: None,
+            extra_carets: Vec::new(),
             scroll: 0.0,
             target_scroll: 0.0,
             applied_scroll: 0.0,
@@ -826,8 +924,16 @@ pub fn show(
                     let clicked_col =
                         (sub_row * wrap_chars + col_in_row).min(line_char_count(&lines[clicked_line]));
 
+                    // F3: Alt+Click agrega un cursor extra sin mover el primario.
+                    if ui.input(|i| i.modifiers.alt) {
+                        state.extra_carets.push(Caret {
+                            line: clicked_line,
+                            col: clicked_col,
+                            anchor: None,
+                        });
+                        dedup_extra_carets(state);
                     // S5: doble click selecciona palabra, triple click selecciona línea lógica
-                    if response.triple_clicked() {
+                    } else if response.triple_clicked() {
                         state.sel_anchor = Some((clicked_line, 0));
                         state.cursor_line = clicked_line;
                         state.cursor_col = line_char_count(&lines[clicked_line]);
@@ -915,15 +1021,38 @@ pub fn show(
             for event in events {
             match event {
                 egui::Event::Text(t) => {
-                    if let Some((s, e)) = selection_range(state) {
-                        delete_range(lines, s, e);
-                        state.cursor_line = s.0;
-                        state.cursor_col = s.1;
+                    // F3 (Roadmap v0.2.29): el texto entra en el cursor
+                    // primario y en todos los extra; si alguno tiene
+                    // selección, primero se descarta en bloque.
+                    let primary_range = selection_range(state);
+                    let mut ranges = Vec::new();
+                    if let Some(r) = primary_range {
+                        ranges.push(r);
                     }
-                    let (nl, nc) = insert_text(lines, (state.cursor_line, state.cursor_col), &t);
-                    state.cursor_line = nl;
-                    state.cursor_col = nc;
-                    state.sel_anchor = Some((nl, nc));
+                    for c in &state.extra_carets {
+                        if let Some(r) = c.range() {
+                            ranges.push(r);
+                        }
+                    }
+                    let mut positions =
+                        vec![primary_range.map_or((state.cursor_line, state.cursor_col), |r| r.0)];
+                    for c in &state.extra_carets {
+                        positions.push(c.range().map_or((c.line, c.col), |r| r.0));
+                    }
+                    if !ranges.is_empty() {
+                        delete_ranges_multi(lines, &ranges);
+                    }
+                    let news = insert_text_multi(lines, &positions, &t);
+                    state.cursor_line = news[0].0;
+                    state.cursor_col = news[0].1;
+                    state.sel_anchor = Some(news[0]);
+                    for (i, caret) in state.extra_carets.iter_mut().enumerate() {
+                        if let Some(p) = news.get(i + 1) {
+                            caret.line = p.0;
+                            caret.col = p.1;
+                            caret.anchor = Some(*p);
+                        }
+                    }
                     changed = true;
                     resync_rows!();
                 }
@@ -1054,39 +1183,122 @@ pub fn show(
                         resync_rows!();
                     }
                     egui::Key::Backspace => {
-                        if let Some((s, e)) = selection_range(state) {
-                            delete_range(lines, s, e);
-                            state.cursor_line = s.0;
-                            state.cursor_col = s.1;
-                        } else if state.cursor_col > 0 {
-                            let bs = char_to_byte(&lines[state.cursor_line], state.cursor_col - 1);
-                            let be = char_to_byte(&lines[state.cursor_line], state.cursor_col);
-                            lines[state.cursor_line].replace_range(bs..be, "");
-                            state.cursor_col -= 1;
-                        } else if state.cursor_line > 0 {
-                            let prev_len = line_char_count(&lines[state.cursor_line - 1]);
-                            let cur = lines.remove(state.cursor_line);
-                            lines[state.cursor_line - 1].push_str(&cur);
-                            state.cursor_line -= 1;
-                            state.cursor_col = prev_len;
+                        // F3: borra la selección, o el carácter anterior, en cada cursor.
+                        let mut ranges = Vec::new();
+                        let mut single_positions = Vec::new();
+                        let primary_range = selection_range(state);
+                        match primary_range {
+                            Some(r) => ranges.push(r),
+                            None => single_positions.push((state.cursor_line, state.cursor_col)),
                         }
+                        for c in &state.extra_carets {
+                            match c.range() {
+                                Some(r) => ranges.push(r),
+                                None => single_positions.push((c.line, c.col)),
+                            }
+                        }
+                        for (l, c) in &single_positions {
+                            if *c > 0 {
+                                ranges.push(((*l, *c - 1), (*l, *c)));
+                            } else if *l > 0 {
+                                ranges.push(((*l - 1, line_char_count(&lines[*l - 1])), (*l, 0)));
+                            }
+                        }
+
+                        // Las posiciones nuevas se calculan ANTES de borrar, con
+                        // las líneas todavía en su forma original.
+                        let new_pos_after = |line: usize, col: usize, had_selection: bool| {
+                            if had_selection {
+                                // el inicio de la selección ya es la posición final
+                                None
+                            } else if col > 0 {
+                                Some((line, col - 1))
+                            } else if line > 0 {
+                                Some((line - 1, line_char_count(&lines[line - 1])))
+                            } else {
+                                Some((line, col))
+                            }
+                        };
+                        let primary_new = match primary_range {
+                            Some(r) => r.0,
+                            None => new_pos_after(state.cursor_line, state.cursor_col, false)
+                                .unwrap(),
+                        };
+                        let extras_new: Vec<(usize, usize)> = state
+                            .extra_carets
+                            .iter()
+                            .map(|c| match c.range() {
+                                Some(r) => r.0,
+                                None => new_pos_after(c.line, c.col, false).unwrap(),
+                            })
+                            .collect();
+
+                        if !ranges.is_empty() {
+                            delete_ranges_multi(lines, &ranges);
+                        }
+                        state.cursor_line = primary_new.0;
+                        state.cursor_col = primary_new.1;
+                        for (caret, pos) in state.extra_carets.iter_mut().zip(extras_new) {
+                            caret.line = pos.0;
+                            caret.col = pos.1;
+                            caret.anchor = Some(pos);
+                        }
+                        dedup_extra_carets(state);
                         state.sel_anchor = Some((state.cursor_line, state.cursor_col));
                         changed = true;
                         resync_rows!();
                     }
                     egui::Key::Delete => {
-                        if let Some((s, e)) = selection_range(state) {
-                            delete_range(lines, s, e);
-                            state.cursor_line = s.0;
-                            state.cursor_col = s.1;
-                        } else if state.cursor_col < line_char_count(&lines[state.cursor_line]) {
-                            let bs = char_to_byte(&lines[state.cursor_line], state.cursor_col);
-                            let be = char_to_byte(&lines[state.cursor_line], state.cursor_col + 1);
-                            lines[state.cursor_line].replace_range(bs..be, "");
-                        } else if state.cursor_line + 1 < lines.len() {
-                            let next = lines.remove(state.cursor_line + 1);
-                            lines[state.cursor_line].push_str(&next);
+                        // F3: borra la selección, o el carácter siguiente, en cada cursor.
+                        let mut ranges = Vec::new();
+                        let mut single_positions = Vec::new();
+                        let primary_range = selection_range(state);
+                        match primary_range {
+                            Some(r) => ranges.push(r),
+                            None => single_positions.push((state.cursor_line, state.cursor_col)),
                         }
+                        for c in &state.extra_carets {
+                            match c.range() {
+                                Some(r) => ranges.push(r),
+                                None => single_positions.push((c.line, c.col)),
+                            }
+                        }
+                        for (l, c) in &single_positions {
+                            if *c < line_char_count(&lines[*l]) {
+                                ranges.push(((*l, *c), (*l, *c + 1)));
+                            } else if *l + 1 < lines.len() {
+                                ranges.push(((*l, *c), (*l + 1, 0)));
+                            }
+                        }
+
+                        let new_pos_after = |line: usize, col: usize| {
+                            if col < line_char_count(&lines[line]) || line + 1 >= lines.len() {
+                                (line, col)
+                            } else {
+                                (line, col)
+                            }
+                        };
+                        let primary_new = match primary_range {
+                            Some(r) => r.0,
+                            None => new_pos_after(state.cursor_line, state.cursor_col),
+                        };
+                        let extras_new: Vec<(usize, usize)> = state
+                            .extra_carets
+                            .iter()
+                            .map(|c| c.range().map_or(new_pos_after(c.line, c.col), |r| r.0))
+                            .collect();
+
+                        if !ranges.is_empty() {
+                            delete_ranges_multi(lines, &ranges);
+                        }
+                        state.cursor_line = primary_new.0;
+                        state.cursor_col = primary_new.1;
+                        for (caret, pos) in state.extra_carets.iter_mut().zip(extras_new) {
+                            caret.line = pos.0;
+                            caret.col = pos.1;
+                            caret.anchor = Some(pos);
+                        }
+                        dedup_extra_carets(state);
                         state.sel_anchor = Some((state.cursor_line, state.cursor_col));
                         changed = true;
                         resync_rows!();
@@ -1182,8 +1394,12 @@ pub fn show(
                         state.cursor_line = lines.len() - 1;
                         state.cursor_col = line_char_count(&lines[state.cursor_line]);
                     }
-                    egui::Key::D if (modifiers.command || modifiers.ctrl) && !modifiers.shift => {
-                        // S7: Duplicar línea o bloque seleccionado
+                    egui::Key::Escape if !state.extra_carets.is_empty() => {
+                        // F3: Escape colapsa todos los cursores al primario.
+                        state.extra_carets.clear();
+                    }
+                    egui::Key::D if (modifiers.command || modifiers.ctrl) && modifiers.shift => {
+                        // S7 (movido en F3): Duplicar línea o bloque seleccionado
                         let sel = selection_range(state);
                         if let Some((s, e)) = sel {
                             let from_l = s.0;
@@ -1207,6 +1423,32 @@ pub fn show(
                         state.row_counts = rebuild_row_counts(lines, wrap_chars);
                         state.char_lens = rebuild_char_lens(lines);
                         state.cum_rows = build_cum_rows(&state.row_counts);
+                    }
+                    egui::Key::D if modifiers.command || modifiers.ctrl => {
+                        // F3 (Roadmap v0.2.29): Ctrl+D selecciona la palabra
+                        // bajo el cursor; las pulsaciones siguientes agregan la
+                        // próxima aparición del texto seleccionado como cursor
+                        // extra (deduplicado por posición).
+                        if let Some((s, e)) = selection_range(state) {
+                            if s.0 == e.0 && e.1 > s.1 {
+                                let needle: String =
+                                    lines[s.0].chars().skip(s.1).take(e.1 - s.1).collect();
+                                if let Some((ns, ne)) = find_next_occurrence(&lines, &needle, e) {
+                                    state.extra_carets.push(Caret {
+                                        line: ne.0,
+                                        col: ne.1,
+                                        anchor: Some(ns),
+                                    });
+                                    dedup_extra_carets(state);
+                                }
+                            }
+                        } else {
+                            let (ws, we) = word_range_at(&lines[state.cursor_line], state.cursor_col);
+                            if ws != we {
+                                state.sel_anchor = Some((state.cursor_line, ws));
+                                state.cursor_col = we;
+                            }
+                        }
                     }
                     egui::Key::Slash if modifiers.command || modifiers.ctrl => {
                         // S6: Comentar / Descomentar
@@ -1387,6 +1629,31 @@ pub fn show(
                 egui::pos2(gutter_rect.right(), line_top_y + rows_here as f32 * row_height),
             );
             gutter_painter.rect_filled(gutter_indicator, 0.0, theme.border_focus);
+        }
+
+        // F3 (Roadmap v0.2.29): selección y cursor de los cursores extra que
+        // caen en esta línea. Se pinta antes del texto para no taparlo.
+        for caret in &state.extra_carets {
+            if caret.line != i {
+                continue;
+            }
+            if let Some((start_pos, end_pos)) = caret.range() {
+                let sx = text_left + start_pos.1 as f32 * char_width;
+                let ex = text_left + end_pos.1 as f32 * char_width;
+                painter.rect_filled(
+                    egui::Rect::from_min_max(
+                        egui::pos2(sx, line_top_y),
+                        egui::pos2(ex.max(sx + 1.0), line_top_y + row_height),
+                    ),
+                    0.0,
+                    theme.selection,
+                );
+            }
+            let cx = text_left + caret.col as f32 * char_width;
+            painter.line_segment(
+                [egui::pos2(cx, line_top_y), egui::pos2(cx, line_top_y + row_height)],
+                egui::Stroke::new(1.5_f32, theme.caret),
+            );
         }
 
         // F1 (Roadmap v0.2.27): marca de estado git en el borde izquierdo del
@@ -2322,5 +2589,61 @@ mod tests {
         let (scroll, animating) = smooth_scroll_step(10.0, 10.4);
         assert_eq!(scroll, 10.4, "diferencias sub-pixel se asientan solas");
         assert!(!animating, "no se pide repaint por menos de medio pixel");
+    }
+
+    // F3 (Roadmap v0.2.29): multi-cursor.
+
+    #[test]
+    fn caret_range_normalizes_both_directions() {
+        let forward = Caret { line: 1, col: 5, anchor: Some((1, 2)) };
+        assert_eq!(forward.range(), Some(((1, 2), (1, 5))));
+        let backward = Caret { line: 1, col: 2, anchor: Some((1, 5)) };
+        assert_eq!(backward.range(), Some(((1, 2), (1, 5))));
+        let no_selection = Caret { line: 1, col: 2, anchor: Some((1, 2)) };
+        assert_eq!(no_selection.range(), None);
+        let bare = Caret { line: 1, col: 2, anchor: None };
+        assert_eq!(bare.range(), None);
+    }
+
+    #[test]
+    fn find_next_occurrence_searches_forward_across_lines() {
+        let lines = vec!["let x = foo;".to_string(), "foo();".to_string()];
+        // Desde el final de la primera aparición salta a la de la línea 2.
+        assert_eq!(find_next_occurrence(&lines, "foo", (0, 11)), Some(((1, 0), (1, 3))));
+        // Sin más apariciones devuelve None.
+        assert_eq!(find_next_occurrence(&lines, "foo", (1, 3)), None);
+        // Un texto vacío no busca nada.
+        assert_eq!(find_next_occurrence(&lines, "", (0, 0)), None);
+    }
+
+    #[test]
+    fn insert_text_multi_does_not_shift_earlier_positions() {
+        let mut lines = vec!["abc".to_string(), "abc".to_string()];
+        let new_positions = insert_text_multi(&mut lines, &[(0, 1), (1, 1)], "X");
+        assert_eq!(lines, vec!["aXbc".to_string(), "aXbc".to_string()]);
+        assert_eq!(new_positions, vec![(0, 2), (1, 2)]);
+    }
+
+    #[test]
+    fn delete_ranges_multi_removes_every_range() {
+        let mut lines = vec!["abcdef".to_string(), "123456".to_string()];
+        let starts = delete_ranges_multi(&mut lines, &[((0, 1), (0, 3)), ((1, 0), (1, 2))]);
+        assert_eq!(lines, vec!["adef".to_string(), "3456".to_string()]);
+        assert_eq!(starts, vec![(0, 1), (1, 0)]);
+    }
+
+    #[test]
+    fn dedup_extra_carets_drops_duplicates_and_primary() {
+        let mut state = EditorState::default();
+        state.cursor_line = 0;
+        state.cursor_col = 0;
+        state.extra_carets = vec![
+            Caret { line: 0, col: 0, anchor: None },
+            Caret { line: 0, col: 5, anchor: None },
+            Caret { line: 0, col: 5, anchor: Some((0, 3)) },
+        ];
+        dedup_extra_carets(&mut state);
+        assert_eq!(state.extra_carets.len(), 1, "solo queda el cursor distinto del primario");
+        assert_eq!((state.extra_carets[0].line, state.extra_carets[0].col), (0, 5));
     }
 }
