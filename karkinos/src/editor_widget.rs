@@ -345,6 +345,16 @@ const PAD_X: f32 = 8.0;
 const PAD_Y: f32 = 6.0;
 // Ancho de la franja de la barra de scroll vertical, a la derecha.
 const SCROLLBAR_W: f32 = 12.0;
+// F9 (Roadmap v0.2.36): ancho del minimap lateral.
+const MINIMAP_W: f32 = 64.0;
+
+/// F9: franja visible del minimap (top, alto) dentro de su altura total.
+/// `scroll_frac` y `visible_frac` van en 0.0..=1.0.
+pub fn minimap_viewport(scroll_frac: f32, visible_frac: f32, height: f32) -> (f32, f32) {
+    let h = (visible_frac.clamp(0.0, 1.0) * height).max(6.0).min(height);
+    let top = (scroll_frac.clamp(0.0, 1.0) * (height - h)).max(0.0);
+    (top, h)
+}
 
 // S2 (Roadmap v0.2.9): período del parpadeo del caret, en segundos.
 // El pesto SOLIDO durante CARET_BLINK_PERIOD_S tras cada interacción y
@@ -886,7 +896,8 @@ pub fn show(
     // Reservamos SIEMPRE el ancho de la scrollbar y del gutter para
     // calcular el wrap — así el punto de corte de las líneas no
     // "salta" cuando la banda gana un dígito o aparece la barra.
-    let usable_width = (rect.width() - gutter_w - PAD_X - SCROLLBAR_W).max(10.0);
+    let usable_width =
+        (rect.width() - gutter_w - PAD_X - SCROLLBAR_W - MINIMAP_W).max(10.0);
     let wrap_chars = wrap_chars_for(usable_width, char_width);
 
     // Reconstruir la caché de filas por línea SOLO si cambió la
@@ -912,7 +923,12 @@ pub fn show(
     let max_scroll = (total_height - rect.height()).max(0.0);
     let show_scrollbar = max_scroll > 0.0;
     let scrollbar_track = egui::Rect::from_min_max(
-        egui::pos2(rect.right() - SCROLLBAR_W, rect.top()),
+        egui::pos2(rect.right() - SCROLLBAR_W - MINIMAP_W, rect.top()),
+        egui::pos2(rect.right() - MINIMAP_W, rect.bottom()),
+    );
+    // F9 (Roadmap v0.2.36): tira del minimap, a la derecha de la barra.
+    let minimap_rect = egui::Rect::from_min_max(
+        egui::pos2(rect.right() - MINIMAP_W, rect.top()),
         egui::pos2(rect.right(), rect.bottom()),
     );
 
@@ -2124,6 +2140,70 @@ pub fn show(
         }
     }
 
+    // F9 (Roadmap v0.2.36): minimap lateral. Una barra por línea proporcional
+    // a su largo, viewport translúcido y click/arrastre para scrollear.
+    {
+        let mm_painter = ui.painter();
+        mm_painter.rect_filled(minimap_rect, 0.0, theme.bg);
+        let total = lines.len().max(1);
+        let step = (minimap_rect.height() / total as f32).max(1.0);
+        for (i, line) in lines.iter().enumerate() {
+            let y = minimap_rect.top() + i as f32 * step;
+            if y > minimap_rect.bottom() {
+                break;
+            }
+            let len = state
+                .char_lens
+                .get(i)
+                .copied()
+                .unwrap_or_else(|| line.chars().count());
+            if len == 0 {
+                continue;
+            }
+            let width = ((len as f32 / 120.0).min(1.0)) * (MINIMAP_W - 8.0);
+            mm_painter.rect_filled(
+                egui::Rect::from_min_size(
+                    egui::pos2(minimap_rect.left() + 4.0, y),
+                    egui::vec2(width.max(1.0), step.max(1.0)),
+                ),
+                0.0,
+                theme.text_muted.gamma_multiply(0.35),
+            );
+        }
+
+        let visible_frac = rect.height() / total_height.max(1.0);
+        let scroll_frac = if max_scroll > 0.0 {
+            state.scroll / max_scroll
+        } else {
+            0.0
+        };
+        let (viewport_top, viewport_h) =
+            minimap_viewport(scroll_frac, visible_frac, minimap_rect.height());
+        mm_painter.rect_filled(
+            egui::Rect::from_min_size(
+                egui::pos2(minimap_rect.left(), minimap_rect.top() + viewport_top),
+                egui::vec2(MINIMAP_W, viewport_h),
+            ),
+            2.0,
+            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 20),
+        );
+
+        let mm_response = ui.interact(
+            minimap_rect,
+            id.with("minimap"),
+            egui::Sense::click_and_drag(),
+        );
+        if let Some(pos) = mm_response.interact_pointer_pos() {
+            if mm_response.clicked() || mm_response.dragged() {
+                let frac = ((pos.y - minimap_rect.top()) / minimap_rect.height().max(1.0))
+                    .clamp(0.0, 1.0);
+                state.scroll = frac * max_scroll;
+                state.target_scroll = state.scroll;
+                state.applied_scroll = state.scroll;
+            }
+        }
+    }
+
     // S2 (Roadmap v0.2.9): wake del parpadeo — request_repaint_after
     // pide el PRÓXIMO cruce de fase (nunca un loop continuo). Sin foco
     // no hay caret ni blink: no se pinta ni se despierta.
@@ -2691,6 +2771,24 @@ mod tests {
         let (scroll, animating) = smooth_scroll_step(10.0, 10.4);
         assert_eq!(scroll, 10.4, "diferencias sub-pixel se asientan solas");
         assert!(!animating, "no se pide repaint por menos de medio pixel");
+    }
+
+    // F9 (Roadmap v0.2.36): minimap.
+
+    #[test]
+    fn minimap_viewport_es_proporcional_y_no_desborda() {
+        let (top0, h0) = minimap_viewport(0.0, 0.25, 200.0);
+        assert_eq!(top0, 0.0);
+        assert_eq!(h0, 50.0);
+
+        let (top1, h1) = minimap_viewport(1.0, 0.25, 200.0);
+        assert_eq!(top1, 150.0);
+        assert!(top1 + h1 <= 200.0 + f32::EPSILON);
+
+        // Documento que entra entero: viewport del alto total y sin desplazamiento.
+        let (top2, h2) = minimap_viewport(0.0, 1.5, 120.0);
+        assert_eq!(h2, 120.0);
+        assert_eq!(top2, 0.0);
     }
 
     // F3 (Roadmap v0.2.29): multi-cursor.
