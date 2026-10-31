@@ -308,14 +308,22 @@ fn relative_display(root: &Path, file: &Path) -> String {
         .replace('\\', "/")
 }
 
-/// Recorre el árbol saltando los directorios excluidos.
-pub fn walk_files(root: &Path) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    walk_into(root, &mut out);
-    out
+/// Recorre el árbol saltando los directorios excluidos y devuelve
+/// `(archivos, directorios)`. Los directorios se reportan en preorden, así
+/// cada carpeta aparece antes que sus hijas.
+pub fn walk_entries(root: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    let mut files = Vec::new();
+    let mut dirs = Vec::new();
+    walk_into(root, &mut files, &mut dirs);
+    (files, dirs)
 }
 
-fn walk_into(dir: &Path, out: &mut Vec<PathBuf>) {
+/// Retrocompatibilidad: solo los archivos del recorrido.
+pub fn walk_files(root: &Path) -> Vec<PathBuf> {
+    walk_entries(root).0
+}
+
+fn walk_into(dir: &Path, files: &mut Vec<PathBuf>, dirs: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -330,9 +338,10 @@ fn walk_into(dir: &Path, out: &mut Vec<PathBuf>) {
             if DEFAULT_EXCLUDED_DIRS.contains(&name.as_ref()) {
                 continue;
             }
-            walk_into(&path, out);
+            dirs.push(path.clone());
+            walk_into(&path, files, dirs);
         } else if file_type.is_file() {
-            out.push(path);
+            files.push(path);
         }
     }
 }
@@ -437,6 +446,43 @@ mod tests {
         assert!(relative.contains(&"src/main.rs".to_string()), "{relative:?}");
         assert!(!relative.iter().any(|r| r.starts_with("target/")), "{relative:?}");
         assert!(!relative.iter().any(|r| r.starts_with(".git/")), "{relative:?}");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn walk_entries_reports_files_and_empty_directories() {
+        let root = temp_dir("entries");
+        std::fs::create_dir_all(root.join("src/nested")).unwrap();
+        std::fs::create_dir_all(root.join("empty")).unwrap();
+        std::fs::create_dir_all(root.join("target")).unwrap();
+        std::fs::write(root.join("src/main.rs"), "fn main() {}").unwrap();
+        std::fs::write(root.join("target/junk.rs"), "fn junk() {}").unwrap();
+
+        let (files, dirs) = walk_entries(&root);
+        let rel_files: Vec<String> = files
+            .iter()
+            .map(|f| relative_display(&root, f))
+            .collect();
+        let rel_dirs: Vec<String> = dirs
+            .iter()
+            .map(|d| relative_display(&root, d))
+            .collect();
+
+        assert!(rel_files.contains(&"src/main.rs".to_string()), "{rel_files:?}");
+        assert!(!rel_files.iter().any(|f| f.starts_with("target/")), "{rel_files:?}");
+        assert!(rel_dirs.contains(&"src".to_string()), "{rel_dirs:?}");
+        assert!(rel_dirs.contains(&"src/nested".to_string()), "{rel_dirs:?}");
+        assert!(rel_dirs.contains(&"empty".to_string()), "{rel_dirs:?}");
+        assert!(
+            !rel_dirs.iter().any(|d| d == "target" || d.starts_with("target/")),
+            "{rel_dirs:?}"
+        );
+        assert_eq!(
+            walk_files(&root),
+            files,
+            "walk_files delega en walk_entries y conserva el orden"
+        );
 
         std::fs::remove_dir_all(&root).ok();
     }

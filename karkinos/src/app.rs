@@ -162,6 +162,8 @@ pub struct EditorApp {
     pub command_palette: CommandPaletteState,
     // F8 (Roadmap v0.2.35): rama actual y blame inline.
     pub git_status: GitStatusState,
+    // v0.2.42: pestaña Source Control (cambios, mensaje y feedback).
+    pub git_ui: GitUiState,
     pub blame_worker: crate::git_status_worker::BlameWorker,
 }
 
@@ -211,6 +213,7 @@ pub enum SidebarTab {
     None,
     Explorer,
     Search,
+    SourceControl,
     Symbols,
 }
 
@@ -219,6 +222,8 @@ pub enum SidebarTab {
 pub struct ExplorerState {
     pub open: bool,
     pub files: Vec<std::path::PathBuf>,
+    /// v0.2.42: todas las carpetas del recorrido, incluidas las vacías.
+    pub directories: Vec<std::path::PathBuf>,
     /// Raíz para la que se cargó la lista; si cambia, se refresca.
     pub loaded_for: Option<std::path::PathBuf>,
     /// Carpetas plegadas en el árbol (UI-6).
@@ -282,53 +287,88 @@ pub enum FileTreeNode {
 impl FileTreeNode {
     /// Construye el árbol jerárquico a partir de la lista plana de archivos.
     /// Primero las carpetas (alfabéticas), después los archivos.
+    ///
+    /// Se conserva por retrocompatibilidad; la UI usa
+    /// [`FileTreeNode::build_from_paths_and_dirs`] para incluir carpetas vacías.
+    #[allow(dead_code)]
     pub fn build_from_paths(
         root: &std::path::Path,
         paths: &[std::path::PathBuf],
     ) -> Vec<FileTreeNode> {
-        use std::collections::BTreeMap;
-        let mut dirs: BTreeMap<String, Vec<std::path::PathBuf>> = BTreeMap::new();
-        let mut files: Vec<FileTreeNode> = Vec::new();
+        Self::build_from_paths_and_dirs(root, paths, &[])
+    }
 
-        for path in paths {
-            let Ok(relative) = path.strip_prefix(root) else {
-                continue;
-            };
-            let mut parts: Vec<&str> = relative
-                .components()
-                .filter_map(|c| c.as_os_str().to_str())
-                .collect();
-            let Some(file_name) = parts.pop() else { continue };
-            if parts.is_empty() {
-                let extension = path
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .unwrap_or("")
-                    .to_string();
-                files.push(FileTreeNode::File {
-                    name: file_name.to_string(),
-                    path: path.clone(),
-                    extension,
-                });
-            } else {
-                dirs.entry(parts[0].to_string())
-                    .or_default()
-                    .push(path.clone());
+    /// v0.2.42: construye el árbol combinando archivos y carpetas explícitas,
+    /// así las carpetas vacías también aparecen. Las rutas se interpretan
+    /// relativas a `root` y se descartan las que caen fuera.
+    pub fn build_from_paths_and_dirs(
+        root: &std::path::Path,
+        files: &[std::path::PathBuf],
+        dirs: &[std::path::PathBuf],
+    ) -> Vec<FileTreeNode> {
+        use std::collections::{BTreeMap, BTreeSet};
+
+        let mut dir_set: BTreeSet<std::path::PathBuf> = BTreeSet::new();
+        for dir in dirs {
+            if let Ok(relative) = dir.strip_prefix(root) {
+                insert_with_ancestors(&mut dir_set, relative);
             }
         }
 
+        let mut files_by_dir: BTreeMap<std::path::PathBuf, Vec<FileTreeNode>> = BTreeMap::new();
+        for path in files {
+            let Ok(relative) = path.strip_prefix(root) else {
+                continue;
+            };
+            let Some(file_name) = relative.file_name() else {
+                continue;
+            };
+            let parent = relative.parent().unwrap_or(std::path::Path::new(""));
+            insert_with_ancestors(&mut dir_set, parent);
+            files_by_dir
+                .entry(parent.to_path_buf())
+                .or_default()
+                .push(FileTreeNode::File {
+                    name: file_name.to_string_lossy().to_string(),
+                    path: path.clone(),
+                    extension: path
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .unwrap_or("")
+                        .to_string(),
+                });
+        }
+
+        Self::build_level(root, std::path::Path::new(""), &dir_set, &mut files_by_dir)
+    }
+
+    fn build_level(
+        root: &std::path::Path,
+        rel_dir: &std::path::Path,
+        dir_set: &std::collections::BTreeSet<std::path::PathBuf>,
+        files_by_dir: &mut std::collections::BTreeMap<std::path::PathBuf, Vec<FileTreeNode>>,
+    ) -> Vec<FileTreeNode> {
         let mut out = Vec::new();
-        for (name, children_paths) in dirs {
-            let dir_path = root.join(&name);
-            let children = FileTreeNode::build_from_paths(&dir_path, &children_paths);
+        for dir_rel in dir_set {
+            if dir_rel.parent() != Some(rel_dir) {
+                continue;
+            }
+            let name = dir_rel
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let path = root.join(dir_rel);
+            let children = Self::build_level(root, dir_rel, dir_set, files_by_dir);
             out.push(FileTreeNode::Directory {
                 name,
-                path: dir_path,
+                path,
                 children,
             });
         }
-        files.sort_by(|a, b| a.name().cmp(b.name()));
-        out.extend(files);
+        if let Some(mut file_nodes) = files_by_dir.remove(rel_dir) {
+            file_nodes.sort_by(|a, b| a.name().cmp(b.name()));
+            out.extend(file_nodes);
+        }
         out
     }
 
@@ -347,6 +387,19 @@ impl FileTreeNode {
                 FileTreeNode::collect_directories(children, out);
             }
         }
+    }
+}
+
+/// v0.2.42: registra `relative` y todos sus ancestros en el conjunto de
+/// carpetas del árbol, para que una carpeta vacía no pierda su jerarquía.
+fn insert_with_ancestors(
+    set: &mut std::collections::BTreeSet<std::path::PathBuf>,
+    relative: &std::path::Path,
+) {
+    let mut current = std::path::PathBuf::new();
+    for component in relative.components() {
+        current.push(component.as_os_str());
+        set.insert(current.clone());
     }
 }
 
@@ -516,7 +569,34 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
         category: "File",
         shortcut: Some("Ctrl+N"),
     },
+    PaletteCommand {
+        id: "git:source_control",
+        title: "Git: Open Source Control",
+        category: "Git",
+        shortcut: Some("Ctrl+Shift+G"),
+    },
+    PaletteCommand {
+        id: "git:refresh",
+        title: "Git: Refresh Status",
+        category: "Git",
+        shortcut: None,
+    },
+    PaletteCommand {
+        id: "git:stage_all",
+        title: "Git: Stage All Changes",
+        category: "Git",
+        shortcut: None,
+    },
 ];
+
+/// v0.2.42: estado de la pestaña Source Control.
+#[derive(Debug, Default)]
+pub struct GitUiState {
+    pub entries: Vec<karkinos_core::git_status::GitStatusEntry>,
+    pub commit_message: String,
+    pub is_loading: bool,
+    pub last_error: Option<String>,
+}
 
 /// F8 (Roadmap v0.2.35): rama actual y cache de blame por archivo.
 #[derive(Debug, Default)]
@@ -580,6 +660,7 @@ impl Default for EditorApp {
             symbol_picker: SymbolPickerState::default(),
             command_palette: CommandPaletteState::default(),
             git_status: GitStatusState::default(),
+            git_ui: GitUiState::default(),
             blame_worker: crate::git_status_worker::BlameWorker::spawn(),
         }
     }
@@ -887,22 +968,27 @@ impl EditorApp {
         }
     }
 
-    /// Barra lateral: recarga la lista de archivos del proyecto. Reusa el
-    /// recorrido del buscador global (mismas exclusiones y sin binarios).
+    /// Barra lateral: recarga la lista de archivos y carpetas del proyecto.
+    /// Reusa el recorrido del buscador global (mismas exclusiones y sin
+    /// binarios); las carpetas vacías también entran al árbol (v0.2.42).
     pub fn refresh_explorer(&mut self) {
         let root = self.doc.browse_dir.clone();
-        if self.explorer.loaded_for.as_ref() == Some(&root) && !self.explorer.files.is_empty() {
+        if self.explorer.loaded_for.as_ref() == Some(&root)
+            && (!self.explorer.files.is_empty() || !self.explorer.directories.is_empty())
+        {
             return;
         }
-        let mut files = karkinos_core::workspace_search::walk_files(&root);
+        let (mut files, mut directories) = karkinos_core::workspace_search::walk_entries(&root);
         files.sort();
-        let tree = FileTreeNode::build_from_paths(&root, &files);
+        directories.sort();
+        let tree = FileTreeNode::build_from_paths_and_dirs(&root, &files, &directories);
         if self.explorer.collapsed_dirs.is_empty() {
             let mut dirs = Vec::new();
             FileTreeNode::collect_directories(&tree, &mut dirs);
             self.explorer.collapsed_dirs.extend(dirs);
         }
         self.explorer.files = files;
+        self.explorer.directories = directories;
         self.explorer.loaded_for = Some(root);
     }
 
@@ -1001,6 +1087,91 @@ impl EditorApp {
         }
     }
 
+    /// v0.2.42: raíz del repo que contiene el workspace actual.
+    fn git_repo_root(&self) -> std::path::PathBuf {
+        crate::git_diff_worker::repo_root_for(&self.doc.browse_dir)
+            .unwrap_or_else(|| self.doc.browse_dir.clone())
+    }
+
+    /// v0.2.42: recarga los cambios pendientes de `git status --porcelain`.
+    pub fn refresh_git_status(&mut self) {
+        let root = self.git_repo_root();
+        self.git_ui.is_loading = true;
+        self.git_ui.last_error = None;
+
+        match karkinos_core::git_status::query_git_status(&root) {
+            Ok(entries) => {
+                self.git_ui.entries = entries;
+            }
+            Err(error) => {
+                self.git_ui.entries.clear();
+                self.git_ui.last_error = Some(error.clone());
+                self.doc.status = format!("Git status failed: {error}");
+            }
+        }
+
+        self.git_ui.is_loading = false;
+        self.git_status.branch = karkinos_core::read_branch(&root);
+    }
+
+    /// v0.2.42: crea un commit con el mensaje de la caja de Source Control.
+    pub fn git_commit(&mut self) -> Result<String, String> {
+        let root = self.git_repo_root();
+        let message = self.git_ui.commit_message.clone();
+
+        match karkinos_core::git_status::execute_git_commit(&root, &message) {
+            Ok(output) => {
+                self.git_ui.commit_message.clear();
+                self.git_ui.last_error = None;
+                self.refresh_git_status();
+                self.doc.status = "Commit created".to_string();
+                Ok(output)
+            }
+            Err(error) => {
+                self.git_ui.last_error = Some(error.clone());
+                self.doc.status = format!("Git commit failed: {error}");
+                Err(error)
+            }
+        }
+    }
+
+    /// v0.2.42: agrega todos los cambios al índice (`git add -A`).
+    pub fn git_stage_all(&mut self) -> Result<(), String> {
+        let root = self.git_repo_root();
+
+        match karkinos_core::git_status::execute_git_stage_all(&root) {
+            Ok(()) => {
+                self.git_ui.last_error = None;
+                self.refresh_git_status();
+                self.doc.status = "Staged all changes".to_string();
+                Ok(())
+            }
+            Err(error) => {
+                self.git_ui.last_error = Some(error.clone());
+                self.doc.status = format!("Git stage failed: {error}");
+                Err(error)
+            }
+        }
+    }
+
+    /// v0.2.42: agrega un único archivo al índice.
+    pub fn git_stage_path(&mut self, path: &std::path::Path) -> Result<(), String> {
+        let root = self.git_repo_root();
+
+        match karkinos_core::git_status::execute_git_stage_path(&root, path) {
+            Ok(()) => {
+                self.git_ui.last_error = None;
+                self.refresh_git_status();
+                Ok(())
+            }
+            Err(error) => {
+                self.git_ui.last_error = Some(error.clone());
+                self.doc.status = format!("Git stage failed: {error}");
+                Err(error)
+            }
+        }
+    }
+
     /// F8: consume los blame que terminó el worker (cacheados por archivo).
     pub fn poll_blame_results(&mut self) -> bool {
         let mut applied = false;
@@ -1066,6 +1237,19 @@ impl EditorApp {
             self.explorer.open = false;
             self.workspace_search.open = false;
         }
+    }
+
+    /// v0.2.42: abre (o cierra) la pestaña Source Control y refresca el estado.
+    pub fn open_source_control(&mut self) {
+        if self.sidebar_tab == SidebarTab::SourceControl {
+            self.sidebar_tab = SidebarTab::None;
+        } else {
+            self.sidebar_tab = SidebarTab::SourceControl;
+            self.explorer.open = false;
+            self.workspace_search.open = false;
+            self.symbol_picker.open = false;
+        }
+        self.refresh_git_status();
     }
 
     /// F7: símbolos filtrados por el texto del selector (sin distinguir
@@ -1179,6 +1363,11 @@ impl EditorApp {
             "sidebar:explorer" => self.toggle_explorer(),
             "sidebar:search" => self.open_workspace_search(),
             "sidebar:symbols" => self.open_symbol_picker(),
+            "git:source_control" => self.open_source_control(),
+            "git:refresh" => self.refresh_git_status(),
+            "git:stage_all" => {
+                let _ = self.git_stage_all();
+            }
             "terminal:toggle" => {
                 if self.cargo.panel_open && self.cargo.active_tab == 0 {
                     self.cargo.panel_open = false;
@@ -3808,6 +3997,122 @@ mod tests {
         assert_eq!(dirs.len(), 3);
     }
 
+    #[test]
+    fn file_tree_includes_empty_directories() {
+        let root = std::path::Path::new("/proj");
+        let files = vec![std::path::PathBuf::from("/proj/src/main.rs")];
+        let dirs = vec![
+            std::path::PathBuf::from("/proj/src"),
+            std::path::PathBuf::from("/proj/assets/images"),
+            std::path::PathBuf::from("/proj/empty"),
+        ];
+
+        let tree = FileTreeNode::build_from_paths_and_dirs(root, &files, &dirs);
+        let names: Vec<&str> = tree.iter().map(|n| n.name()).collect();
+        assert_eq!(names, vec!["assets", "empty", "src"], "{names:?}");
+
+        let empty = tree
+            .iter()
+            .find(|n| n.name() == "empty")
+            .expect("la carpeta vacía aparece en el árbol");
+        match empty {
+            FileTreeNode::Directory { children, path, .. } => {
+                assert!(children.is_empty(), "sin hijos");
+                assert_eq!(path, &std::path::PathBuf::from("/proj/empty"));
+            }
+            _ => panic!("empty tiene que ser una carpeta"),
+        }
+
+        let assets = tree
+            .iter()
+            .find(|n| n.name() == "assets")
+            .expect("assets aparece");
+        match assets {
+            FileTreeNode::Directory { children, .. } => {
+                assert_eq!(children.len(), 1);
+                assert_eq!(children[0].name(), "images");
+                match &children[0] {
+                    FileTreeNode::Directory { children, .. } => {
+                        assert!(children.is_empty(), "images queda vacía")
+                    }
+                    _ => panic!("images tiene que ser una carpeta"),
+                }
+            }
+            _ => panic!("assets tiene que ser una carpeta"),
+        }
+
+        let src = tree.iter().find(|n| n.name() == "src").expect("src aparece");
+        match src {
+            FileTreeNode::Directory { children, .. } => {
+                assert_eq!(children.len(), 1);
+                assert!(
+                    matches!(&children[0], FileTreeNode::File { name, .. } if name == "main.rs")
+                );
+            }
+            _ => panic!("src tiene que ser una carpeta"),
+        }
+    }
+
+    #[test]
+    fn refresh_explorer_incluye_carpetas_vacias_en_el_arbol() {
+        let root = explorer_temp_root("empty_folders");
+        std::fs::create_dir_all(root.join("vacia/nested")).expect("crear vacía");
+        std::fs::create_dir_all(root.join("src")).expect("crear src");
+        std::fs::create_dir_all(root.join("target")).expect("crear target");
+        std::fs::write(root.join("src/main.rs"), "fn main() {}").expect("archivo");
+        std::fs::write(root.join("target/junk.rs"), "fn junk() {}").expect("archivo");
+
+        let mut app = EditorApp::default();
+        app.doc.browse_dir = root.clone();
+        app.refresh_explorer();
+
+        let rel_dirs: Vec<String> = app
+            .explorer
+            .directories
+            .iter()
+            .map(|p| {
+                p.strip_prefix(&root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect();
+        assert!(rel_dirs.contains(&"vacia".to_string()), "{rel_dirs:?}");
+        assert!(
+            rel_dirs.contains(&"vacia/nested".to_string()),
+            "{rel_dirs:?}"
+        );
+        assert!(
+            !rel_dirs.iter().any(|d| d.starts_with("target")),
+            "{rel_dirs:?}"
+        );
+
+        let tree = FileTreeNode::build_from_paths_and_dirs(
+            &root,
+            &app.explorer.files,
+            &app.explorer.directories,
+        );
+        let vacia = tree
+            .iter()
+            .find(|n| n.name() == "vacia")
+            .expect("la carpeta vacía aparece en el árbol");
+        match vacia {
+            FileTreeNode::Directory { children, .. } => {
+                assert_eq!(children.len(), 1, "nested conserva la jerarquía");
+                assert_eq!(children[0].name(), "nested");
+                match &children[0] {
+                    FileTreeNode::Directory { children, .. } => {
+                        assert!(children.is_empty(), "la carpeta hoja no tiene hijos")
+                    }
+                    _ => panic!("nested tiene que ser una carpeta"),
+                }
+            }
+            _ => panic!("vacia tiene que ser una carpeta"),
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
     // UI-7 (v0.2.38): minimap toggleable.
 
     #[test]
@@ -3859,6 +4164,16 @@ mod tests {
         // Volver a clickear Symbols lo cierra
         app.open_symbol_picker();
         assert_eq!(app.sidebar_tab, SidebarTab::None);
+
+        // v0.2.42: Source Control entra en la misma alternancia.
+        app.open_source_control();
+        assert_eq!(app.sidebar_tab, SidebarTab::SourceControl);
+        assert!(!app.explorer.open);
+        assert!(!app.workspace_search.open);
+        assert!(!app.symbol_picker.open);
+
+        app.open_source_control();
+        assert_eq!(app.sidebar_tab, SidebarTab::None);
     }
 
     // v0.2.40: Command Palette (Ctrl+Shift+P / F1).
@@ -3870,7 +4185,7 @@ mod tests {
         ids.sort_unstable();
         ids.dedup();
         assert_eq!(ids.len(), total, "cada id del catálogo es único");
-        assert_eq!(total, 23, "el catálogo de v0.2.40 tiene 23 comandos");
+        assert_eq!(total, 26, "el catálogo de v0.2.42 tiene 26 comandos");
 
         for expected in [
             "layout:split_vertical",
@@ -3896,6 +4211,9 @@ mod tests {
             "editor:format",
             "file:save",
             "file:new",
+            "git:source_control",
+            "git:refresh",
+            "git:stage_all",
         ] {
             assert!(
                 PALETTE_COMMANDS.iter().any(|command| command.id == expected),
@@ -4037,5 +4355,152 @@ mod tests {
             "fn  main( ){}\n",
             "el formateo se puede deshacer"
         );
+    }
+
+    // v0.2.42: Source Control (git status, stage y commit).
+
+    fn git_temp_repo(tag: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "karkinos_git_{}_{}_{}",
+            tag,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&root).expect("crear repo temporal");
+
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&root)
+                .output()
+                .expect("ejecutar git");
+            assert!(
+                output.status.success(),
+                "git {args:?} falló: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["init"]);
+        git(&["config", "user.email", "karkinos@example.com"]);
+        git(&["config", "user.name", "Karkinos Test"]);
+        root
+    }
+
+    #[test]
+    fn git_ui_refresh_stage_all_and_commit_roundtrip() {
+        use karkinos_core::git_status::GitStatusKind;
+
+        let root = git_temp_repo("roundtrip");
+        std::fs::write(root.join("nuevo.txt"), "hola\n").expect("archivo");
+
+        let mut app = EditorApp::default();
+        app.doc.browse_dir = root.clone();
+
+        app.refresh_git_status();
+        assert!(app.git_ui.last_error.is_none(), "{:?}", app.git_ui.last_error);
+        assert!(app.git_status.branch.is_some(), "la rama se lee del repo");
+        assert_eq!(app.git_ui.entries.len(), 1);
+        assert_eq!(app.git_ui.entries[0].rel_path, "nuevo.txt");
+        assert_eq!(app.git_ui.entries[0].kind, GitStatusKind::Untracked);
+        assert!(!app.git_ui.entries[0].staged);
+
+        app.git_stage_all().expect("stage all");
+        assert_eq!(app.git_ui.entries.len(), 1);
+        assert_eq!(app.git_ui.entries[0].kind, GitStatusKind::Added);
+        assert!(app.git_ui.entries[0].staged);
+
+        app.git_ui.commit_message = "add nuevo.txt".to_string();
+        let output = app.git_commit().expect("commit");
+        assert!(output.contains("add nuevo.txt"), "{output}");
+        assert!(app.git_ui.commit_message.is_empty(), "el mensaje se limpia");
+        assert!(app.git_ui.entries.is_empty(), "no quedan cambios pendientes");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn git_ui_commit_rejects_blank_message_and_keeps_it() {
+        let root = git_temp_repo("blank_message");
+        std::fs::write(root.join("a.txt"), "a\n").expect("archivo");
+
+        let mut app = EditorApp::default();
+        app.doc.browse_dir = root.clone();
+        app.git_ui.commit_message = "   ".to_string();
+
+        let error = app.git_commit().expect_err("mensaje vacío");
+        assert_eq!(error, "Commit message cannot be empty");
+        assert_eq!(app.git_ui.commit_message, "   ", "no se pierde lo escrito");
+        assert!(app.git_ui.last_error.is_some());
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn git_ui_stage_single_file_leaves_the_rest_untracked() {
+        use karkinos_core::git_status::GitStatusKind;
+
+        let root = git_temp_repo("stage_one");
+        std::fs::write(root.join("uno.txt"), "uno\n").expect("archivo");
+        std::fs::write(root.join("dos.txt"), "dos\n").expect("archivo");
+
+        let mut app = EditorApp::default();
+        app.doc.browse_dir = root.clone();
+        app.refresh_git_status();
+        assert_eq!(app.git_ui.entries.len(), 2);
+
+        let path = app
+            .git_ui
+            .entries
+            .iter()
+            .find(|entry| entry.rel_path == "uno.txt")
+            .expect("uno.txt en la lista")
+            .path
+            .clone();
+        app.git_stage_path(&path).expect("stage de un archivo");
+
+        assert_eq!(app.git_ui.entries.len(), 2);
+        let uno = app
+            .git_ui
+            .entries
+            .iter()
+            .find(|entry| entry.rel_path == "uno.txt")
+            .expect("uno.txt sigue listado");
+        assert_eq!(uno.kind, GitStatusKind::Added);
+        assert!(uno.staged);
+        let dos = app
+            .git_ui
+            .entries
+            .iter()
+            .find(|entry| entry.rel_path == "dos.txt")
+            .expect("dos.txt sigue listado");
+        assert_eq!(dos.kind, GitStatusKind::Untracked);
+        assert!(!dos.staged);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn palette_git_commands_open_refresh_and_stage() {
+        let root = git_temp_repo("palette");
+        std::fs::write(root.join("palette.txt"), "contenido\n").expect("archivo");
+
+        let mut app = EditorApp::default();
+        app.doc.browse_dir = root.clone();
+
+        app.execute_palette_command("git:source_control");
+        assert_eq!(app.sidebar_tab, SidebarTab::SourceControl);
+        assert_eq!(app.git_ui.entries.len(), 1);
+
+        app.execute_palette_command("git:stage_all");
+        assert!(app.git_ui.entries[0].staged);
+
+        app.execute_palette_command("git:refresh");
+        assert_eq!(app.sidebar_tab, SidebarTab::SourceControl, "refresh no cierra");
+        assert!(app.git_ui.entries[0].staged);
+
+        std::fs::remove_dir_all(&root).ok();
     }
 }
