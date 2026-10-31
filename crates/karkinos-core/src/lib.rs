@@ -37,7 +37,7 @@ pub use platform::{configure_background_command, path_to_uri, uri_to_path};
 pub use plugin::{Plugin, PluginCommand, PluginContext, PluginManager};
 pub use syntax_ast::{
     AstEngine, AstHighlightSpan, AstLanguage, AstNodeInfo, FoldingKind, FoldingRange,
-    SemanticTokenType,
+    ScopeHeader, SemanticTokenType,
 };
 pub use terminal::{PtyTerminal, TerminalCell, TerminalColor, TerminalSnapshot};
 pub use text_ops::{

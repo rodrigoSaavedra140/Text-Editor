@@ -77,6 +77,10 @@ pub struct EditorState {
     // de fondo entrega; el motor tree-sitter ya NO vive en la UI).
     pub ast_spans: Vec<karkinos_core::syntax_ast::AstHighlightSpan>,
     pub folding_ranges: Vec<karkinos_core::syntax_ast::FoldingRange>,
+    // F2 (Roadmap v0.2.28): contenedores activos (impl/fn/struct...) que se
+    // pegan arriba del editor al scrollear adentro. Los llena el mismo
+    // parseo del worker AST que los spans.
+    pub sticky_scopes: Vec<karkinos_core::syntax_ast::ScopeHeader>,
     // S3 & S4 (Etapa 4): Diagnósticos en vivo y autocompletado LSP
     pub diagnostics: Vec<karkinos_core::lsp::LspDiagnostic>,
     pub hover_text: Option<String>,
@@ -128,6 +132,7 @@ impl Default for EditorState {
             last_font_size: DEFAULT_FONT_SIZE,
             ast_spans: Vec::new(),
             folding_ranges: Vec::new(),
+            sticky_scopes: Vec::new(),
             diagnostics: Vec::new(),
             hover_text: None,
             completions: Vec::new(),
@@ -1703,6 +1708,51 @@ pub fn show(
         }
 
         visual_row += rows_here;
+    }
+
+    // F2 (Roadmap v0.2.28): sticky scroll. El contenedor (impl, fn, struct…)
+    // que abarca la primera línea visible queda pegado arriba, hasta 3
+    // niveles, y un clic en su banda salta al inicio del bloque.
+    if !state.sticky_scopes.is_empty() {
+        let active: Vec<(usize, String)> = state
+            .sticky_scopes
+            .iter()
+            .filter(|s| s.start_line < start_line && s.end_line >= start_line)
+            .take(3)
+            .map(|s| (s.start_line, s.header_text.trim().to_string()))
+            .collect();
+
+        let band_h = 20.0;
+        for (level, (scope_line, header)) in active.iter().enumerate() {
+            let top = rect.top() + level as f32 * band_h;
+            let band = egui::Rect::from_min_max(
+                egui::pos2(rect.left() + gutter_w, top),
+                egui::pos2(clip_rect.right(), top + band_h),
+            );
+            painter.rect_filled(band, 0.0, theme.bg.gamma_multiply(0.95));
+            let indent = "  ".repeat(level);
+            painter.text(
+                egui::pos2(band.left() + PAD_X, band.center().y),
+                egui::Align2::LEFT_CENTER,
+                format!("{}{}", indent, header),
+                egui::FontId::monospace(state.font_size * 0.85),
+                theme.text_muted,
+            );
+            let response = ui.interact(
+                band,
+                ui.id().with(("sticky_scope", *scope_line)),
+                egui::Sense::click(),
+            );
+            if response.clicked() {
+                state.cursor_line = (*scope_line).min(lines.len().saturating_sub(1));
+                state.cursor_col = 0;
+                state.sel_anchor = None;
+                let row = state.cum_rows.get(*scope_line).copied().unwrap_or(0);
+                state.scroll = row as f32 * row_height;
+                state.target_scroll = state.scroll;
+                state.applied_scroll = state.scroll;
+            }
+        }
     }
 
     // S2 (Roadmap v0.2.9): wake del parpadeo — request_repaint_after

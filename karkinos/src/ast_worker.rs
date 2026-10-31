@@ -34,6 +34,8 @@ pub struct AstResult {
     pub revision: u64,
     pub spans: Vec<AstHighlightSpan>,
     pub folding: Vec<FoldingRange>,
+    // F2 (Roadmap v0.2.28): encabezados contenedores para el sticky scroll.
+    pub scopes: Vec<karkinos_core::syntax_ast::ScopeHeader>,
 }
 
 pub struct AstWorker {
@@ -136,6 +138,7 @@ fn ast_worker_loop(
             revision: latest.revision,
             spans: engine.highlight_spans(),
             folding: engine.folding_ranges(),
+            scopes: engine.sticky_scopes(&latest.text),
         };
         // send() bloquea si el canal (cap. 1) está lleno: backpressure
         // natural. Al despertar, el drenado de arriba ya coalesce todo.

@@ -70,6 +70,17 @@ pub enum FoldingKind {
     Comment,
 }
 
+/// F2 (Roadmap v0.2.28): encabezado de un bloque contenedor, para el sticky
+/// scroll que queda fijo arriba del editor mientras se scrollea adentro.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScopeHeader {
+    pub start_line: usize,
+    pub end_line: usize,
+    pub header_text: String,
+    pub node_kind: &'static str,
+    pub depth: usize,
+}
+
 /// Headless AST parsing engine backed by `tree_sitter::Parser`.
 pub struct AstEngine {
     parser: tree_sitter::Parser,
@@ -142,6 +153,53 @@ impl AstEngine {
         let root = tree.root_node();
         self.collect_folding_ranges(root, &mut ranges);
         ranges
+    }
+
+    /// F2 (Roadmap v0.2.28): bloques contenedores con su encabezado, en orden
+    /// de aparición y con su profundidad de anidamiento. Solo se incluyen los
+    /// que ocupan más de una línea: un `struct` de una línea no aporta contexto.
+    pub fn sticky_scopes(&self, source: &str) -> Vec<ScopeHeader> {
+        let Some(tree) = &self.tree else {
+            return Vec::new();
+        };
+        let lines: Vec<&str> = source.lines().collect();
+        let mut scopes = Vec::new();
+        self.collect_sticky_scopes(tree.root_node(), &lines, 0, &mut scopes);
+        scopes
+    }
+
+    fn collect_sticky_scopes(
+        &self,
+        node: tree_sitter::Node<'_>,
+        lines: &[&str],
+        depth: usize,
+        out: &mut Vec<ScopeHeader>,
+    ) {
+        let start_line = node.start_position().row;
+        let end_line = node.end_position().row;
+        let label = sticky_kind_label(node.kind());
+        let next_depth = match (label, end_line > start_line) {
+            (Some(kind), true) => {
+                let header_text = lines
+                    .get(start_line)
+                    .map(|line| line.trim_end().to_string())
+                    .unwrap_or_default();
+                out.push(ScopeHeader {
+                    start_line,
+                    end_line,
+                    header_text,
+                    node_kind: kind,
+                    depth,
+                });
+                depth + 1
+            }
+            _ => depth,
+        };
+
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            self.collect_sticky_scopes(child, lines, next_depth, out);
+        }
     }
 
     fn collect_folding_ranges(&self, node: tree_sitter::Node<'_>, out: &mut Vec<FoldingRange>) {
@@ -270,9 +328,22 @@ fn classify_node(node: tree_sitter::Node<'_>) -> Option<SemanticTokenType> {
     }
 }
 
+/// F2 (Roadmap v0.2.28): categoría del nodo contenedor para el sticky scroll.
+fn sticky_kind_label(kind: &str) -> Option<&'static str> {
+    match kind {
+        "function_item" | "function_definition" => Some("function"),
+        "impl_item" => Some("impl"),
+        "struct_item" => Some("struct"),
+        "enum_item" => Some("enum"),
+        "mod_item" => Some("module"),
+        "trait_item" => Some("trait"),
+        "class_definition" => Some("class"),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
-mod tests {
-    use super::*;
+mod tests {    use super::*;
 
     #[test]
     fn test_ast_engine_parse_and_query_node() {
@@ -334,5 +405,45 @@ struct Point {
 
         let has_str = spans.iter().any(|s| s.token_type == SemanticTokenType::StringLiteral && s.start_line == 2);
         assert!(has_str);
+    }
+
+    // F2 (Roadmap v0.2.28): encabezados del sticky scroll.
+
+    #[test]
+    fn sticky_scopes_list_nested_containers_with_depth() {
+        let source = "use std::fmt;\n\nimpl Foo {\n    fn bar(&self) {\n        let x = 1;\n    }\n}\n";
+        let mut engine = AstEngine::new(AstLanguage::Rust).expect("engine rust");
+        engine.update_from_text(source);
+
+        let scopes = engine.sticky_scopes(source);
+        let kinds: Vec<(&str, usize)> = scopes.iter().map(|s| (s.node_kind, s.depth)).collect();
+        assert!(kinds.contains(&("impl", 0)), "impl en el nivel raíz: {kinds:?}");
+        assert!(kinds.contains(&("function", 1)), "fn anidada un nivel: {kinds:?}");
+
+        let imp = scopes.iter().find(|s| s.node_kind == "impl").unwrap();
+        assert_eq!(imp.start_line, 2);
+        assert_eq!(imp.end_line, 6);
+        assert_eq!(imp.header_text, "impl Foo {");
+
+        let fun = scopes.iter().find(|s| s.node_kind == "function").unwrap();
+        assert_eq!(fun.start_line, 3);
+        assert_eq!(fun.header_text.trim(), "fn bar(&self) {");
+    }
+
+    #[test]
+    fn sticky_scopes_skip_single_line_items() {
+        let source = "struct Point { x: i32 }\n";
+        let mut engine = AstEngine::new(AstLanguage::Rust).expect("engine rust");
+        engine.update_from_text(source);
+        assert!(
+            engine.sticky_scopes(source).is_empty(),
+            "un struct en una sola línea no aporta contexto pegajoso"
+        );
+    }
+
+    #[test]
+    fn sticky_scopes_are_empty_without_a_tree() {
+        let engine = AstEngine::new(AstLanguage::Rust).expect("engine rust");
+        assert!(engine.sticky_scopes("fn main() {}\n").is_empty());
     }
 }

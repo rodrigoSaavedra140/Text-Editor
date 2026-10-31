@@ -437,6 +437,8 @@ impl EditorApp {
         self.ast_applied_rev = result.revision;
         self.editor_state.ast_spans = result.spans;
         self.editor_state.folding_ranges = result.folding;
+        // F2 (Roadmap v0.2.28): encabezados pegajosos del mismo parseo.
+        self.editor_state.sticky_scopes = result.scopes;
         // S1 (Roadmap v0.2.9): el AST cambió → nueva generación, la
         // cache de galleys se vacía en el próximo sync_ast del render.
         self.editor_state.ast_rev = self.editor_state.ast_rev.wrapping_add(1);
