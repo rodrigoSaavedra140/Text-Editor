@@ -1645,9 +1645,13 @@ impl eframe::App for EditorApp {
         // así que esta barra ocupa exactamente el lugar donde antes
         // estaba la barra nativa del sistema operativo — con nuestro
         // logo, "Karkinos", y los mismos botones de siempre.
+        // UI-2 (v0.2.20): Tier 1 — barra de título unificada (36 px). Logo y
+        // nombre, pill de búsqueda y acciones de Cargo a la izquierda; tema,
+        // extensiones, consola y controles de ventana a la derecha. Toda la
+        // barra arrastra la ventana y el doble clic la maximiza.
         egui::TopBottomPanel::top("custom_title_bar")
-            .exact_height(32.0)
-            .frame(egui::Frame::none().fill(theme.title_bar_bg))
+            .exact_height(crate::title_bar::TITLE_BAR_HEIGHT)
+            .frame(egui::Frame::none().fill(theme.surface_bg))
             .show(ctx, |ui| {
                 let bar_rect = ui.max_rect();
                 let drag_response =
@@ -1666,109 +1670,34 @@ impl eframe::App for EditorApp {
                         ui.add(egui::Image::new((tex.id(), egui::vec2(18.0, 18.0))));
                     }
                     ui.add_space(6.0);
-                    ui.label(egui::RichText::new("Karkinos").color(theme.text).strong());
+                    crate::title_bar::faux_bold_label(
+                        ui,
+                        "Karkinos",
+                        theme.text,
+                        egui::FontId::proportional(14.0),
+                        egui::Sense::hover(),
+                    );
+                    ui.add_space(12.0);
 
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if title_bar_icon_button(ui, TitleBarIcon::Close, &theme).clicked() {
-                        self.try_close(ctx);
+                    // Pill de búsqueda: abre Quick Open (Ctrl+P).
+                    let search_pill = ui.add_sized(
+                        [260.0, 26.0],
+                        egui::Button::new(
+                            egui::RichText::new("🔍 Search files... (Ctrl+P)")
+                                .color(theme.text_muted)
+                                .size(12.0),
+                        )
+                        .fill(theme.surface_bg)
+                        .rounding(egui::Rounding::same(6.0))
+                        .stroke(egui::Stroke::new(1.0_f32, theme.border_subtle)),
+                    );
+                    if search_pill.clicked() {
+                        self.quick_open
+                            .request_open(&self.doc.browse_dir, &mut self.quick_open_services);
                     }
+                    ui.add_space(8.0);
 
-                        let is_maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
-                        let icon = if is_maximized { TitleBarIcon::Restore } else { TitleBarIcon::Maximize };
-                        if title_bar_icon_button(ui, icon, &theme).clicked() {
-                            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!is_maximized));
-                        }
-
-                        if title_bar_icon_button(ui, TitleBarIcon::Minimize, &theme).clicked() {
-                            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
-                        }
-                    });
-                });
-            });
-
-        draw_resize_handles(ctx);
-
-        egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                // Selector de archivos y explorador de carpetas
-                let open_picker_btn = ui.button("📂 Open…");
-                if open_picker_btn.clicked() {
-                    self.picker_open = !self.picker_open;
-                }
-                self.picker_button_rect = Some(open_picker_btn.interact_rect);
-
-                // Búsqueda rápida de archivos (Ctrl+P)
-                if ui.button("🔍 Search (Ctrl+P)").clicked() {
-                    self.quick_open
-                        .request_open(&self.doc.browse_dir, &mut self.quick_open_services);
-                }
-
-                // Guardado rápido
-                if ui.button("💾 Save (Ctrl+S)").clicked() {
-                    self.doc.try_save();
-                }
-
-                ui.separator();
-
-                // Selector de temas visuales
-                egui::ComboBox::from_id_source("theme_picker")
-                    .selected_text(format!("🎨 {}", self.theme_mode.name()))
-                    .show_ui(ui, |ui| {
-                        for mode in crate::theme::ThemeMode::ALL {
-                            if ui.selectable_label(self.theme_mode == mode, mode.name()).clicked() {
-                                self.theme_mode = mode;
-                            }
-                        }
-                    });
-
-                ui.separator();
-
-                // Menú de extensiones para la comunidad y plugins activos
-                let mut chosen_cmd: Option<String> = None;
-                ui.menu_button("🧩 Extensions", |ui| {
-                    if ui.button("📦 Installed Extensions…").clicked() {
-                        self.extensions_modal_open = true;
-                        self.extensions_tab = 0;
-                        ui.close_menu();
-                    }
-                    if ui.button("🗑️ Uninstall / Manage Extensions…").clicked() {
-                        self.extensions_modal_open = true;
-                        self.extensions_tab = 0;
-                        ui.close_menu();
-                    }
-                    if ui.button("🛒 Open VSX Registry…").clicked() {
-                        self.extensions_modal_open = true;
-                        self.extensions_tab = 2;
-                        if self.open_vsx_results.is_empty() && !self.open_vsx_searching {
-                            self.search_open_vsx("rust");
-                        }
-                        ui.close_menu();
-                    }
-                    if ui.button("🌐 Browse Community Showcase…").clicked() {
-                        self.extensions_modal_open = true;
-                        self.extensions_tab = 1;
-                        ui.close_menu();
-                    }
-                    ui.separator();
-                    ui.label(egui::RichText::new("Quick Commands:").strong());
-                    let commands = self.plugin_manager.available_commands();
-                    for cmd in commands {
-                        if ui.button(format!("⚡ {}", cmd.title)).on_hover_text(&cmd.description).clicked() {
-                            chosen_cmd = Some(cmd.id);
-                            ui.close_menu();
-                        }
-                    }
-                });
-                if let Some(cmd_id) = chosen_cmd {
-                    self.execute_plugin_command(&cmd_id);
-                }
-
-                // S1 (Rust IDE): Herramientas de Rust y Cargo alineadas arriba a la derecha (right-up)
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let panel_toggle_label = if self.cargo.panel_open { "Console ▾" } else { "Console ▸" };
-                    if ui.button(panel_toggle_label).on_hover_text("Toggle Cargo Console (Ctrl+\\)").clicked() {
-                        self.cargo.panel_open = !self.cargo.panel_open;
-                    }
+                    // Acciones de Cargo, compactas, a la derecha de la pill.
                     if ui.button("▶ Run").on_hover_text("Run cargo run (F5)").clicked() {
                         self.run_cargo(karkinos_core::cargo::CargoAction::Run);
                     }
@@ -1777,34 +1706,133 @@ impl eframe::App for EditorApp {
                         self.cargo.active_tab = 2;
                         self.start_debugging();
                     }
+                    if ui.button("Check").on_hover_text("Run cargo check (F7)").clicked() {
+                        self.run_cargo(karkinos_core::cargo::CargoAction::Check);
+                    }
                     if ui.button("Test").on_hover_text("Run cargo test").clicked() {
                         self.run_cargo(karkinos_core::cargo::CargoAction::Test);
                     }
                     if ui.button("Clippy").on_hover_text("Run cargo clippy").clicked() {
                         self.run_cargo(karkinos_core::cargo::CargoAction::Clippy);
                     }
-                    if ui.button("Check").on_hover_text("Run cargo check (F7)").clicked() {
-                        self.run_cargo(karkinos_core::cargo::CargoAction::Check);
-                    }
-                    ui.label(egui::RichText::new("🦀 Rust:").strong().color(egui::Color32::from_rgb(222, 100, 50)));
+
+                    // Lado derecho: lo primero agregado queda más a la derecha.
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if title_bar_icon_button(ui, TitleBarIcon::Close, &theme).clicked() {
+                            self.try_close(ctx);
+                        }
+                        let is_maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+                        let icon = if is_maximized { TitleBarIcon::Restore } else { TitleBarIcon::Maximize };
+                        if title_bar_icon_button(ui, icon, &theme).clicked() {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!is_maximized));
+                        }
+                        if title_bar_icon_button(ui, TitleBarIcon::Minimize, &theme).clicked() {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                        }
+                        ui.add_space(6.0);
+
+                        let panel_toggle_label = if self.cargo.panel_open { "Console ▾" } else { "Console ▸" };
+                        if ui.button(panel_toggle_label).on_hover_text("Toggle Cargo Console (Ctrl+\\)").clicked() {
+                            self.cargo.panel_open = !self.cargo.panel_open;
+                        }
+
+                        // Menú de extensiones: comunidad y plugins activos.
+                        let mut chosen_cmd: Option<String> = None;
+                        ui.menu_button("🧩 Extensions", |ui| {
+                            if ui.button("📦 Installed Extensions…").clicked() {
+                                self.extensions_modal_open = true;
+                                self.extensions_tab = 0;
+                                ui.close_menu();
+                            }
+                            if ui.button("🗑️ Uninstall / Manage Extensions…").clicked() {
+                                self.extensions_modal_open = true;
+                                self.extensions_tab = 0;
+                                ui.close_menu();
+                            }
+                            if ui.button("🛒 Open VSX Registry…").clicked() {
+                                self.extensions_modal_open = true;
+                                self.extensions_tab = 2;
+                                if self.open_vsx_results.is_empty() && !self.open_vsx_searching {
+                                    self.search_open_vsx("rust");
+                                }
+                                ui.close_menu();
+                            }
+                            if ui.button("🌐 Browse Community Showcase…").clicked() {
+                                self.extensions_modal_open = true;
+                                self.extensions_tab = 1;
+                                ui.close_menu();
+                            }
+                            ui.separator();
+                            ui.label(egui::RichText::new("Quick Commands:").strong());
+                            let commands = self.plugin_manager.available_commands();
+                            for cmd in commands {
+                                if ui.button(format!("⚡ {}", cmd.title)).on_hover_text(&cmd.description).clicked() {
+                                    chosen_cmd = Some(cmd.id);
+                                    ui.close_menu();
+                                }
+                            }
+                        });
+                        if let Some(cmd_id) = chosen_cmd {
+                            self.execute_plugin_command(&cmd_id);
+                        }
+
+                        // Selector de temas visuales.
+                        egui::ComboBox::from_id_source("theme_picker")
+                            .selected_text(format!("🎨 {}", self.theme_mode.name()))
+                            .show_ui(ui, |ui| {
+                                for mode in crate::theme::ThemeMode::ALL {
+                                    if ui.selectable_label(self.theme_mode == mode, mode.name()).clicked() {
+                                        self.theme_mode = mode;
+                                    }
+                                }
+                            });
+                    });
                 });
             });
-        });
 
-        // S8 (Etapa 2): Barra de pestañas sobre el editor
+        draw_resize_handles(ctx);
+
+        // UI-2 (v0.2.20): Tier 2 — franja de pestañas y breadcrumb (30 px).
+        // Abrir y guardar a la izquierda; breadcrumb del archivo activo a la
+        // derecha. Pestaña activa: fondo del canvas, acento inferior de 2 px y
+        // nombre en negrita; las inactivas quedan transparentes y en gris.
         egui::TopBottomPanel::top("tab_bar")
-            .exact_height(28.0)
-            .frame(egui::Frame::none().fill(theme.panel_bg))
+            .exact_height(crate::title_bar::TAB_STRIP_HEIGHT)
+            .frame(egui::Frame::none().fill(theme.surface_bg))
             .show(ctx, |ui| {
-                ui.horizontal(|ui| {
+                let strip = ui.max_rect();
+                // Separador inferior de 1 px.
+                ui.painter().line_segment(
+                    [
+                        egui::pos2(strip.left(), strip.bottom() - 0.5),
+                        egui::pos2(strip.right(), strip.bottom() - 0.5),
+                    ],
+                    egui::Stroke::new(1.0_f32, theme.border_subtle),
+                );
+
+                ui.horizontal_centered(|ui| {
                     ui.spacing_mut().item_spacing.x = 2.0;
+                    ui.add_space(6.0);
+
+                    // Selector de archivos (su popup se ancla a este botón).
+                    let open_picker_btn = ui.button("📂 Open…");
+                    if open_picker_btn.clicked() {
+                        self.picker_open = !self.picker_open;
+                    }
+                    self.picker_button_rect = Some(open_picker_btn.interact_rect);
+
+                    if ui.button("💾 Save (Ctrl+S)").clicked() {
+                        self.doc.try_save();
+                    }
+                    ui.add_space(6.0);
+
                     let mut switch_to = None;
                     let mut close_target = None;
 
                     for (idx, tab) in self.doc.tabs.iter().enumerate() {
                         let is_active = idx == self.doc.active_tab;
                         let title = if is_active {
-                            let base = if let Some(ref p) = self.doc.current_file {
+                            if let Some(ref p) = self.doc.current_file {
                                 p.file_name()
                                     .and_then(|n| n.to_str())
                                     .unwrap_or("file")
@@ -1813,60 +1841,115 @@ impl eframe::App for EditorApp {
                                 self.doc.file_path_input.clone()
                             } else {
                                 "Untitled".to_string()
-                            };
-                            if self.doc.dirty {
-                                format!("{} •", base)
-                            } else {
-                                base
                             }
                         } else {
                             tab.display_title()
                         };
+                        let dirty = is_active && self.doc.dirty;
+                        let text_color = if is_active { theme.text } else { theme.text_muted };
+                        let tab_rounding = egui::Rounding { nw: 6.0, ne: 6.0, sw: 0.0, se: 0.0 };
 
-                        let bg = if is_active { theme.bg } else { theme.panel_bg };
-                        let text_color = if is_active { theme.text } else { theme.gutter_text };
-
+                        // Reservamos el slot del hover antes del contenido: se pinta
+                        // debajo del texto cuando ya conocemos el rectángulo.
+                        let hover_slot = ui.painter().add(egui::Shape::Noop);
                         let tab_frame = egui::Frame::none()
-                            .fill(bg)
-                            .inner_margin(egui::Margin::symmetric(8.0, 4.0))
-                            .rounding(egui::Rounding {
-                                nw: 4.0,
-                                ne: 4.0,
-                                sw: 0.0,
-                                se: 0.0,
-                            });
+                            .fill(if is_active { theme.bg } else { egui::Color32::TRANSPARENT })
+                            .inner_margin(egui::Margin::symmetric(10.0, 4.0))
+                            .rounding(tab_rounding);
 
-                        tab_frame.show(ui, |ui| {
+                        let tab_response = tab_frame.show(ui, |ui| {
                             ui.horizontal(|ui| {
-                                let label = ui.add(
-                                    egui::Label::new(
-                                        egui::RichText::new(&title).color(text_color).strong(),
+                                let label = if is_active {
+                                    crate::title_bar::faux_bold_label(
+                                        ui,
+                                        &title,
+                                        text_color,
+                                        egui::FontId::proportional(14.0),
+                                        egui::Sense::click(),
                                     )
-                                    .sense(egui::Sense::click()),
-                                );
+                                } else {
+                                    ui.add(
+                                        egui::Label::new(egui::RichText::new(&title).color(text_color))
+                                            .sense(egui::Sense::click()),
+                                    )
+                                };
                                 if label.clicked() {
                                     switch_to = Some(idx);
                                 }
+                                if dirty {
+                                    ui.label(egui::RichText::new("●").color(theme.accent).size(10.0));
+                                }
 
-                                if ui
-                                    .add(
-                                        egui::Button::new(
-                                            egui::RichText::new("×").color(text_color).size(12.0),
-                                        )
-                                        .frame(false),
-                                    )
-                                    .on_hover_text("Close Tab (Ctrl+W)")
-                                    .clicked()
-                                {
+                                // × gris; pasa a rojo cuando el mouse está encima.
+                                let (x_rect, x_response) =
+                                    ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::click());
+                                let x_color = if x_response.hovered() {
+                                    egui::Color32::from_rgb(248, 81, 73)
+                                } else {
+                                    theme.text_muted
+                                };
+                                ui.painter().text(
+                                    x_rect.center(),
+                                    egui::Align2::CENTER_CENTER,
+                                    "×",
+                                    egui::FontId::proportional(14.0),
+                                    x_color,
+                                );
+                                if x_response.on_hover_text("Close Tab (Ctrl+W)").clicked() {
                                     close_target = Some(idx);
                                 }
                             });
                         });
+
+                        let tab_rect = tab_response.response.rect;
+                        if is_active {
+                            ui.painter().rect_filled(
+                                egui::Rect::from_min_max(
+                                    egui::pos2(tab_rect.left(), tab_rect.bottom() - 2.0),
+                                    tab_rect.right_bottom(),
+                                ),
+                                0.0,
+                                theme.accent,
+                            );
+                        } else if ui.rect_contains_pointer(tab_rect) {
+                            ui.painter().set(
+                                hover_slot,
+                                egui::Shape::rect_filled(tab_rect, tab_rounding, theme.badge_bg),
+                            );
+                        }
                     }
 
-                    if ui.button("+").on_hover_text("New Tab (Ctrl+T)").clicked() {
+                    // Nueva pestaña: botón redondo y discreto.
+                    if ui
+                        .add(
+                            egui::Button::new(egui::RichText::new("+").color(theme.text_muted))
+                                .fill(egui::Color32::TRANSPARENT)
+                                .rounding(egui::Rounding::same(10.0))
+                                .min_size(egui::vec2(22.0, 22.0)),
+                        )
+                        .on_hover_text("New Tab (Ctrl+T)")
+                        .clicked()
+                    {
                         self.new_tab();
                     }
+
+                    // Breadcrumb del archivo activo, alineado a la derecha.
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add_space(10.0);
+                        let crumb = match &self.doc.current_file {
+                            Some(path) => {
+                                let segments =
+                                    crate::title_bar::breadcrumb_segments(path, &self.doc.browse_dir);
+                                if segments.is_empty() {
+                                    "Untitled".to_string()
+                                } else {
+                                    segments.join(" > ")
+                                }
+                            }
+                            None => "Untitled".to_string(),
+                        };
+                        ui.label(egui::RichText::new(crumb).color(theme.text_muted).size(12.0));
+                    });
 
                     if let Some(idx) = switch_to {
                         self.switch_tab(idx);

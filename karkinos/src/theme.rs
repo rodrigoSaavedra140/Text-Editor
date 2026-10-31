@@ -134,22 +134,17 @@ pub struct Theme {
     #[allow(dead_code)]
     pub mode: ThemeMode,
     pub bg: egui::Color32,
-    // UI-1: tokens nuevos sin lector hasta T-UI2..T-UI5; cada `allow`
-    // se retira al cablear su token en la unidad consumidora.
-    #[allow(dead_code)]
+    // UI-1: tokens nuevos; cada `allow` que queda se retira al cablear su
+    // token en la unidad consumidora (elevated_bg y border_focus: T-UI3).
     pub surface_bg: egui::Color32,
     #[allow(dead_code)]
     pub elevated_bg: egui::Color32,
-    #[allow(dead_code)]
     pub border_subtle: egui::Color32,
     #[allow(dead_code)]
     pub border_focus: egui::Color32,
-    #[allow(dead_code)]
     pub badge_bg: egui::Color32,
     pub text: egui::Color32,
-    #[allow(dead_code)]
     pub text_muted: egui::Color32,
-    #[allow(dead_code)]
     pub accent: egui::Color32,
     pub gutter_bg: egui::Color32,
     pub gutter_text: egui::Color32,
