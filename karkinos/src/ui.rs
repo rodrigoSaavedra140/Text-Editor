@@ -1421,6 +1421,11 @@ impl eframe::App for EditorApp {
         self.check_external_changes();
         // S2 (Rust IDE): Procesar respuestas pendientes del LSP (definición, hover)
         self.poll_lsp_results();
+        // S3 (Roadmap v0.2.9): resultados del worker de Tree-sitter en
+        // fondo — si aplicó spans nuevos, se repinta en seguida (soft).
+        if self.poll_ast_results() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(16));
+        }
         // S3 (Rust IDE): Procesar respuestas pendientes de Open VSX
         self.poll_open_vsx();
         // S4 (Rust IDE): Procesar respuestas y eventos del DAP (debugger)

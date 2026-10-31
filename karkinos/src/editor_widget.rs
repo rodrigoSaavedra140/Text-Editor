@@ -50,8 +50,10 @@ pub struct EditorState {
     // S10: tamaño de fuente del editor (clamp 8..32 px)
     pub font_size: f32,
     last_font_size: f32,
-    // S3 (Etapa 3): Motor AST Tree-sitter y rangos de plegado de código
-    pub ast_engine: Option<karkinos_core::syntax_ast::AstEngine>,
+    // S3 (Etapa 3): Rangos de plegado de código + spans del AST parseado
+    // (S3 Roadmap v0.2.9: los spans ahora son datos planos que el worker
+    // de fondo entrega; el motor tree-sitter ya NO vive en la UI).
+    pub ast_spans: Vec<karkinos_core::syntax_ast::AstHighlightSpan>,
     pub folding_ranges: Vec<karkinos_core::syntax_ast::FoldingRange>,
     // S3 & S4 (Etapa 4): Diagnósticos en vivo y autocompletado LSP
     pub diagnostics: Vec<karkinos_core::lsp::LspDiagnostic>,
@@ -92,7 +94,7 @@ impl Default for EditorState {
             needs_autoscroll: false,
             font_size: DEFAULT_FONT_SIZE,
             last_font_size: DEFAULT_FONT_SIZE,
-            ast_engine: None,
+            ast_spans: Vec::new(),
             folding_ranges: Vec::new(),
             diagnostics: Vec::new(),
             hover_text: None,
@@ -1486,12 +1488,12 @@ pub fn show(
                         if language == crate::syntax::Language::PlainText {
                             Vec::new()
                         } else {
-                            crate::syntax::tokenize_line_semantic(
-                                line,
-                                i,
-                                language,
-                                state.ast_engine.as_ref(),
-                            )
+                        crate::syntax::tokenize_line_semantic(
+                            line,
+                            i,
+                            language,
+                            Some(state.ast_spans.as_slice()),
+                        )
                         }
                     });
                     if language == crate::syntax::Language::PlainText {

@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod ast_worker;
 mod editor_widget;
 mod quick_open;
 mod syntax;

@@ -316,6 +316,15 @@ pub struct EditorApp {
     pub breakpoints: std::collections::HashSet<(PathBuf, usize)>,
     pub debug_panel_open: bool,
     pub debug_stopped_line: Option<(PathBuf, usize)>,
+    // S3 (Roadmap v0.2.9): worker de fondo para el parseo Tree-sitter.
+    // Vive en EditorApp (UN worker por app, sirve al tab activo; al
+    // cambiar de pestaña se re-pide el parseo del contenido cargado).
+    pub ast_worker: crate::ast_worker::AstWorker,
+    // Revisión monótonica de pedidos al worker (porisión de "qué snapshot")
+    pub ast_request_rev: u64,
+    // Última revisión del worker aplicada al estado — evita revivir
+    // resultados viejos si llegan después de un parseo posterior.
+    pub ast_applied_rev: u64,
 }
 
 impl Default for EditorApp {
@@ -388,6 +397,9 @@ impl Default for EditorApp {
             breakpoints: std::collections::HashSet::new(),
             debug_panel_open: false,
             debug_stopped_line: None,
+            ast_worker: crate::ast_worker::AstWorker::spawn(),
+            ast_request_rev: 0,
+            ast_applied_rev: 0,
         }
     }
 }
@@ -490,10 +502,11 @@ impl EditorApp {
             self.chunk_tracker.reset();
             self.find_matches.clear();
 
-            // S3: If AST hasn't been initialized yet for a Rust file, initialize it once
-            if self.current_language() == crate::syntax::Language::Rust && self.editor_state.ast_engine.is_none() {
-                self.update_ast();
-            }
+            // S3 (Roadmap v0.2.9): el AST corre en un worker de fondo.
+            // Al cambiar de pestaña SIEMPRE se re-pide el parseo del
+            // contenido cargado (el "motor cacheado si no existía" del
+            // diseño viejo dejó de existir: el worker no vive por tab).
+            self.update_ast();
 
             // S4: Fast in-memory diagnostics lookup from existing singleton LSP client without process re-spawning
             if let (Some(ref client), Some(ref path)) = (&self.lsp_client, &self.current_file) {
@@ -669,27 +682,49 @@ impl EditorApp {
             + self.lines.len().saturating_sub(1);
     }
 
-    /// S3 (Etapa 3): Actualiza el motor de sintaxis semántico AST y los rangos de plegado.
+    /// S3 (Roadmap v0.2.9): encarga el parseo del AST al worker de FONDO.
+    /// Ya no corre tree-sitter en la UI: manda el snapshot del texto con
+    /// una revisión nueva y el resultado llega por `poll_ast_results`.
+    /// El nombre viejo (`update_ast`) se conserva porque todos los
+    /// call-sites (set_text, apply_text_edits, load_tab, save) quieren
+    /// exactamente esto: "el AST tiene que actualizarse con el texto
+    /// actual, sin bloquear".
     pub fn update_ast(&mut self) {
-        let is_rust = self.current_language() == crate::syntax::Language::Rust;
-        if is_rust {
-            if self.editor_state.ast_engine.is_none() {
-                if let Ok(engine) = karkinos_core::syntax_ast::AstEngine::new(karkinos_core::syntax_ast::AstLanguage::Rust) {
-                    self.editor_state.ast_engine = Some(engine);
-                }
-            }
+        self.ast_request_rev = self.ast_request_rev.wrapping_add(1);
+        if self.current_language() == crate::syntax::Language::Rust {
             let code = self.current_text();
-            if let Some(ref mut engine) = self.editor_state.ast_engine {
-                engine.update_from_text(&code);
-                self.editor_state.folding_ranges = engine.folding_ranges();
-            }
+            self.ast_worker.request(self.ast_request_rev, &code);
         } else {
-            self.editor_state.ast_engine = None;
+            // Lenguaje sin AST (genéricamente solo Rust): descarta los
+            // spans semánticos que pudieran venir de un lenguaje anterior;
+            // el worker no se despierta y el plegado se apaga.
+            self.editor_state.ast_spans.clear();
             self.editor_state.folding_ranges.clear();
+            self.ast_applied_rev = self.ast_request_rev;
+            // S1 (Roadmap v0.2.9): la generación del AST cambió → la
+            // cache de galleys se invalida al sincronizarse (sync_ast).
+            self.editor_state.ast_rev = self.editor_state.ast_rev.wrapping_add(1);
         }
-        // S1 (Roadmap v0.2.9): nueva revisión del AST → la caché de
-        // galleys del editor se vacía al sincronizarse (sync_ast).
+    }
+
+    /// S3 (Roadmap v0.2.9): consume el resultado más fresco del worker,
+    /// si llegó algo. Aplica spans + plegado al estado del editor y
+    /// sube la generación del AST (invalida la cache de layouts de T1).
+    /// Devuelve `true` cuando aplicó algo (la UI repinta suave).
+    pub fn poll_ast_results(&mut self) -> bool {
+        let Some(result) = self.ast_worker.try_recv_result() else {
+            return false;
+        };
+        if result.revision < self.ast_applied_rev {
+            return false; // resultado viejo: un pedido posterior ya corrió
+        }
+        self.ast_applied_rev = result.revision;
+        self.editor_state.ast_spans = result.spans;
+        self.editor_state.folding_ranges = result.folding;
+        // S1 (Roadmap v0.2.9): el AST cambió → nueva generación, la
+        // cache de galleys se vacía en el próximo sync_ast del render.
         self.editor_state.ast_rev = self.editor_state.ast_rev.wrapping_add(1);
+        true
     }
 
     /// S4 (Etapa 4): Actualiza diagnósticos y estado del cliente LSP.
@@ -2583,15 +2618,34 @@ mod tests {
     }
 
     #[test]
-    fn test_editor_app_ast_engine_and_folding_ranges() {
+    fn test_editor_app_ast_worker_spans_and_folding_ranges() {
         let mut app = EditorApp::default();
         app.current_file = Some(PathBuf::from("main.rs"));
         app.set_text("fn calculate() -> i32 {\n    let a = 10;\n    a * 2\n}");
 
-        assert!(app.editor_state.ast_engine.is_some());
+        // S3 (Roadmap v0.2.9): el parseo corre en FONDO: se espera la
+        // respuesta del worker con presupuesto acotado (determinístico:
+        // tree-sitter con 3 líneas parsea en <10ms).
+        assert!(wait_for_ast(&mut app), "el worker debe terminar y la UI aplicar el resultado");
+        assert!(
+            app.editor_state.ast_spans.iter().any(|s| s.start_line == 0),
+            "deben existir spans semánticos para la línea 0"
+        );
         assert!(!app.editor_state.folding_ranges.is_empty());
         let has_func = app.editor_state.folding_ranges.iter().any(|r| r.start_line == 0 && r.end_line == 3);
         assert!(has_func, "should detect function folding range");
+    }
+
+    /// S3 (Roadmap v0.2.9): ayuda determinística de test — espera a que
+    /// el worker de fondo responda (presupuesto ≤500ms).
+    fn wait_for_ast(app: &mut EditorApp) -> bool {
+        for _ in 0..100 {
+            if app.poll_ast_results() {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        app.poll_ast_results()
     }
 
     #[test]
@@ -2693,14 +2747,16 @@ mod tests {
         assert!(app.lsp_client.is_some(), "LSP client singleton must remain alive");
         assert_eq!(app.editor_state.diagnostics.len(), 1);
         assert_eq!(app.editor_state.diagnostics[0].message, "tab1 warning");
-        assert!(app.editor_state.ast_engine.is_some(), "AST engine must remain cached");
+        // S3 (Roadmap v0.2.9): al cambiar de pestaña se re-pide el AST
+        // del contenido del tab activo (worker de fondo).
+        assert!(wait_for_ast(&mut app), "AST del tab activo debe aplicarse tras el switch");
 
         // Switching to tab 2 must also preserve LSP client and load tab2 diagnostics
         app.switch_tab(1);
         assert!(app.lsp_client.is_some(), "LSP client singleton must remain alive");
         assert_eq!(app.editor_state.diagnostics.len(), 1);
         assert_eq!(app.editor_state.diagnostics[0].message, "tab2 error");
-        assert!(app.editor_state.ast_engine.is_some(), "AST engine must remain cached");
+        assert!(wait_for_ast(&mut app), "AST del tab activo debe aplicarse tras el switch");
     }
 
     #[test]

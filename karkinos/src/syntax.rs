@@ -323,17 +323,17 @@ pub fn tokenize_line(line: &str, lang: Language) -> Vec<(Range<usize>, TokenType
     }
 }
 
-/// Tokeniza una línea incorporando tokens semánticos del AST si están disponibles,
+/// Tokeniza una línea incorporando los spans semánticos del AST (S3,
+/// Roadmap v0.2.9: llegan como datos planos desde el worker en fondo),
 /// o usando el tokenizador léxico como fallback automático.
 pub fn tokenize_line_semantic(
     line: &str,
     line_idx: usize,
     lang: Language,
-    ast_engine: Option<&karkinos_core::syntax_ast::AstEngine>,
+    ast_spans: Option<&[karkinos_core::syntax_ast::AstHighlightSpan]>,
 ) -> Vec<(Range<usize>, TokenType)> {
-    if let Some(engine) = ast_engine {
+    if let Some(spans) = ast_spans {
         if lang == Language::Rust {
-            let spans = engine.highlight_spans();
             let mut line_tokens = Vec::new();
             for span in spans {
                 if span.start_line == line_idx && span.end_line == line_idx {
@@ -2135,14 +2135,18 @@ mod tests {
         let code = "fn compute() {\n    let val = 42;\n}";
         engine.update_from_text(code);
 
+        // S3 (Roadmap v0.2.9): la función ahora recibe los spans planos
+        // que produce el worker de fondo, no el motor completo.
+        let spans = engine.highlight_spans();
+
         // Line 0: "fn compute() {"
-        let tokens = tokenize_line_semantic("fn compute() {", 0, Language::Rust, Some(&engine));
+        let tokens = tokenize_line_semantic("fn compute() {", 0, Language::Rust, Some(&spans));
         assert!(!tokens.is_empty());
         assert!(tokens.iter().any(|(_, t)| *t == TokenType::Keyword));
         assert!(tokens.iter().any(|(_, t)| *t == TokenType::Type)); // compute as FunctionDef mapped to Type
 
         // Line 1: "    let val = 42;"
-        let line1_tokens = tokenize_line_semantic("    let val = 42;", 1, Language::Rust, Some(&engine));
+        let line1_tokens = tokenize_line_semantic("    let val = 42;", 1, Language::Rust, Some(&spans));
         assert!(!line1_tokens.is_empty());
         assert!(line1_tokens.iter().any(|(_, t)| *t == TokenType::Keyword));
         assert!(line1_tokens.iter().any(|(_, t)| *t == TokenType::Number));
