@@ -15,6 +15,7 @@
 //! - Texto plano (fallback)
 
 use eframe::egui;
+use std::hash::Hasher;
 use std::ops::Range;
 use std::path::Path;
 
@@ -1842,9 +1843,144 @@ pub fn build_layout_job(
     job
 }
 
+// -----------------------------------------------------------------------------
+// LineLayoutCache (Roadmap v0.2.9, S1)
+// -----------------------------------------------------------------------------
+
+/// Entrada única del cache de layouts: el galley ya armado + el tick
+/// de su último uso (el cache es LRU y poda lo más viejo).
+#[derive(Clone)]
+struct CacheEntry<V> {
+    value: V,
+    last_used: u64,
+}
+
+/// Caché de líneas ya tipografiadas. El render del editor armaba el
+/// `LayoutJob` y pedía a egui el layout de CADA fragmento visible en
+/// CADA frame: a 144Hz el lexer y el shaper corrían cientos de veces
+/// por segundo sin que el usuario tocara nada. Con este cache, el
+/// costo se paga solo cuando la línea cambia.
+///
+/// Clave (S1): hash de los bytes del fragmento + lenguaje + tamaño de
+/// fuente, junto al modo de tema (los colores de sintaxis dependen de
+/// la paleta activa). Invalidación (S1): al cambiar de tema la clave
+/// nueva apunta a otra entrada; al regenerar el AST (`sync_ast`) se
+/// vacía el cache entero, porque las marcas semánticas de líneas SIN
+/// modificar pueden cambiar (p.ej. desbalancear un bloque arriba
+/// reclasifica lo de abajo).
+///
+/// `V` se deja genérico para poder probar el LRU/invalidación con
+/// valores baratos; en producción `V = Arc<egui::Galley>` (el galley
+/// ya viene tipografiado por egui: reusarlo salta TAMBIÉN el shaper).
+pub struct LineLayoutCache<V> {
+    entries: std::collections::HashMap<(u64, crate::theme::ThemeMode), CacheEntry<V>>,
+    ast_generation: u64,
+    tick: u64,
+}
+
+impl<V: Clone> LineLayoutCache<V> {
+    /// Techo de entradas (≈ 2000 líneas visibles del S1). Al pasarlo
+    /// se descarta el cuarto más viejo; las entradas reutilizadas
+    /// recientemente sobreviven.
+    pub const CAPACITY: usize = 2048;
+
+    pub fn new() -> Self {
+        Self {
+            entries: std::collections::HashMap::new(),
+            ast_generation: 0,
+            tick: 0,
+        }
+    }
+
+    /// Devuelve el valor cacheado para `(hash, tema)` o lo produce
+    /// una vez y lo recuerda. Actualiza el tick LRU de la entrada.
+    pub fn get_or_insert(&mut self, hash: u64, theme: crate::theme::ThemeMode, produce: impl FnOnce() -> V) -> V {
+        self.tick = self.tick.wrapping_add(1);
+        let current_tick = self.tick;
+        let entry = self
+            .entries
+            .entry((hash, theme))
+            .and_modify(|e| e.last_used = current_tick)
+            .or_insert_with(|| CacheEntry { value: produce(), last_used: current_tick });
+        let value = entry.value.clone();
+        self.prune_if_full();
+        value
+    }
+
+    /// Sincroniza la estampa de generación del AST: si cambió desde la
+    /// última sincronización, vacía el cache (los galleys pueden tener
+    /// colores semánticos desactualizados).
+    pub fn sync_ast(&mut self, generation: u64) {
+        if self.ast_generation != generation {
+            self.ast_generation = generation;
+            self.entries.clear();
+        }
+    }
+
+    /// Cantidad de entradas vivas (para diagnóstico y tests).
+    #[cfg(test)]
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    #[cfg(test)]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Poda LRU: cuando se supera `CAPACITY` descarta el cuarto más
+    /// viejo (amortizado: corre pocas veces y siempre carga pequeña).
+    fn prune_if_full(&mut self) {
+        if self.entries.len() <= Self::CAPACITY {
+            return;
+        }
+        let mut by_age: Vec<(u64, (u64, crate::theme::ThemeMode))> = self
+            .entries
+            .iter()
+            .map(|(key, entry)| (entry.last_used, *key))
+            .collect();
+        by_age.sort_by_key(|&(tick, _)| tick);
+        let to_drop = by_age.len() / 4;
+        for (_, key) in by_age.into_iter().take(to_drop) {
+            self.entries.remove(&key);
+        }
+    }
+}
+
+impl<V: Clone> Clone for LineLayoutCache<V> {
+    fn clone(&self) -> Self {
+        Self {
+            entries: self.entries.clone(),
+            ast_generation: self.ast_generation,
+            tick: self.tick,
+        }
+    }
+}
+
+impl<V> std::fmt::Debug for LineLayoutCache<V> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LineLayoutCache")
+            .field("entries", &self.entries.len())
+            .field("ast_generation", &self.ast_generation)
+            .finish()
+    }
+}
+
+/// Hash de la clave de cache de un fragmento: bytes del fragmento,
+/// lenguaje y tamaño de fuente (el modo de tema viaja aparte, como
+/// segunda mitad de la clave del HashMap).
+pub fn line_layout_key(chunk: &str, lang: Language, font_size: f32) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    std::hash::Hash::hash(&chunk.as_bytes(), &mut hasher);
+    std::hash::Hash::hash(&(lang as u32), &mut hasher);
+    std::hash::Hash::hash(&font_size.to_bits(), &mut hasher);
+    hasher.finish()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theme::ThemeMode;
 
     #[test]
     fn test_detection_by_extension() {
@@ -2014,5 +2150,96 @@ mod tests {
         // Fallback test without engine
         let fallback = tokenize_line_semantic("let a = 10;", 0, Language::Rust, None);
         assert!(!fallback.is_empty());
+    }
+
+    // ---------------------------------------------------------------------
+    // LineLayoutCache (Roadmap v0.2.9, S1)
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn line_layout_cache_reuses_value_for_same_key_and_theme() {
+        let mut cache = LineLayoutCache::new();
+        let mut produced = 0u64;
+        let key = line_layout_key("let a = 10;", Language::Rust, 14.0);
+        let first = cache.get_or_insert(key, ThemeMode::Dark, || {
+            produced += 1;
+            produced
+        });
+        let second = cache.get_or_insert(key, ThemeMode::Dark, || {
+            produced += 1;
+            produced
+        });
+        assert_eq!(first, 1);
+        assert_eq!(second, 1, "el segundo frame debe reutilizar el valor cacheado");
+        assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn line_layout_cache_separates_themes() {
+        let mut cache = LineLayoutCache::new();
+        let key = line_layout_key("let a = 10;", Language::Rust, 14.0);
+        assert_eq!(cache.get_or_insert(key, ThemeMode::Dark, || 1), 1);
+        assert_eq!(cache.get_or_insert(key, ThemeMode::Monokai, || 2), 2);
+        assert_eq!(cache.len(), 2, "cada tema tiene su propia entrada");
+        // el valor del tema Monokai sigue vivo (no cross-contaminó al Dark)
+        assert_eq!(cache.get_or_insert(key, ThemeMode::Monokai, || 3), 2);
+    }
+
+    #[test]
+    fn line_layout_cache_clears_when_ast_generation_changes() {
+        let mut cache = LineLayoutCache::new();
+        let key = line_layout_key("x", Language::Rust, 14.0);
+        // Generación inicial (0): produce y cachea.
+        assert_eq!(cache.get_or_insert(key, ThemeMode::Dark, || 10), 10);
+        // Sincronizar con una generación NUEVA vacía la caché.
+        cache.sync_ast(7);
+        assert!(cache.is_empty(), "un AST nuevo invalida los galleys viejos");
+        assert_eq!(cache.get_or_insert(key, ThemeMode::Dark, || 11), 11);
+        // Volver a sincronizar con la MISMA generación NO debe volver a vaciar.
+        cache.sync_ast(7);
+        assert_eq!(cache.get_or_insert(key, ThemeMode::Dark, || 12), 11);
+        // Y una generación distinta vuelve a vaciar.
+        cache.sync_ast(8);
+        assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn line_layout_cache_keys_differ_by_input() {
+        let k1 = line_layout_key("let x = 1;", Language::Rust, 14.0);
+        let k1b = line_layout_key("let x = 1;", Language::Rust, 14.0);
+        let k_lang = line_layout_key("let x = 1;", Language::Cpp, 14.0);
+        let k_font = line_layout_key("let x = 1;", Language::Rust, 15.0);
+        let k_text = line_layout_key("let x = 2;", Language::Rust, 14.0);
+        assert_eq!(k1, k1b, "mismos inputs → misma clave");
+        assert_ne!(k1, k_lang, "el lenguaje entra en la clave");
+        assert_ne!(k1, k_font, "el tamaño de fuente entra en la clave");
+        assert_ne!(k1, k_text, "el contenido entra en la clave");
+    }
+
+    #[test]
+    fn line_layout_cache_evicts_lru_and_keeps_recent_entries() {
+        let mut cache = LineLayoutCache::new();
+        let first_key = line_layout_key("first", Language::Rust, 14.0);
+        cache.get_or_insert(first_key, ThemeMode::Dark, || 0);
+
+        // Tormenta de líneas nuevas. El editor re-toca sus líneas visibles
+        // en cada frame: se emula re-tocando `first_key` periódicamente,
+        // tal como el render haría, para que el LRU no lo canjee.
+        for i in 0..(LineLayoutCache::<u64>::CAPACITY + 256) {
+            let key = line_layout_key(&format!("line-{i}"), Language::Rust, 14.0);
+            cache.get_or_insert(key, ThemeMode::Dark, || i as u64);
+            if i % 64 == 0 {
+                cache.get_or_insert(first_key, ThemeMode::Dark, || 0);
+            }
+        }
+        assert!(
+            cache.len() <= LineLayoutCache::<u64>::CAPACITY,
+            "la caché debe podar entradas viejas en vez de crecer sin techo"
+        );
+        assert_eq!(
+            cache.get_or_insert(first_key, ThemeMode::Dark, || 999),
+            0,
+            "la entrada re-usada periódicamente sobrevive a la tormenta"
+        );
     }
 }

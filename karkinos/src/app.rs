@@ -687,6 +687,9 @@ impl EditorApp {
             self.editor_state.ast_engine = None;
             self.editor_state.folding_ranges.clear();
         }
+        // S1 (Roadmap v0.2.9): nueva revisión del AST → la caché de
+        // galleys del editor se vacía al sincronizarse (sync_ast).
+        self.editor_state.ast_rev = self.editor_state.ast_rev.wrapping_add(1);
     }
 
     /// S4 (Etapa 4): Actualiza diagnósticos y estado del cliente LSP.

@@ -65,8 +65,16 @@
 
 | ID | Spec | Descripción | Estado |
 | :--- | :--- | :--- | :--- |
-| **T1** | S1 | Implementar `LineLayoutCache` en `syntax.rs` para reutilizar layouts entre frames | Pendiente |
+| **T1** | S1 | Implementar `LineLayoutCache` en `syntax.rs` para reutilizar layouts entre frames | ✅ Hecho — `feat(perf): memoize line layout galleys to kill per-frame lexing` (v0.2.10) |
 | **T2** | S2 | Configurar repintado reactivo (`request_repaint_after`) para reposo a 0% CPU | Pendiente |
 | **T3** | S3 | Worker en background para parseo incremental de Tree-sitter AST | Pendiente |
 | **T4** | S4 | Indexación y filtrado fuzzy en background para Quick Open (`Ctrl+P`) | Pendiente |
 | **T5** | S5 | Desacoplar `EditorApp` en servicios dedicados (`DocumentManager`, `LspService`, etc.) | Pendiente |
+
+---
+
+## Log
+
+- **L1** (2026-10-30): Solicitud original del usuario: "empieza a hacer las tareas" con el blueprint de las S1-S5 dejado por el agente anterior. El agente anterior dejó el roadmap en Engram (`architecture/robustness-and-performance-roadmap`) y este documento.
+- **L2** (2026-10-30, T1): Implementado `LineLayoutCache<V>` genérico en `karkinos/src/syntax.rs` (LRU con capacidad 2048 según el S1, poda del cuarto más viejo, `sync_ast` para invalidación por generación del AST). Clave = hash de (bytes del fragmento, lenguaje, tamaño de fuente) + `ThemeMode` en la primera componente del HashMap según el S1. En producción `V = Arc<egui::Galley>` (el galley ya viene tipografiado; reusarlo salta también el shaper de egui, más que el `Arc<LayoutJob>` del blueprint: mismo alta de cache, menos trabajo por miss).
+- **L3** (2026-10-30, T1): Cambios accesorios: `ThemeMode` ahora deriva `Hash` (+`Ord` NO — la poda ordena por tick); `EditorState` ganó `layout_cache` y `ast_rev` (viaja clonado por pestaña); `update_ast()` incrementa `ast_rev` (ambas ramas); el render converso tokeniza las líneas PEREZOSAMENTE (antes `tokenize_line_semantic` re-recorría `highlight_spans()` del árbol entero por línea visible por frame). 6 tests nuevos del cache (hit, por-tema, invalidación AST, claves, LRU). `cargo test --workspace`: 86+52 OK, 0 warnings. Compromis explicado: el tokenize queda en el hilo de UI hasta T3 (worker en background).

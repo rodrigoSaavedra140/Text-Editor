@@ -62,6 +62,15 @@ pub struct EditorState {
     pub inlay_hints: Vec<karkinos_core::lsp::LspInlayHint>,
     pub breakpoints: std::collections::HashSet<usize>,
     pub stopped_line: Option<usize>,
+    // S1 (Roadmap v0.2.9): galleys ya tipografiados por (hash del chunk,
+    // tema). Vive acá porque el state sobrevive entre frames y viaja
+    // clonado por pestaña: cada tab cachea sus propias líneas.
+    pub layout_cache: crate::syntax::LineLayoutCache<std::sync::Arc<egui::Galley>>,
+    // S1 (Roadmap v0.2.9): revisión del AST con la que se armó la caché.
+    // `update_ast` la incrementa; el render llama `sync_ast` y la caché
+    // se vacía sola cuando el árbol cambió (las líneas sin editar pueden
+    // cambiar de color semántico).
+    pub ast_rev: u64,
 }
 
 impl Default for EditorState {
@@ -90,6 +99,8 @@ impl Default for EditorState {
             inlay_hints: Vec::new(),
             breakpoints: std::collections::HashSet::new(),
             stopped_line: None,
+            layout_cache: crate::syntax::LineLayoutCache::new(),
+            ast_rev: 0,
         }
     }
 }
@@ -1244,6 +1255,10 @@ pub fn show(
     // no el documento entero como antes.
     let first_row = ((state.scroll / row_height).floor().max(0.0)) as usize;
     let start_line = line_at_visual_row(&state.cum_rows, first_row).min(lines.len().saturating_sub(1));
+    // S1 (Roadmap v0.2.9): se alinea la estampa del cache con la revisión
+    // del AST antes de recorrer las líneas visibles. Si `update_ast`
+    // regeneró el árbol, acá se vacía la cache de una sola vez.
+    state.layout_cache.sync_ast(state.ast_rev);
     let mut visual_row = state.cum_rows[start_line];
     for i in start_line..lines.len() {
         let line = &lines[i];
@@ -1334,12 +1349,12 @@ pub fn show(
             .unwrap_or_else(|| line_char_count(line));
         let is_pure_ascii = line.len() == char_len;
 
-        // S6 (Etapa 2) + S3 (Etapa 3): Resaltado de sintaxis enriquecido por AST
-        let line_tokens = if language != crate::syntax::Language::PlainText {
-            crate::syntax::tokenize_line_semantic(line, i, language, state.ast_engine.as_ref())
-        } else {
-            Vec::new()
-        };
+        // S6 (Etapa 2) + S3 (Etapa 3), S1 (Roadmap v0.2.9): el tokenizado
+        // ahora es PEREZOSO — se corre solo si algún fragmento de esta
+        // línea NO está cacheado (o sea: solo la 1ª vez que la línea se
+        // ve, o cuando cambió). Antes cada frame re-tokenizaba e
+        // invalidaba `highlight_spans()` del árbol entero por línea.
+        let mut line_tokens: Option<Vec<(std::ops::Range<usize>, crate::syntax::TokenType)>> = None;
 
         // S2 (Etapa 2): Coincidencias de búsqueda en la línea i
         let line_matches = if let Some(ref s) = search {
@@ -1416,18 +1431,34 @@ pub fn show(
             }
 
             if !chunk.is_empty() {
-                let galley = if language == crate::syntax::Language::PlainText {
-                    ui.fonts(|f| f.layout_no_wrap(chunk.to_string(), font_id.clone(), text_color))
-                } else {
-                    let job = crate::syntax::build_layout_job(
-                        chunk,
-                        sb,
-                        &line_tokens,
-                        theme,
-                        font_id.clone(),
-                    );
-                    ui.fonts(|f| f.layout_job(job))
-                };
+                // S1 (Roadmap v0.2.9): el galley sale del cache si este
+                // fragmento ya se tipografió (mismo texto/lenguaje/tema/
+                // fuente). Solo en cache miss se arma el LayoutJob, se
+                // tokeniza la línea y egui hace el layout.
+                let key = crate::syntax::line_layout_key(chunk, language, state.font_size);
+                let galley = state.layout_cache.get_or_insert(key, theme.mode, || {
+                    let tokens = line_tokens.get_or_insert_with(|| {
+                        if language == crate::syntax::Language::PlainText {
+                            Vec::new()
+                        } else {
+                            crate::syntax::tokenize_line_semantic(
+                                line,
+                                i,
+                                language,
+                                state.ast_engine.as_ref(),
+                            )
+                        }
+                    });
+                    if language == crate::syntax::Language::PlainText {
+                        ui.fonts(|f| {
+                            f.layout_no_wrap(chunk.to_string(), font_id.clone(), text_color)
+                        })
+                    } else {
+                        let job =
+                            crate::syntax::build_layout_job(chunk, sb, tokens, theme, font_id.clone());
+                        ui.fonts(|f| f.layout_job(job))
+                    }
+                });
                 painter.galley(egui::pos2(text_left, y), galley, text_color);
             }
 
