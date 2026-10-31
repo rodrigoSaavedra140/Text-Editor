@@ -3,6 +3,7 @@
 mod app;
 mod ast_worker;
 mod cargo_service;
+mod dap_service;
 mod document_service;
 mod editor_widget;
 mod lsp_service;

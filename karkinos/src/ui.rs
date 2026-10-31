@@ -648,9 +648,9 @@ impl EditorApp {
                         self.cargo.active_tab = 1;
                     }
 
-                    let dap_label = if self.dap_client.as_ref().map(|c| c.state().is_stopped).unwrap_or(false) {
+                    let dap_label = if self.dap.client.as_ref().map(|c| c.state().is_stopped).unwrap_or(false) {
                         "🐞 Debugger (STOPPED)"
-                    } else if self.dap_client.is_some() {
+                    } else if self.dap.client.is_some() {
                         "🐞 Debugger (Running)"
                     } else {
                         "🐞 Debugger"
@@ -726,7 +726,7 @@ impl EditorApp {
                     }
                 } else if self.cargo.active_tab == 2 {
                     // S4 (Rust IDE): DAP Native Debugger & Inspector
-                    let dap_state = self.dap_client.as_ref().map(|c| c.state()).unwrap_or_default();
+                    let dap_state = self.dap.client.as_ref().map(|c| c.state()).unwrap_or_default();
 
                     ui.horizontal(|ui| {
                         let is_active = dap_state.is_active;
@@ -805,12 +805,12 @@ impl EditorApp {
 
                         // Col 2: Breakpoints
                         cols[2].label(egui::RichText::new("Breakpoints:").strong());
-                        if self.breakpoints.is_empty() {
+                        if self.dap.breakpoints.is_empty() {
                             cols[2].label(egui::RichText::new("No breakpoints set (F9 to toggle)").italics().small());
                         } else {
                             let mut to_remove = None;
                             egui::ScrollArea::vertical().id_source("dap_bps_scroll").max_height(140.0).show(&mut cols[2], |ui| {
-                                for (path, line) in &self.breakpoints {
+                                for (path, line) in &self.dap.breakpoints {
                                     let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
                                     ui.horizontal(|ui| {
                                         ui.label(egui::RichText::new(format!("● {}:{}", file_name, line + 1)).color(egui::Color32::from_rgb(240, 70, 70)));
@@ -821,7 +821,7 @@ impl EditorApp {
                                 }
                             });
                             if let Some(target) = to_remove {
-                                self.breakpoints.remove(&target);
+                                self.dap.breakpoints.remove(&target);
                                 self.sync_editor_breakpoints();
                             }
                         }

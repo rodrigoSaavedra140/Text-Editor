@@ -63,6 +63,8 @@ pub struct EditorApp {
     pub lsp: crate::lsp_service::LspService,
     // S5c (Roadmap v0.2.9): servicio de ejecución de Cargo (subproceso + panel).
     pub cargo: crate::cargo_service::CargoService,
+    // S5d (Roadmap v0.2.9): servicio del debugger DAP (sesión + breakpoints).
+    pub dap: crate::dap_service::DapService,
     pub editor_state: EditorState,
     // Textura del logo, cargada una sola vez en el primer frame
     // (None hasta ese momento).
@@ -117,10 +119,6 @@ pub struct EditorApp {
     // S1 (Rust IDE): Ejecutor nativo de pipelines de Cargo
     // S4 (Rust IDE): Code Actions, Inlay Hints & Rename
     // S4 (Rust IDE): DAP Native Debugger & Breakpoints
-    pub dap_client: Option<karkinos_core::DapClient>,
-    pub breakpoints: std::collections::HashSet<(PathBuf, usize)>,
-    pub debug_panel_open: bool,
-    pub debug_stopped_line: Option<(PathBuf, usize)>,
     // S3 (Roadmap v0.2.9): worker de fondo para el parseo Tree-sitter.
     // Vive en EditorApp (UN worker por app, sirve al tab activo; al
     // cambiar de pestaña se re-pide el parseo del contenido cargado).
@@ -142,6 +140,7 @@ impl Default for EditorApp {
             doc: DocumentService::default(),
             lsp: crate::lsp_service::LspService::default(),
             cargo: crate::cargo_service::CargoService::default(),
+            dap: crate::dap_service::DapService::default(),
             find_open: false,
             find_query: String::new(),
             find_replace: String::new(),
@@ -165,10 +164,6 @@ impl Default for EditorApp {
             open_vsx_status: None,
             open_vsx_rx: None,
             open_vsx_download_rx: None,
-            dap_client: None,
-            breakpoints: std::collections::HashSet::new(),
-            debug_panel_open: false,
-            debug_stopped_line: None,
             ast_worker: crate::ast_worker::AstWorker::spawn(),
             ast_request_rev: 0,
             ast_applied_rev: 0,
@@ -709,19 +704,20 @@ impl EditorApp {
         };
 
         let key = (path.clone(), line);
-        let added = if self.breakpoints.contains(&key) {
-            self.breakpoints.remove(&key);
+        let added = if self.dap.breakpoints.contains(&key) {
+            self.dap.breakpoints.remove(&key);
             false
         } else {
-            self.breakpoints.insert(key);
+            self.dap.breakpoints.insert(key);
             true
         };
 
         self.sync_editor_breakpoints();
 
         // If debugger is actively running, sync to DAP server
-        if let Some(ref client) = self.dap_client {
+        if let Some(ref client) = self.dap.client {
             let active_lines: Vec<usize> = self
+                .dap
                 .breakpoints
                 .iter()
                 .filter(|(p, _)| p == &path)
@@ -741,13 +737,14 @@ impl EditorApp {
     pub fn sync_editor_breakpoints(&mut self) {
         if let Some(ref path) = self.doc.current_file {
             self.editor_state.breakpoints = self
+                .dap
                 .breakpoints
                 .iter()
                 .filter(|(p, _)| p == path)
                 .map(|(_, l)| *l)
                 .collect();
 
-            if let Some((ref stopped_path, stopped_line)) = self.debug_stopped_line {
+            if let Some((ref stopped_path, stopped_line)) = self.dap.stopped_line {
                 if stopped_path == path {
                     self.editor_state.stopped_line = Some(stopped_line);
                 } else {
@@ -764,9 +761,9 @@ impl EditorApp {
 
     /// S4 (Rust IDE): Starts or resumes a debug session via DAP (lldb-dap).
     pub fn start_debugging(&mut self) {
-        self.debug_panel_open = true;
+        self.dap.panel_open = true;
 
-        if let Some(ref client) = self.dap_client {
+        if let Some(ref client) = self.dap.client {
             if client.state().is_stopped {
                 client.continue_execution();
                 self.doc.status = "Debugger: Resumed execution".to_string();
@@ -793,7 +790,7 @@ impl EditorApp {
         // Sync all breakpoints
         let mut grouped: std::collections::HashMap<PathBuf, Vec<usize>> =
             std::collections::HashMap::new();
-        for (path, line) in &self.breakpoints {
+        for (path, line) in &self.dap.breakpoints {
             grouped.entry(path.clone()).or_insert_with(Vec::new).push(*line);
         }
         for (path, lines) in grouped {
@@ -801,13 +798,13 @@ impl EditorApp {
         }
 
         client.launch(&bin_path, &[]);
-        self.dap_client = Some(client);
+        self.dap.client = Some(client);
         self.doc.status = format!("Debugger started: {}", bin_path.display());
     }
 
     /// S4 (Rust IDE): Steps over current instruction (next).
     pub fn step_over(&mut self) {
-        if let Some(ref client) = self.dap_client {
+        if let Some(ref client) = self.dap.client {
             client.step_over();
             self.doc.status = "Debugger: Step over".to_string();
         }
@@ -815,7 +812,7 @@ impl EditorApp {
 
     /// S4 (Rust IDE): Steps into current instruction (stepIn).
     pub fn step_in(&mut self) {
-        if let Some(ref client) = self.dap_client {
+        if let Some(ref client) = self.dap.client {
             client.step_in();
             self.doc.status = "Debugger: Step in".to_string();
         }
@@ -823,7 +820,7 @@ impl EditorApp {
 
     /// S4 (Rust IDE): Steps out of current function (stepOut).
     pub fn step_out(&mut self) {
-        if let Some(ref client) = self.dap_client {
+        if let Some(ref client) = self.dap.client {
             client.step_out();
             self.doc.status = "Debugger: Step out".to_string();
         }
@@ -831,7 +828,7 @@ impl EditorApp {
 
     /// S4 (Rust IDE): Pauses running debuggee.
     pub fn pause_debugger(&mut self) {
-        if let Some(ref client) = self.dap_client {
+        if let Some(ref client) = self.dap.client {
             client.pause();
             self.doc.status = "Debugger: Pausing target…".to_string();
         }
@@ -839,18 +836,18 @@ impl EditorApp {
 
     /// S4 (Rust IDE): Terminates the active debug session.
     pub fn stop_debugging(&mut self) {
-        if let Some(ref client) = self.dap_client {
+        if let Some(ref client) = self.dap.client {
             client.disconnect();
             self.doc.status = "Debugger: Stopped".to_string();
         }
-        self.dap_client = None;
-        self.debug_stopped_line = None;
+        self.dap.client = None;
+        self.dap.stopped_line = None;
         self.editor_state.stopped_line = None;
     }
 
     /// S4 (Rust IDE): Polls incoming DAP events (stopped, exited, output).
     pub fn poll_dap_results(&mut self) {
-        if let Some(ref client) = self.dap_client {
+        if let Some(ref client) = self.dap.client {
             let st = client.state();
             if st.is_stopped {
                 if let Some(ref frame) = st.current_frame {
@@ -858,7 +855,7 @@ impl EditorApp {
                         if self.doc.current_file.as_ref() != Some(path) && path.exists() {
                             self.open_path(path.clone());
                         }
-                        self.debug_stopped_line = Some((path.clone(), frame.line));
+                        self.dap.stopped_line = Some((path.clone(), frame.line));
                         self.editor_state.stopped_line = Some(frame.line);
                         self.editor_state.cursor_line = frame.line;
                         self.editor_state.cursor_col = frame.column;
@@ -871,7 +868,7 @@ impl EditorApp {
                     }
                 }
             } else if !st.is_active {
-                self.debug_stopped_line = None;
+                self.dap.stopped_line = None;
                 self.editor_state.stopped_line = None;
             }
         }
@@ -2330,13 +2327,13 @@ mod tests {
 
         // Toggle breakpoint at line 1
         app.toggle_breakpoint(1);
-        assert!(app.breakpoints.contains(&(file_path.clone(), 1)));
+        assert!(app.dap.breakpoints.contains(&(file_path.clone(), 1)));
         assert!(app.editor_state.breakpoints.contains(&1));
         assert!(app.doc.status.contains("Breakpoint set at line 2"));
 
         // Toggle breakpoint again -> removes it
         app.toggle_breakpoint(1);
-        assert!(!app.breakpoints.contains(&(file_path.clone(), 1)));
+        assert!(!app.dap.breakpoints.contains(&(file_path.clone(), 1)));
         assert!(!app.editor_state.breakpoints.contains(&1));
         assert!(app.doc.status.contains("Breakpoint removed at line 2"));
 
@@ -2361,10 +2358,10 @@ mod tests {
             }],
         );
 
-        app.dap_client = Some(dap);
+        app.dap.client = Some(dap);
         app.poll_dap_results();
 
-        assert_eq!(app.debug_stopped_line, Some((file_path.clone(), 1)));
+        assert_eq!(app.dap.stopped_line, Some((file_path.clone(), 1)));
         assert_eq!(app.editor_state.stopped_line, Some(1));
         assert_eq!(app.editor_state.cursor_line, 1);
         assert!(app.doc.status.contains("Stopped at line 2"));
@@ -2375,8 +2372,8 @@ mod tests {
 
         // Test stop debugging
         app.stop_debugging();
-        assert!(app.dap_client.is_none());
-        assert!(app.debug_stopped_line.is_none());
+        assert!(app.dap.client.is_none());
+        assert!(app.dap.stopped_line.is_none());
         assert!(app.editor_state.stopped_line.is_none());
         assert!(app.doc.status.contains("Debugger: Stopped"));
     }
