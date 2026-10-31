@@ -1394,6 +1394,7 @@ impl EditorApp {
     ) {
         let mut edited = false;
         let mut trigger = false;
+        let mut replace = false;
         let mut jump: Option<(std::path::PathBuf, karkinos_core::SearchMatch)> = None;
         let mut toggle: Option<std::path::PathBuf> = None;
 
@@ -1404,6 +1405,18 @@ impl EditorApp {
                     .size(10.0)
                     .strong(),
             );
+            let arrow = if self.workspace_search.show_replace {
+                "▼"
+            } else {
+                "▶"
+            };
+            if ui
+                .button(arrow)
+                .on_hover_text("Toggle replace field (Ctrl+Shift+H)")
+                .clicked()
+            {
+                self.workspace_search.show_replace = !self.workspace_search.show_replace;
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
                     .button("✕")
@@ -1434,6 +1447,58 @@ impl EditorApp {
                 trigger = true;
             }
         });
+
+        if self.workspace_search.show_replace {
+            ui.horizontal(|ui| {
+                let button_width = 92.0;
+                let input_width = (ui.available_width() - button_width).max(60.0);
+                let input = ui.add_sized(
+                    [input_width, 24.0],
+                    egui::TextEdit::singleline(&mut self.workspace_search.replace_input)
+                        .id_source("workspace_replace_input")
+                        .hint_text("Replace... (Enter / Replace All)"),
+                );
+                if self.workspace_search.replace_focus_requested {
+                    input.request_focus();
+                    self.workspace_search.replace_focus_requested = false;
+                }
+                if input.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    replace = true;
+                }
+                if ui
+                    .button("🔄 Replace All")
+                    .on_hover_text("Replace every match in the workspace")
+                    .clicked()
+                {
+                    replace = true;
+                }
+            });
+
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new("Files to include")
+                        .color(theme.text_muted)
+                        .size(11.0),
+                );
+                let filter = ui.add_sized(
+                    [ui.available_width(), 20.0],
+                    egui::TextEdit::singleline(&mut self.workspace_search.file_filter)
+                        .id_source("workspace_file_filter")
+                        .hint_text("files to include (e.g. *.rs, *.toml)"),
+                );
+                if filter.changed() {
+                    edited = true;
+                }
+            });
+
+            if let Some(summary) = &self.workspace_search.replace_summary {
+                ui.label(
+                    egui::RichText::new(summary)
+                        .color(egui::Color32::from_rgb(63, 185, 80))
+                        .size(11.0),
+                );
+            }
+        }
 
         ui.horizontal(|ui| {
             if ui
@@ -1532,6 +1597,9 @@ impl EditorApp {
         }
         if trigger {
             self.trigger_workspace_search();
+        }
+        if replace {
+            let _ = self.execute_workspace_replace();
         }
     }
 
@@ -3413,6 +3481,10 @@ impl eframe::App for EditorApp {
         // F6 (Roadmap v0.2.32): Ctrl+Shift+F abre la búsqueda global.
         if ctx.input(|i| i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(egui::Key::F)) {
             self.open_workspace_search();
+        }
+        // v0.2.43: Ctrl+Shift+H abre la búsqueda con el reemplazo desplegado.
+        if ctx.input(|i| i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(egui::Key::H)) {
+            self.open_workspace_replace();
         }
         // F7 (Roadmap v0.2.34): Ctrl+Shift+O abre el selector de símbolos.
         if ctx.input(|i| i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(egui::Key::O)) {

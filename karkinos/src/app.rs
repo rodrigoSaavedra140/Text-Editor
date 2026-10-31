@@ -204,6 +204,17 @@ pub struct WorkspaceSearchState {
     pub focus_requested: bool,
     /// Momento del último cambio de texto, para el debounce.
     pub last_edit_at: Option<std::time::Instant>,
+    // v0.2.43: reemplazo global en el workspace.
+    /// El campo de reemplazo está desplegado.
+    pub show_replace: bool,
+    /// Texto de reemplazo aplicado a todas las coincidencias.
+    pub replace_input: String,
+    /// Filtro de archivos (`*.rs, *.toml`, `src/`, …); vacío = sin filtro.
+    pub file_filter: String,
+    /// Feedback del último reemplazo (éxito o error).
+    pub replace_summary: Option<String>,
+    /// Pide foco en el campo de reemplazo (Ctrl+Shift+H).
+    pub replace_focus_requested: bool,
 }
 
 /// Barra lateral unificada (v0.2.39): herramienta activa en el panel lateral compartido.
@@ -466,6 +477,18 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
         title: "View: Search in Workspace",
         category: "View",
         shortcut: Some("Ctrl+Shift+F"),
+    },
+    PaletteCommand {
+        id: "search:replace_in_workspace",
+        title: "Search: Replace in Files (Ctrl+Shift+H)",
+        category: "Search",
+        shortcut: Some("Ctrl+Shift+H"),
+    },
+    PaletteCommand {
+        id: "search:toggle_replace",
+        title: "Search: Toggle Replace Field",
+        category: "Search",
+        shortcut: None,
     },
     PaletteCommand {
         id: "sidebar:symbols",
@@ -1362,6 +1385,10 @@ impl EditorApp {
             "editor:toggle_minimap" => self.toggle_minimap(),
             "sidebar:explorer" => self.toggle_explorer(),
             "sidebar:search" => self.open_workspace_search(),
+            "search:replace_in_workspace" => self.open_workspace_replace(),
+            "search:toggle_replace" => {
+                self.workspace_search.show_replace = !self.workspace_search.show_replace;
+            }
             "sidebar:symbols" => self.open_symbol_picker(),
             "git:source_control" => self.open_source_control(),
             "git:refresh" => self.refresh_git_status(),
@@ -1497,11 +1524,13 @@ impl EditorApp {
             match_word: self.workspace_search.match_word,
             use_regex: self.workspace_search.use_regex,
             max_results: 500,
+            file_pattern: self.workspace_file_pattern(),
         };
         self.workspace_search.generation = self.workspace_search.generation.wrapping_add(1);
         self.workspace_search.results.clear();
         self.workspace_search.total_matches = 0;
         self.workspace_search.files_scanned = 0;
+        self.workspace_search.replace_summary = None;
         self.workspace_search.error = query.validate().err();
         self.workspace_search.searching =
             self.workspace_search.error.is_none() && !query.is_empty();
@@ -1509,6 +1538,135 @@ impl EditorApp {
             let root = self.doc.browse_dir.clone();
             self.workspace_search_engine
                 .request(self.workspace_search.generation, &root, query);
+        }
+    }
+
+    /// v0.2.43: filtro de archivos activo, o `None` si el campo está vacío.
+    fn workspace_file_pattern(&self) -> Option<String> {
+        let filter = self.workspace_search.file_filter.trim();
+        if filter.is_empty() {
+            None
+        } else {
+            Some(filter.to_string())
+        }
+    }
+
+    /// v0.2.43: abre la búsqueda global con el reemplazo desplegado y el
+    /// foco puesto en el campo de reemplazo (Ctrl+Shift+H).
+    pub fn open_workspace_replace(&mut self) {
+        self.sidebar_tab = SidebarTab::Search;
+        self.workspace_search.open = true;
+        self.explorer.open = false;
+        self.symbol_picker.open = false;
+        self.workspace_search.show_replace = true;
+        self.workspace_search.replace_focus_requested = true;
+    }
+
+    /// v0.2.43: reemplaza todas las coincidencias en el workspace y
+    /// sincroniza las pestañas abiertas con el contenido que quedó en disco.
+    pub fn execute_workspace_replace(
+        &mut self,
+    ) -> Result<karkinos_core::workspace_search::ReplaceSummary, String> {
+        use karkinos_core::workspace_search::{ReplaceSummary, replace_in_workspace};
+
+        let query = karkinos_core::SearchQuery {
+            query: self.workspace_search.input.clone(),
+            case_sensitive: self.workspace_search.case_sensitive,
+            match_word: self.workspace_search.match_word,
+            use_regex: self.workspace_search.use_regex,
+            max_results: 500,
+            file_pattern: self.workspace_file_pattern(),
+        };
+
+        // Contenido en disco de las pestañas abiertas ANTES de reemplazar:
+        // solo esas pestañas pueden necesitar recarga después.
+        let open_files = self.capture_open_tab_disk_contents();
+
+        let result = replace_in_workspace(
+            &self.doc.browse_dir,
+            &query,
+            &self.workspace_search.replace_input,
+        );
+        // Aun si el lote falla a mitad de camino, las pestañas abiertas
+        // deben reflejar lo que efectivamente quedó en disco.
+        self.reload_tabs_after_replace(open_files);
+
+        let summary: ReplaceSummary = match result {
+            Ok(summary) => summary,
+            Err(error) => {
+                self.workspace_search.replace_summary = None;
+                self.doc.status = format!("Replace failed: {error}");
+                return Err(error);
+            }
+        };
+
+        // Las coincidencias en memoria ya no reflejan el disco.
+        self.trigger_workspace_search();
+
+        let message = format!(
+            "Replaced {} occurrences across {} files",
+            summary.replacements_count, summary.files_modified
+        );
+        self.workspace_search.replace_summary = Some(message.clone());
+        self.doc.status = message;
+        Ok(summary)
+    }
+
+    /// v0.2.43: lee el contenido en disco actual de cada pestaña abierta.
+    fn capture_open_tab_disk_contents(&self) -> Vec<(usize, std::path::PathBuf, String)> {
+        let mut open_files = Vec::new();
+        for (idx, tab) in self.doc.tabs.iter().enumerate() {
+            let Some(path) = tab.current_file.clone() else {
+                continue;
+            };
+            if let Ok((content, _, _)) = DocumentService::read_file(&path) {
+                open_files.push((idx, path, content));
+            }
+        }
+        open_files
+    }
+
+    /// v0.2.43: recarga desde disco solo las pestañas cuyo archivo cambió
+    /// con el reemplazo y vuelca la pestaña activa al buffer del documento.
+    fn reload_tabs_after_replace(&mut self, open_files: Vec<(usize, std::path::PathBuf, String)>) {
+        // La pestaña activa puede tener ediciones todavía no volcadas.
+        self.sync_active_to_tab();
+
+        let active = self.doc.active_tab;
+        let mut active_changed = false;
+        for (idx, path, before) in open_files {
+            let Ok((content, line_ending, mtime)) = DocumentService::read_file(&path) else {
+                continue;
+            };
+            if content == before {
+                // El reemplazo no tocó este archivo: una pestaña con
+                // ediciones sin guardar conserva su buffer y su `dirty`.
+                continue;
+            }
+            let view_bytes = content.len();
+            let tab = &mut self.doc.tabs[idx];
+            tab.lines = if content.is_empty() {
+                vec![String::new()]
+            } else {
+                content.split('\n').map(|line| line.to_string()).collect()
+            };
+            tab.buffer = karkinos_core::TextBuffer::from_str(&content);
+            tab.last_snapshot = Rope::from_str(&content);
+            tab.undo_stack = UndoStack::new();
+            tab.dirty = false;
+            tab.line_ending = line_ending;
+            tab.last_disk_mtime = mtime;
+            tab.external_changed = false;
+            tab.last_mtime_check = None;
+            tab.view_bytes = view_bytes;
+            if idx == active {
+                active_changed = true;
+            }
+        }
+
+        // Solo la pestaña activa recargada necesita volver al buffer vivo.
+        if active_changed {
+            self.load_tab(active);
         }
     }
 
@@ -3608,6 +3766,149 @@ mod tests {
         assert!(app.workspace_search.error.is_none());
     }
 
+    // v0.2.43: reemplazo global en el workspace.
+
+    fn replace_test_dir(tag: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("karkinos_replace_{}_{}", tag, std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        dir
+    }
+
+    #[test]
+    fn execute_workspace_replace_escribe_disco_y_sincroniza_pestanas() {
+        let dir = replace_test_dir("sync");
+        let a = dir.join("a.rs");
+        let b = dir.join("b.txt");
+        std::fs::write(&a, "let foo = foo;\n").expect("a");
+        std::fs::write(&b, "foo bar\n").expect("b");
+
+        let mut app = EditorApp::default();
+        app.doc.browse_dir = dir.clone();
+        app.open_path(a.clone());
+        app.workspace_search.input = "foo".to_string();
+        app.workspace_search.replace_input = "baz".to_string();
+
+        let summary = app.execute_workspace_replace().expect("replace");
+
+        assert_eq!(summary.files_modified, 2);
+        assert_eq!(summary.replacements_count, 3);
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "let baz = baz;\n");
+        assert_eq!(std::fs::read_to_string(&b).unwrap(), "baz bar\n");
+
+        // El buffer activo y la pestaña abierta reflejan el disco, sin dirty.
+        assert_eq!(app.doc.current_text(), "let baz = baz;\n");
+        assert_eq!(app.doc.buffer.to_string(), "let baz = baz;\n");
+        assert!(!app.doc.dirty);
+        let tab = &app.doc.tabs[app.doc.active_tab];
+        assert_eq!(tab.buffer.to_string(), "let baz = baz;\n");
+        assert!(!tab.dirty);
+        assert_eq!(
+            tab.last_disk_mtime,
+            std::fs::metadata(&a).ok().and_then(|m| m.modified().ok())
+        );
+
+        let feedback = app
+            .workspace_search
+            .replace_summary
+            .as_deref()
+            .unwrap_or_default();
+        assert!(
+            feedback.contains("3 occurrences across 2 files"),
+            "summary: {feedback}"
+        );
+        assert!(app.doc.status.contains("3 occurrences across 2 files"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn execute_workspace_replace_respeta_el_filtro_de_archivos() {
+        let dir = replace_test_dir("filter");
+        let rust = dir.join("only.rs");
+        let text = dir.join("skip.txt");
+        std::fs::write(&rust, "foo\n").expect("rust");
+        std::fs::write(&text, "foo\n").expect("text");
+
+        let mut app = EditorApp::default();
+        app.doc.browse_dir = dir.clone();
+        app.workspace_search.input = "foo".to_string();
+        app.workspace_search.replace_input = "bar".to_string();
+        app.workspace_search.file_filter = " *.rs ".to_string();
+
+        let summary = app.execute_workspace_replace().expect("replace");
+
+        assert_eq!(summary.files_modified, 1);
+        assert_eq!(summary.replacements_count, 1);
+        assert_eq!(std::fs::read_to_string(&rust).unwrap(), "bar\n");
+        assert_eq!(std::fs::read_to_string(&text).unwrap(), "foo\n");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn execute_workspace_replace_preserva_ediciones_sin_guardar_en_pestanas_intactas() {
+        let dir = replace_test_dir("dirty_tabs");
+        let a = dir.join("a.rs");
+        let b = dir.join("b.rs");
+        std::fs::write(&a, "alpha\n").expect("a");
+        std::fs::write(&b, "foo\n").expect("b");
+
+        let mut app = EditorApp::default();
+        app.doc.browse_dir = dir.clone();
+        app.open_path(a.clone());
+        app.set_text("alpha edited\n");
+        app.doc.dirty = true;
+        app.open_path(b.clone());
+        app.workspace_search.input = "foo".to_string();
+        app.workspace_search.replace_input = "bar".to_string();
+
+        app.execute_workspace_replace().expect("replace");
+
+        // a.rs no tenía coincidencias: su pestaña conserva edits y dirty.
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "alpha\n");
+        let tab_a = app
+            .doc
+            .tabs
+            .iter()
+            .find(|tab| tab.current_file.as_deref() == Some(a.as_path()))
+            .expect("tab a");
+        assert_eq!(tab_a.buffer.to_string(), "alpha edited\n");
+        assert!(tab_a.dirty, "una pestaña intacta no pierde ediciones");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn palette_comandos_de_reemplazo_abren_y_alternan_el_campo() {
+        let mut app = EditorApp::default();
+
+        let replace = PALETTE_COMMANDS
+            .iter()
+            .find(|command| command.id == "search:replace_in_workspace")
+            .expect("comando replace_in_workspace");
+        assert_eq!(replace.title, "Search: Replace in Files (Ctrl+Shift+H)");
+        assert_eq!(replace.category, "Search");
+        assert_eq!(replace.shortcut, Some("Ctrl+Shift+H"));
+        assert!(
+            PALETTE_COMMANDS.iter().any(|command| {
+                command.id == "search:toggle_replace" && command.category == "Search"
+            })
+        );
+
+        app.execute_palette_command("search:replace_in_workspace");
+        assert_eq!(app.sidebar_tab, SidebarTab::Search);
+        assert!(app.workspace_search.open);
+        assert!(app.workspace_search.show_replace);
+        assert!(app.workspace_search.replace_focus_requested);
+
+        app.execute_palette_command("search:toggle_replace");
+        assert!(!app.workspace_search.show_replace);
+        app.execute_palette_command("search:toggle_replace");
+        assert!(app.workspace_search.show_replace);
+    }
+
     #[test]
     fn jump_to_search_match_posiciona_cursor_y_seleccion() {        let path = std::env::temp_dir().join(format!(
             "karkinos_jump_{}.rs",
@@ -4185,7 +4486,7 @@ mod tests {
         ids.sort_unstable();
         ids.dedup();
         assert_eq!(ids.len(), total, "cada id del catálogo es único");
-        assert_eq!(total, 26, "el catálogo de v0.2.42 tiene 26 comandos");
+        assert_eq!(total, 28, "el catálogo de v0.2.43 tiene 28 comandos");
 
         for expected in [
             "layout:split_vertical",
@@ -4194,6 +4495,8 @@ mod tests {
             "editor:toggle_minimap",
             "sidebar:explorer",
             "sidebar:search",
+            "search:replace_in_workspace",
+            "search:toggle_replace",
             "sidebar:symbols",
             "terminal:toggle",
             "cargo:check",
