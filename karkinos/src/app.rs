@@ -140,6 +140,9 @@ pub struct EditorApp {
     git_diff_was_dirty: bool,
     // F5 (Roadmap v0.2.31): split del área central. `None` = un solo panel.
     pub split: Option<SplitLayout>,
+    // F6 (Roadmap v0.2.32): búsqueda global en el workspace.
+    pub workspace_search: WorkspaceSearchState,
+    pub workspace_search_engine: karkinos_core::WorkspaceSearch,
 }
 
 /// F5 (Roadmap v0.2.31): eje por el que se parte el área central.
@@ -157,6 +160,28 @@ pub struct SplitLayout {
     pub direction: SplitDirection,
     pub ratio: f32,
     pub secondary: EditorState,
+}
+
+/// F6 (Roadmap v0.2.32): estado del panel de búsqueda global.
+#[derive(Debug, Default)]
+pub struct WorkspaceSearchState {
+    pub open: bool,
+    pub input: String,
+    pub case_sensitive: bool,
+    pub match_word: bool,
+    pub use_regex: bool,
+    pub results: Vec<karkinos_core::FileMatches>,
+    pub collapsed: std::collections::HashSet<std::path::PathBuf>,
+    pub searching: bool,
+    pub error: Option<String>,
+    pub total_matches: usize,
+    pub files_scanned: usize,
+    /// Generación del pedido vigente; los eventos viejos se descartan.
+    pub generation: u64,
+    /// Pide foco en el campo al abrir el panel (Ctrl+Shift+F).
+    pub focus_requested: bool,
+    /// Momento del último cambio de texto, para el debounce.
+    pub last_edit_at: Option<std::time::Instant>,
 }
 
 impl Default for EditorApp {
@@ -201,6 +226,8 @@ impl Default for EditorApp {
             git_diff_requested_path: None,
             git_diff_was_dirty: false,
             split: None,
+            workspace_search: WorkspaceSearchState::default(),
+            workspace_search_engine: karkinos_core::WorkspaceSearch::spawn(),
         }
     }
 }
@@ -488,6 +515,76 @@ impl EditorApp {
         if let Some(layout) = &mut self.split {
             layout.ratio = ratio.clamp(0.15, 0.85);
         }
+    }
+
+    /// F6 (Roadmap v0.2.32): abre el panel de búsqueda global y pide foco.
+    pub fn open_workspace_search(&mut self) {
+        self.workspace_search.open = true;
+        self.workspace_search.focus_requested = true;
+    }
+
+    /// F6: dispara una búsqueda nueva en el worker. Sube la generación para
+    /// que los eventos de búsquedas anteriores se descarten al llegar.
+    pub fn trigger_workspace_search(&mut self) {
+        let query = karkinos_core::SearchQuery {
+            query: self.workspace_search.input.clone(),
+            case_sensitive: self.workspace_search.case_sensitive,
+            match_word: self.workspace_search.match_word,
+            use_regex: self.workspace_search.use_regex,
+            max_results: 500,
+        };
+        self.workspace_search.generation = self.workspace_search.generation.wrapping_add(1);
+        self.workspace_search.results.clear();
+        self.workspace_search.total_matches = 0;
+        self.workspace_search.files_scanned = 0;
+        self.workspace_search.error = query.validate().err();
+        self.workspace_search.searching =
+            self.workspace_search.error.is_none() && !query.is_empty();
+        if self.workspace_search.searching {
+            let root = self.doc.browse_dir.clone();
+            self.workspace_search_engine
+                .request(self.workspace_search.generation, &root, query);
+        }
+    }
+
+    /// F6: consume los eventos del worker. `true` si hubo novedades (repaint).
+    pub fn poll_workspace_search(&mut self) -> bool {
+        let mut applied = false;
+        while let Some((generation, event)) = self.workspace_search_engine.try_recv() {
+            if generation != self.workspace_search.generation {
+                continue; // resultado de una búsqueda que ya quedó vieja
+            }
+            applied = true;
+            match event {
+                karkinos_core::SearchEvent::File(file) => {
+                    self.workspace_search.total_matches += file.matches.len();
+                    self.workspace_search.results.push(file);
+                }
+                karkinos_core::SearchEvent::Done { files_scanned, .. } => {
+                    self.workspace_search.files_scanned = files_scanned;
+                    self.workspace_search.searching = false;
+                }
+            }
+        }
+        applied
+    }
+
+    /// F6: abre el archivo del resultado y posiciona el cursor exactamente en
+    /// la coincidencia (línea y columna), con la palabra seleccionada.
+    pub fn jump_to_search_match(
+        &mut self,
+        path: &std::path::Path,
+        m: &karkinos_core::SearchMatch,
+    ) {
+        self.open_path(path.to_path_buf());
+        let line = m
+            .line_number
+            .saturating_sub(1)
+            .min(self.doc.lines.len().saturating_sub(1));
+        self.editor_state.cursor_line = line;
+        self.editor_state.cursor_col = m.col_start;
+        self.editor_state.sel_anchor = Some((line, m.col_end));
+        self.editor_state.request_autoscroll();
     }
 
     /// F1 (Roadmap v0.2.27): pide el diff contra HEAD cuando corresponde —
@@ -2521,5 +2618,55 @@ mod tests {
         assert_eq!(app.split.as_ref().unwrap().ratio, 0.85);
         app.set_split_ratio(0.4);
         assert_eq!(app.split.as_ref().unwrap().ratio, 0.4);
+    }
+
+    // F6 (Roadmap v0.2.32): búsqueda global.
+
+    #[test]
+    fn trigger_workspace_search_con_regex_invalida_reporta_error() {
+        let mut app = EditorApp::default();
+        app.workspace_search.input = "([a-z".to_string();
+        app.workspace_search.use_regex = true;
+        app.trigger_workspace_search();
+
+        assert!(app.workspace_search.error.is_some(), "la regex inválida se informa");
+        assert!(!app.workspace_search.searching, "no se lanza un recorrido inútil");
+        assert!(app.workspace_search.results.is_empty());
+    }
+
+    #[test]
+    fn trigger_workspace_search_vacia_no_busca() {
+        let mut app = EditorApp::default();
+        app.workspace_search.input = "   ".to_string();
+        app.trigger_workspace_search();
+        assert!(!app.workspace_search.searching);
+        assert!(app.workspace_search.error.is_none());
+    }
+
+    #[test]
+    fn jump_to_search_match_posiciona_cursor_y_seleccion() {
+        let path = std::env::temp_dir().join(format!(
+            "karkinos_jump_{}.rs",
+            std::process::id()
+        ));
+        std::fs::write(&path, "fn uno() {}\nfn dos() {}\nfn tres() {}\n").expect("archivo");
+
+        let mut app = EditorApp::default();
+        app.open_path(path.clone());
+        app.jump_to_search_match(
+            &path,
+            &karkinos_core::SearchMatch {
+                line_number: 2,
+                col_start: 3,
+                col_end: 6,
+                line_content: "fn dos() {}".to_string(),
+            },
+        );
+
+        assert_eq!(app.editor_state.cursor_line, 1, "línea 2 es índice 1");
+        assert_eq!(app.editor_state.cursor_col, 3);
+        assert_eq!(app.editor_state.sel_anchor, Some((1, 6)));
+
+        std::fs::remove_file(path).ok();
     }
 }

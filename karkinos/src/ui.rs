@@ -586,6 +586,171 @@ impl EditorApp {
         }
     }
 
+    /// F6 (Roadmap v0.2.32): panel lateral de búsqueda global en el workspace.
+    /// Resultados en streaming por archivo, agrupados y colapsables; un clic
+    /// abre el archivo y posiciona el cursor en la coincidencia.
+    fn show_workspace_search(&mut self, ctx: &egui::Context, theme: &crate::theme::Theme) {
+        if !self.workspace_search.open {
+            return;
+        }
+
+        let mut close_panel = false;
+        let mut edited = false;
+        let mut trigger = false;
+        let mut jump: Option<(std::path::PathBuf, karkinos_core::SearchMatch)> = None;
+        let mut toggle: Option<std::path::PathBuf> = None;
+
+        egui::SidePanel::right("workspace_search_panel")
+            .resizable(true)
+            .default_width(340.0)
+            .min_width(240.0)
+            .frame(
+                egui::Frame::none()
+                    .fill(theme.surface_bg)
+                    .inner_margin(egui::Margin::same(8.0)),
+            )
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("🔎 Search in Workspace")
+                            .color(theme.text)
+                            .strong(),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .button("✕")
+                            .on_hover_text("Close (Ctrl+Shift+F)")
+                            .clicked()
+                        {
+                            close_panel = true;
+                        }
+                    });
+                });
+                ui.add_space(4.0);
+
+                ui.horizontal(|ui| {
+                    let input = ui.add_sized(
+                        [ui.available_width(), 24.0],
+                        egui::TextEdit::singleline(&mut self.workspace_search.input)
+                            .id_source("workspace_search_input")
+                            .hint_text("Search... (Enter)"),
+                    );
+                    if self.workspace_search.focus_requested {
+                        input.request_focus();
+                        self.workspace_search.focus_requested = false;
+                    }
+                    if input.changed() {
+                        edited = true;
+                    }
+                    if input.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        trigger = true;
+                    }
+                });
+
+                ui.horizontal(|ui| {
+                    if ui
+                        .toggle_value(&mut self.workspace_search.case_sensitive, "Aa")
+                        .on_hover_text("Case sensitive")
+                        .changed()
+                    {
+                        trigger = true;
+                    }
+                    if ui
+                        .toggle_value(&mut self.workspace_search.match_word, "\\b")
+                        .on_hover_text("Whole word")
+                        .changed()
+                    {
+                        trigger = true;
+                    }
+                    if ui
+                        .toggle_value(&mut self.workspace_search.use_regex, ".*")
+                        .on_hover_text("Use regex")
+                        .changed()
+                    {
+                        trigger = true;
+                    }
+                    if ui.button("Search").clicked() {
+                        trigger = true;
+                    }
+                });
+                ui.separator();
+
+                let status = if let Some(err) = &self.workspace_search.error {
+                    format!("⚠ {err}")
+                } else if self.workspace_search.searching {
+                    "Searching…".to_string()
+                } else {
+                    format!(
+                        "{} matches in {} files ({} scanned)",
+                        self.workspace_search.total_matches,
+                        self.workspace_search.results.len(),
+                        self.workspace_search.files_scanned
+                    )
+                };
+                ui.label(egui::RichText::new(status).color(theme.text_muted).size(11.0));
+                ui.add_space(2.0);
+
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    for file in &self.workspace_search.results {
+                        let expanded = !self.workspace_search.collapsed.contains(&file.path);
+                        let header = format!(
+                            "{} {} ({})",
+                            if expanded { "▾" } else { "▸" },
+                            file.relative_display,
+                            file.matches.len()
+                        );
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new(header).color(theme.text).size(12.0),
+                                )
+                                .frame(false),
+                            )
+                            .clicked()
+                        {
+                            toggle = Some(file.path.clone());
+                        }
+                        if !expanded {
+                            continue;
+                        }
+                        for m in &file.matches {
+                            let text = format!("{:>4}: {}", m.line_number, m.line_content.trim());
+                            let row = ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(text)
+                                        .color(theme.text_muted)
+                                        .size(11.0)
+                                        .monospace(),
+                                )
+                                .sense(egui::Sense::click()),
+                            );
+                            if row.clicked() {
+                                jump = Some((file.path.clone(), m.clone()));
+                            }
+                        }
+                    }
+                });
+            });
+
+        if close_panel {
+            self.workspace_search.open = false;
+        }
+        if let Some(path) = toggle {
+            if !self.workspace_search.collapsed.remove(&path) {
+                self.workspace_search.collapsed.insert(path);
+            }
+        }
+        if let Some((path, m)) = jump {
+            self.jump_to_search_match(&path, &m);
+        }
+        if edited {
+            self.workspace_search.last_edit_at = Some(std::time::Instant::now());
+        }
+        if trigger {
+            self.trigger_workspace_search();
+        }
+    }
+
     /// F5 (Roadmap v0.2.31): dibuja el editor en uno o dos paneles. Cada panel
     /// tiene su propio cursor y scroll; ambos editan el mismo buffer del tab
     /// activo. Comparar dos pestañas distintas queda fuera de alcance: el
@@ -1974,6 +2139,21 @@ impl eframe::App for EditorApp {
         if self.poll_git_diff_results() {
             ctx.request_repaint_after(std::time::Duration::from_millis(16));
         }
+        // F6 (Roadmap v0.2.32): debounce de 250 ms + streaming del worker.
+        if self.workspace_search.open {
+            if let Some(at) = self.workspace_search.last_edit_at {
+                if at.elapsed() >= std::time::Duration::from_millis(250) {
+                    self.workspace_search.last_edit_at = None;
+                    self.trigger_workspace_search();
+                }
+            }
+            if self.poll_workspace_search() {
+                ctx.request_repaint_after(std::time::Duration::from_millis(16));
+            }
+            if self.workspace_search.searching {
+                ctx.request_repaint_after(std::time::Duration::from_millis(50));
+            }
+        }
         // S4 (Roadmap v0.2.9): resultados del worker de Quick Open (escaneo
         // + scoring en fondo) — si aplicó algo nuevo, repintado suave.
         if self.quick_open.poll(&mut self.quick_open_services) {
@@ -2114,6 +2294,10 @@ impl eframe::App for EditorApp {
                 self.toggle_split(crate::app::SplitDirection::Horizontal);
             }
         }
+        // F6 (Roadmap v0.2.32): Ctrl+Shift+F abre la búsqueda global.
+        if ctx.input(|i| i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(egui::Key::F)) {
+            self.open_workspace_search();
+        }
         if want_goto_def {
             self.goto_definition();
         }
@@ -2244,6 +2428,14 @@ impl eframe::App for EditorApp {
                     if search_pill.clicked() {
                         self.quick_open
                             .request_open(&self.doc.browse_dir, &mut self.quick_open_services);
+                    }
+                    // F6 (Roadmap v0.2.32): búsqueda global del workspace.
+                    if ui
+                        .button("🔎")
+                        .on_hover_text("Search in Workspace (Ctrl+Shift+F)")
+                        .clicked()
+                    {
+                        self.open_workspace_search();
                     }
                     ui.add_space(8.0);
 
@@ -2650,8 +2842,10 @@ impl eframe::App for EditorApp {
 
         // S2: barra de búsqueda justo arriba de la barra de estado.
         self.show_find_bar(ctx);
-        // S1 (Rust IDE): panel inferior de ejecución y diagnósticos de Cargo (F7 / F5 / Ctrl+\).
+        // S1 (Rust IDE): panel inferior de ejecución y diagnósticos de Cargo (F7 / F5 / Ctrl+`).
         self.show_cargo_panel(ctx, &theme);
+        // F6 (Roadmap v0.2.32): panel lateral de búsqueda global.
+        self.show_workspace_search(ctx, &theme);
 
         // Sin márgenes propios: así el área de texto puede ocupar
         // el panel central entero, sin ese borde gris alrededor.

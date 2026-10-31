@@ -178,3 +178,14 @@ Evolucionar el panel inferior PTY (`PtyTerminal`) para admitir múltiples pesta�
 2. Mantener la suite de tests al 100% verde (`cargo test --workspace`).
 3. Commit convencional por tarea (ej. `feat(search): implement multi-threaded workspace search (v0.2.32)`).
 4. Incrementar la versión en `Cargo.toml` (`0.2.32`, `0.2.33`, etc.).
+
+---
+
+## Log de Ejecución
+
+- **F6 (v0.2.32) — completada**: `crates/karkinos-core/src/workspace_search.rs` con `SearchQuery` (texto, mayúsculas, palabra completa, regex, tope de resultados), `SearchMatch`, `FileMatches` y un `WorkspaceSearch` que recorre el árbol en un hilo propio emitiendo resultados por archivo en streaming. El recorrido usa `std::fs` (sin dependencias nuevas) y salta `target/`, `.git/`, `.codegraph/`, `node_modules/`, `dist/`, `build/`, `.idea/` y `.vscode/`; descarta binarios (heurística de NUL) y archivos de más de 1 MB.
+  - UI: panel lateral derecho con `Ctrl+Shift+F` o el botón 🔎 de la barra superior; input con debounce de 250 ms y Enter inmediato; toggles `Aa`, `\b`, `.*`; árbol colapsable por archivo con el número de coincidencias; clic en un resultado abre el archivo y posiciona cursor y selección en línea/columna exactas.
+  - Corrección de carreras: cada pedido lleva generación y el `poll` descarta eventos de búsquedas anteriores.
+  - Tests: 10 en el core (ocurrencias, mayúsculas, palabra completa, regex, regex inválida, tope de resultados, binarios, exclusiones del walker, streaming del worker, consulta vacía) + 3 en la app (regex inválida reportada, consulta vacía no busca, salto con cursor/selección exactos).
+  - Evidencia: `cargo check --workspace` 0 warnings; `cargo test --workspace` karkinos 127, karkinos-core 80.
+  - Desvío menor: no se agregó el icono de lupa a una barra lateral izquierda porque la app no tiene barra lateral izquierda; el acceso es el atajo, el botón de la barra superior y el ✕ del propio panel.

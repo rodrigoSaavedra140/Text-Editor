@@ -54,6 +54,7 @@ The resulting executable will be located at `target/release/karkinos`.
 - `Ctrl+W` — Close active tab
 - `Ctrl+Tab` / `Ctrl+Shift+Tab` — Cycle through open tabs
 - `Ctrl+P` — Quick Open project file finder
+- `Ctrl+Shift+F` — Search across every file in the workspace (case sensitive, whole word, regex)
 - `Ctrl+S` — Save active document
 - `Ctrl+Shift+S` — Save As...
 - `Ctrl+Q` — Quit (with multi-tab unsaved changes protection)
