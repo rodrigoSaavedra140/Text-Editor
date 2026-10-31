@@ -944,8 +944,19 @@ impl EditorApp {
                 }
 
                 ui.separator();
-                let total = self.quick_open.filtered.len();
-                ui.label(format!("{} files found", total));
+                // S4 (Roadmap v0.2.9): estados de fondo — nunca un "0 files
+                // found" que mienta mientras el worker escanea o puntúa.
+                if self.quick_open.indexing {
+                    ui.label("Scanning… (indexing in background)");
+                } else if self.quick_open.scoring {
+                    ui.label(format!(
+                        "Scoring… ({} files indexed)",
+                        self.quick_open.scanned_files.len()
+                    ));
+                } else {
+                    let total = self.quick_open.filtered.len();
+                    ui.label(format!("{} files found", total));
+                }
 
                 egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
                     let mut clicked_idx = None;
@@ -980,7 +991,7 @@ impl EditorApp {
 
         if query_changed {
             let q = self.quick_open.query.clone();
-            self.quick_open.set_query(q);
+            self.quick_open.set_query(q, &mut self.quick_open_services);
         }
 
         if open_selected {
@@ -1426,6 +1437,11 @@ impl eframe::App for EditorApp {
         if self.poll_ast_results() {
             ctx.request_repaint_after(std::time::Duration::from_millis(16));
         }
+        // S4 (Roadmap v0.2.9): resultados del worker de Quick Open (escaneo
+        // + scoring en fondo) — si aplicó algo nuevo, repintado suave.
+        if self.quick_open.poll(&mut self.quick_open_services) {
+            ctx.request_repaint_after(std::time::Duration::from_millis(16));
+        }
         // S3 (Rust IDE): Procesar respuestas pendientes de Open VSX
         self.poll_open_vsx();
         // S4 (Rust IDE): Procesar respuestas y eventos del DAP (debugger)
@@ -1491,7 +1507,8 @@ impl eframe::App for EditorApp {
             if self.quick_open.open {
                 self.quick_open.close();
             } else {
-                self.quick_open.open(&self.browse_dir);
+                self.quick_open
+                    .request_open(&self.browse_dir, &mut self.quick_open_services);
             }
         }
         if want_save {
@@ -1680,7 +1697,8 @@ impl eframe::App for EditorApp {
 
                 // Búsqueda rápida de archivos (Ctrl+P)
                 if ui.button("🔍 Search (Ctrl+P)").clicked() {
-                    self.quick_open.open(&self.browse_dir);
+                    self.quick_open
+                        .request_open(&self.browse_dir, &mut self.quick_open_services);
                 }
 
                 // Guardado rápido

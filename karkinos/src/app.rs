@@ -277,6 +277,9 @@ pub struct EditorApp {
     pub theme_mode: crate::theme::ThemeMode,
     // S7 (Etapa 2): Estado del modal de búsqueda rápida de archivos (Ctrl+P).
     pub quick_open: crate::quick_open::QuickOpenState,
+    // S4 (Roadmap v0.2.9): servicios de fondo del Quick Open (indexador
+    // + scorer). UNA pareja por app; sirve al modal del tab activo.
+    pub quick_open_services: crate::quick_open::QuickOpenServices,
     // S8 (Etapa 2): Pestañas / Múltiples documentos abiertos simultáneamente.
     pub tabs: Vec<TabDocument>,
     pub active_tab: usize,
@@ -366,6 +369,7 @@ impl Default for EditorApp {
             font_size: 14.0,
             theme_mode: crate::theme::ThemeMode::Dark,
             quick_open: crate::quick_open::QuickOpenState::default(),
+            quick_open_services: crate::quick_open::QuickOpenServices::default(),
             tabs: vec![TabDocument::new(1)],
             active_tab: 0,
             next_tab_id: 2,
