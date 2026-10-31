@@ -657,7 +657,36 @@ impl EditorApp {
             });
     }
 
+    /// UI-4 (v0.2.22): botón de pestaña segmentada para el dock inferior.
+    fn dock_segmented_tab(
+        ui: &mut egui::Ui,
+        is_active: bool,
+        label: impl Into<egui::WidgetText>,
+        theme: &crate::theme::Theme,
+    ) -> egui::Response {
+        let bg = if is_active { theme.elevated_bg } else { egui::Color32::TRANSPARENT };
+        let frame = egui::Frame::none()
+            .fill(bg)
+            .rounding(egui::Rounding::same(4.0))
+            .inner_margin(egui::Margin::symmetric(10.0, 4.0));
+        let response = frame
+            .show(ui, |ui| {
+                ui.add(egui::Label::new(label).wrap(false).sense(egui::Sense::click()))
+            })
+            .inner;
+        if is_active {
+            let rect = response.rect;
+            let accent_rect = egui::Rect::from_min_max(
+                egui::pos2(rect.min.x, rect.max.y + 1.0),
+                egui::pos2(rect.max.x, rect.max.y + 3.0),
+            );
+            ui.painter().rect_filled(accent_rect, 1.0, theme.accent);
+        }
+        response
+    }
+
     /// S1 (Rust IDE): Panel inferior para ejecución y diagnósticos de Cargo (F7 / F5 / Ctrl+\).
+    /// UI-4 (v0.2.22): dock inferior segmentado con diseño moderno, píldoras de estado y logs claros.
     fn show_cargo_panel(&mut self, ctx: &egui::Context, theme: &crate::theme::Theme) {
         if !self.cargo.panel_open {
             return;
@@ -674,43 +703,77 @@ impl EditorApp {
             .default_height(200.0)
             .min_height(100.0)
             .max_height(450.0)
-            .frame(egui::Frame::none().fill(theme.panel_bg))
+            .frame(
+                egui::Frame::none()
+                    .fill(theme.surface_bg)
+                    .stroke(egui::Stroke::new(1.0_f32, theme.border_subtle)),
+            )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("🦀 Cargo Pipeline").strong());
+                    ui.spacing_mut().item_spacing.x = 6.0;
 
                     let (status_text, status_color) = match status {
                         karkinos_core::cargo::CargoStatus::Idle => ("Idle", egui::Color32::from_gray(140)),
                         karkinos_core::cargo::CargoStatus::Running => ("Running…", egui::Color32::from_rgb(255, 190, 60)),
-                        karkinos_core::cargo::CargoStatus::Success => ("Success", egui::Color32::from_rgb(80, 200, 120)),
+                        karkinos_core::cargo::CargoStatus::Success => ("Success", egui::Color32::from_rgb(63, 185, 80)),
                         karkinos_core::cargo::CargoStatus::Failed(_code) => {
-                            ("Failed", egui::Color32::from_rgb(255, 90, 90))
+                            ("Failed", egui::Color32::from_rgb(248, 81, 73))
                         }
                         karkinos_core::cargo::CargoStatus::Killed => ("Terminated", egui::Color32::from_gray(160)),
                     };
 
-                    ui.label(egui::RichText::new(format!("[{}]", status_text)).color(status_color).strong());
+                    crate::title_bar::status_pill(
+                        ui,
+                        egui::RichText::new(format!("🦀 {}", status_text))
+                            .color(status_color)
+                            .strong()
+                            .size(11.0),
+                        theme,
+                    );
 
                     if let Some(action) = self.cargo.runner.current_action {
-                        ui.label(egui::RichText::new(action.display_name()).italics().color(egui::Color32::from_gray(170)));
+                        ui.label(
+                            egui::RichText::new(action.display_name())
+                                .italics()
+                                .color(theme.text_muted)
+                                .size(11.0),
+                        );
                     }
 
                     ui.separator();
 
-                    if ui.selectable_label(self.cargo.active_tab == 0, "Terminal Output").clicked() {
+                    if Self::dock_segmented_tab(
+                        ui,
+                        self.cargo.active_tab == 0,
+                        egui::RichText::new("⚡ Terminal Output")
+                            .color(if self.cargo.active_tab == 0 { theme.text } else { theme.text_muted })
+                            .size(12.0),
+                        theme,
+                    )
+                    .clicked()
+                    {
                         self.cargo.active_tab = 0;
                     }
 
-                    let diag_tab_label = format!("Diagnostics ({} err, {} warn)", errors_count, warnings_count);
+                    let diag_tab_label = format!("🔍 Diagnostics ({} err, {} warn)", errors_count, warnings_count);
                     let diag_color = if errors_count > 0 {
-                        egui::Color32::from_rgb(255, 90, 90)
+                        egui::Color32::from_rgb(248, 81, 73)
                     } else if warnings_count > 0 {
-                        egui::Color32::from_rgb(255, 190, 60)
+                        egui::Color32::from_rgb(227, 179, 65)
+                    } else if self.cargo.active_tab == 1 {
+                        theme.text
                     } else {
-                        egui::Color32::from_gray(180)
+                        theme.text_muted
                     };
 
-                    if ui.selectable_label(self.cargo.active_tab == 1, egui::RichText::new(diag_tab_label).color(diag_color)).clicked() {
+                    if Self::dock_segmented_tab(
+                        ui,
+                        self.cargo.active_tab == 1,
+                        egui::RichText::new(diag_tab_label).color(diag_color).size(12.0),
+                        theme,
+                    )
+                    .clicked()
+                    {
                         self.cargo.active_tab = 1;
                     }
 
@@ -721,15 +784,28 @@ impl EditorApp {
                     } else {
                         "🐞 Debugger"
                     };
-                    if ui.selectable_label(self.cargo.active_tab == 2, dap_label).clicked() {
+                    if Self::dock_segmented_tab(
+                        ui,
+                        self.cargo.active_tab == 2,
+                        egui::RichText::new(dap_label)
+                            .color(if self.cargo.active_tab == 2 { theme.text } else { theme.text_muted })
+                            .size(12.0),
+                        theme,
+                    )
+                    .clicked()
+                    {
                         self.cargo.active_tab = 2;
                     }
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.small_button("✕").clicked() {
+                        if ui
+                            .small_button("▾ Collapse")
+                            .on_hover_text("Close Console (Ctrl+\\)")
+                            .clicked()
+                        {
                             close_panel = true;
                         }
-                        if ui.small_button("Clear").clicked() {
+                        if ui.small_button("🗑 Clear").clicked() {
                             self.cargo.runner.clear();
                         }
                         if self.cargo.runner.is_running() {
@@ -744,17 +820,24 @@ impl EditorApp {
 
                 if self.cargo.active_tab == 0 {
                     let lines = self.cargo.runner.raw_lines();
-                    egui::ScrollArea::both()
-                        .stick_to_bottom(true)
+                    egui::Frame::none()
+                        .fill(theme.bg)
+                        .inner_margin(egui::Margin::same(6.0))
                         .show(ui, |ui| {
-                            for line in lines {
-                                let color = if line.is_error {
-                                    egui::Color32::from_rgb(255, 120, 120)
-                                } else {
-                                    theme.text
-                                };
-                                ui.label(egui::RichText::new(line.text).monospace().color(color));
-                            }
+                            egui::ScrollArea::both()
+                                .stick_to_bottom(true)
+                                .show(ui, |ui| {
+                                    for line in lines {
+                                        let color = if line.is_error || line.text.contains("error:") {
+                                            egui::Color32::from_rgb(248, 81, 73)
+                                        } else if line.text.contains("warning:") {
+                                            egui::Color32::from_rgb(227, 179, 65)
+                                        } else {
+                                            theme.text
+                                        };
+                                        ui.label(egui::RichText::new(line.text).monospace().size(12.0).color(color));
+                                    }
+                                });
                         });
                 } else if self.cargo.active_tab == 1 {
                     let diags = self.cargo.runner.diagnostics();
@@ -2058,45 +2141,140 @@ impl eframe::App for EditorApp {
         // Dropdown con el listado de carpetas/archivos
         self.show_picker_popup(ctx);
 
-        egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                let modified = if self.doc.dirty { " [+]" } else { "" };
-                let path_str = self
-                    .doc
-                    .current_file
-                    .as_ref()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_else(|| "(unsaved)".to_string());
-                ui.label(format!("{}{}", path_str, modified));
-                ui.separator();
-                ui.label(format_size(self.doc.view_bytes));
-                // S7: posición del cursor, 1-based (convención de
-                // editores; cursor_line/cursor_col son índices 0-based
-                // dentro de la línea lógica).
-                ui.separator();
-                ui.label(format!(
-                    "Ln {}, Col {}",
-                    self.editor_state.cursor_line + 1,
-                    self.editor_state.cursor_col + 1
-                ));
-                ui.separator();
-                ui.label(self.current_language().name());
-                // S1: el archivo cambió "por afuera" y el buffer no le
-                // debe nada (sin cambios propios): ofrecer recarga.
-                if self.doc.external_changed && !self.doc.dirty && self.doc.save_progress.is_none() {
-                    ui.separator();
-                    ui.label(egui::RichText::new("⚠ File changed on disk")
-                        .color(egui::Color32::from_rgb(255, 178, 64)));
-                    if ui.button("Reload").clicked() {
-                        self.reload();
+        // UI-4 (v0.2.22): barra de estado refinada de 22 px con micro-píldoras e indicadores claros.
+        egui::TopBottomPanel::bottom("status")
+            .exact_height(crate::title_bar::STATUS_BAR_HEIGHT)
+            .frame(
+                egui::Frame::none()
+                    .fill(theme.surface_bg)
+                    .stroke(egui::Stroke::new(1.0_f32, theme.border_subtle)),
+            )
+            .show(ctx, |ui| {
+                ui.horizontal_centered(|ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    ui.add_space(4.0);
+
+                    // Indicador de guardado / dirty
+                    if self.doc.dirty {
+                        crate::title_bar::status_pill(
+                            ui,
+                            egui::RichText::new("Modified ●").color(theme.accent).size(11.0),
+                            &theme,
+                        );
+                    } else {
+                        crate::title_bar::status_pill(
+                            ui,
+                            egui::RichText::new("Saved").color(egui::Color32::from_rgb(63, 185, 80)).size(11.0),
+                            &theme,
+                        );
                     }
-                }
-                if !self.doc.status.is_empty() {
-                    ui.separator();
-                    ui.label(&self.doc.status);
-                }
+
+                    let path_str = self
+                        .doc
+                        .current_file
+                        .as_ref()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|| "(unsaved)".to_string());
+                    crate::title_bar::status_pill(
+                        ui,
+                        egui::RichText::new(&path_str).color(theme.text).size(11.0),
+                        &theme,
+                    );
+
+                    crate::title_bar::status_pill(
+                        ui,
+                        egui::RichText::new(format!(
+                            "Ln {}, Col {}",
+                            self.editor_state.cursor_line + 1,
+                            self.editor_state.cursor_col + 1
+                        ))
+                        .color(theme.text_muted)
+                        .size(11.0),
+                        &theme,
+                    );
+
+                    crate::title_bar::status_pill(
+                        ui,
+                        egui::RichText::new(format_size(self.doc.view_bytes))
+                            .color(theme.text_muted)
+                            .size(11.0),
+                        &theme,
+                    );
+
+                    if self.doc.external_changed && !self.doc.dirty && self.doc.save_progress.is_none() {
+                        crate::title_bar::status_pill(
+                            ui,
+                            egui::RichText::new("⚠ Changed on disk")
+                                .color(egui::Color32::from_rgb(255, 178, 64))
+                                .size(11.0),
+                            &theme,
+                        );
+                        if ui.small_button("Reload").clicked() {
+                            self.reload();
+                        }
+                    }
+
+                    if !self.doc.status.is_empty() {
+                        crate::title_bar::status_pill(
+                            ui,
+                            egui::RichText::new(&self.doc.status).color(theme.text).size(11.0),
+                            &theme,
+                        );
+                    }
+
+                    // Grupo alineado a la derecha
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add_space(4.0);
+
+                        // Encoding
+                        crate::title_bar::status_pill(
+                            ui,
+                            egui::RichText::new("UTF-8").color(theme.text_muted).size(11.0),
+                            &theme,
+                        );
+
+                        // Line Ending
+                        crate::title_bar::status_pill(
+                            ui,
+                            egui::RichText::new(self.doc.line_ending.as_str()).color(theme.text_muted).size(11.0),
+                            &theme,
+                        );
+
+                        // Language badge
+                        let lang = self.current_language();
+                        let lang_badge = match lang {
+                            crate::syntax::Language::Rust => "🦀 Rust 2021".to_string(),
+                            crate::syntax::Language::JavaScript => format!("JS {}", lang.name()),
+                            crate::syntax::Language::Html => format!("🌐 {}", lang.name()),
+                            crate::syntax::Language::Css => format!("🎨 {}", lang.name()),
+                            crate::syntax::Language::Java => format!("☕ {}", lang.name()),
+                            crate::syntax::Language::Json => format!("{{ }} {}", lang.name()),
+                            crate::syntax::Language::Markdown => format!("📝 {}", lang.name()),
+                            crate::syntax::Language::Sql => format!("🗄 {}", lang.name()),
+                            _ => format!("📄 {}", lang.name()),
+                        };
+                        crate::title_bar::status_pill(
+                            ui,
+                            egui::RichText::new(lang_badge).color(theme.text).size(11.0),
+                            &theme,
+                        );
+
+                        // LSP Status pill
+                        if lang == crate::syntax::Language::Rust {
+                            let (lsp_text, lsp_color) = if self.lsp.client.is_some() {
+                                ("● LSP Ready", egui::Color32::from_rgb(63, 185, 80))
+                            } else {
+                                ("○ LSP Off", theme.text_muted)
+                            };
+                            crate::title_bar::status_pill(
+                                ui,
+                                egui::RichText::new(lsp_text).color(lsp_color).size(11.0),
+                                &theme,
+                            );
+                        }
+                    });
+                });
             });
-        });
 
         // S2: barra de búsqueda justo arriba de la barra de estado.
         self.show_find_bar(ctx);

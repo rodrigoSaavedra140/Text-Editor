@@ -187,6 +187,25 @@ pub fn breadcrumb_segments(file: &std::path::Path, root: &std::path::Path) -> Ve
     }
 }
 
+/// UI-4 (v0.2.22): alto estándar de la barra de estado inferior con micro-píldoras.
+pub const STATUS_BAR_HEIGHT: f32 = 22.0;
+
+/// UI-4 (v0.2.22): micro-contenedor en forma de píldora para la barra de estado.
+pub fn status_pill(
+    ui: &mut egui::Ui,
+    text: impl Into<egui::WidgetText>,
+    theme: &crate::theme::Theme,
+) -> egui::Response {
+    egui::Frame::none()
+        .fill(theme.badge_bg)
+        .rounding(egui::Rounding::same(4.0))
+        .inner_margin(egui::Margin::symmetric(6.0, 2.0))
+        .show(ui, |ui| {
+            ui.add(egui::Label::new(text).wrap(false));
+        })
+        .response
+}
+
 /// UI-2 (v0.2.20): egui 0.27 no tiene pesos de fuente y el proyecto no
 /// incluye una cara Bold, así que `RichText::strong()` solo cambia el color
 /// y no engrosa nada. Para el énfasis del header se dibuja el mismo galley
@@ -235,5 +254,11 @@ mod tests {
     fn breadcrumb_outside_root_keeps_last_three_parts() {
         let segments = breadcrumb_segments(Path::new("/a/b/c/d/file.rs"), Path::new("/otro"));
         assert_eq!(segments, vec!["c", "d", "file.rs"]);
+    }
+
+    /// UI-4 (v0.2.22): altura estándar de la barra de estado es de 22 px.
+    #[test]
+    fn status_bar_height_is_22px() {
+        assert_eq!(STATUS_BAR_HEIGHT, 22.0);
     }
 }
