@@ -1316,13 +1316,20 @@ pub fn show(
             break;
         }
 
-        // S1 (Etapa 2): Resaltado de la línea activa bajo el cursor
+        // S1 (Etapa 2) & UI-5 (v0.2.23): Resaltado de la línea activa bajo el cursor
         if has_focus && i == state.cursor_line {
             let active_line_rect = egui::Rect::from_min_max(
                 egui::pos2(rect.left() + gutter_w, line_top_y),
                 egui::pos2(clip_rect.right(), line_top_y + rows_here as f32 * row_height),
             );
             painter.rect_filled(active_line_rect, 0.0, theme.active_line);
+
+            // UI-5: Indicador vertical de acento de 2 px en el gutter pegado a los números
+            let gutter_indicator = egui::Rect::from_min_max(
+                egui::pos2(gutter_rect.right() - 2.0, line_top_y),
+                egui::pos2(gutter_rect.right(), line_top_y + rows_here as f32 * row_height),
+            );
+            gutter_painter.rect_filled(gutter_indicator, 0.0, theme.border_focus);
         }
 
         // S4: el número se alinea a la FILA VISUAL primera de la
@@ -1367,26 +1374,39 @@ pub fn show(
             );
         }
 
-        // S4 (Rust IDE): Indicador de Breakpoint en el gutter
+        // S4 (Rust IDE) & UI-5 (v0.2.23): Indicador geométrico de Breakpoint en el gutter
+        let bp_center = egui::pos2(gutter_rect.left() + 7.0, line_top_y + row_height * 0.5);
         if state.breakpoints.contains(&i) {
-            gutter_painter.text(
-                egui::pos2(gutter_rect.left() + 2.0, line_top_y),
-                egui::Align2::LEFT_TOP,
-                "●",
-                egui::FontId::monospace(state.font_size * 0.9),
-                egui::Color32::from_rgb(235, 50, 50),
+            gutter_painter.circle_filled(bp_center, 4.5, egui::Color32::from_rgb(235, 60, 60));
+            gutter_painter.circle_stroke(
+                bp_center,
+                4.5,
+                egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(255, 120, 120)),
             );
+        } else if let Some(pos) = ui.input(|inp| inp.pointer.hover_pos()) {
+            if gutter_rect.contains(pos) && pos.y >= line_top_y && pos.y < line_top_y + rows_here as f32 * row_height {
+                gutter_painter.circle_filled(
+                    bp_center,
+                    4.0,
+                    egui::Color32::from_rgba_unmultiplied(235, 60, 60, 80),
+                );
+            }
         }
 
-        // S4 (Rust IDE): Indicador de línea detenida en debugger (execution pointer)
+        // S4 (Rust IDE) & UI-5 (v0.2.23): Indicador de línea detenida en debugger (execution pointer)
         if state.stopped_line == Some(i) {
-            gutter_painter.text(
-                egui::pos2(gutter_rect.left() + 4.0, line_top_y),
-                egui::Align2::LEFT_TOP,
-                "▶",
-                egui::FontId::monospace(state.font_size * 0.9),
+            let arrow_center = egui::pos2(gutter_rect.left() + 8.0, line_top_y + row_height * 0.5);
+            let h = 4.5;
+            let points = [
+                arrow_center + egui::vec2(-h, -h),
+                arrow_center + egui::vec2(h, 0.0),
+                arrow_center + egui::vec2(-h, h),
+            ];
+            gutter_painter.add(egui::Shape::convex_polygon(
+                points.to_vec(),
                 egui::Color32::from_rgb(255, 215, 0),
-            );
+                egui::Stroke::new(1.0_f32, egui::Color32::WHITE),
+            ));
         }
 
         let char_len = state

@@ -587,19 +587,38 @@ impl EditorApp {
     }
 
     /// S2: barra de búsqueda y reemplazo debajo del editor (Ctrl+F).
+    /// UI-5 (v0.2.23): tarjeta flotante en la esquina superior derecha con sombra y bordes redondeados.
     fn show_find_bar(&mut self, ctx: &egui::Context) {
         if !self.find_open {
             return;
         }
-        egui::TopBottomPanel::bottom("find_bar")
-            .frame(egui::Frame::none().fill(egui::Color32::from_rgb(30, 30, 30)).inner_margin(6.0))
+        let theme = self.theme_mode.theme();
+
+        egui::Window::new("find_replace_floating")
+            .title_bar(false)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-20.0, 72.0))
+            .frame(
+                egui::Frame::none()
+                    .fill(theme.elevated_bg)
+                    .rounding(egui::Rounding::same(8.0))
+                    .stroke(egui::Stroke::new(1.0_f32, theme.border_subtle))
+                    .inner_margin(egui::Margin::symmetric(10.0, 8.0))
+                    .shadow(egui::epaint::Shadow {
+                        offset: egui::vec2(0.0, 6.0),
+                        blur: 16.0,
+                        spread: 0.0,
+                        color: egui::Color32::from_black_alpha(140),
+                    }),
+            )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label("Find:");
+                    ui.label(egui::RichText::new("🔍").color(theme.text_muted));
                     let find_field = ui.add(
                         egui::TextEdit::singleline(&mut self.find_query)
-                            .desired_width(200.0)
-                            .hint_text("text…"),
+                            .desired_width(160.0)
+                            .hint_text("Find…"),
                     );
                     if find_field.changed() {
                         self.find_update_matches();
@@ -607,28 +626,36 @@ impl EditorApp {
                             self.find_goto_current();
                         }
                     }
-                    // Enter en el campo = siguiente match.
                     if find_field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                         self.find_next();
                         find_field.request_focus();
                     }
 
                     let total = self.find_matches.len();
-                    if total > 0 {
-                        ui.label(format!("{}/{}", self.find_current + 1, total));
+                    let match_str = if total > 0 {
+                        format!("{}/{}", self.find_current + 1, total)
                     } else if !self.find_query.is_empty() {
-                        ui.label("0/0");
+                        "0/0".to_string()
+                    } else {
+                        "".to_string()
+                    };
+                    if !match_str.is_empty() {
+                        crate::title_bar::status_pill(
+                            ui,
+                            egui::RichText::new(match_str).color(theme.text_muted).size(11.0),
+                            &theme,
+                        );
                     }
 
-                    if ui.button("◀").clicked() {
+                    if ui.small_button("◀").on_hover_text("Previous match (Shift+Enter)").clicked() {
                         self.find_prev();
                     }
-                    if ui.button("▶").clicked() {
+                    if ui.small_button("▶").on_hover_text("Next match (Enter)").clicked() {
                         self.find_next();
                     }
 
                     let mut case = self.find_case_sensitive;
-                    if ui.checkbox(&mut case, "Aa").changed() {
+                    if ui.checkbox(&mut case, "Aa").on_hover_text("Match case").changed() {
                         self.find_case_sensitive = case;
                         self.find_update_matches();
                         if !self.find_matches.is_empty() {
@@ -636,22 +663,25 @@ impl EditorApp {
                         }
                     }
 
-                    ui.separator();
-                    ui.label("Replace:");
+                    if ui.small_button("✕").on_hover_text("Close (Esc)").clicked() {
+                        self.find_open = false;
+                    }
+                });
+
+                ui.add_space(4.0);
+
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("✏").color(theme.text_muted));
                     ui.add(
                         egui::TextEdit::singleline(&mut self.find_replace)
-                            .desired_width(150.0)
-                            .hint_text("replacement…"),
+                            .desired_width(160.0)
+                            .hint_text("Replace…"),
                     );
-                    if ui.button("Replace").clicked() {
+                    if ui.small_button("Replace").clicked() {
                         self.find_replace_current();
                     }
-                    if ui.button("All").clicked() {
+                    if ui.small_button("All").clicked() {
                         self.find_replace_all();
-                    }
-
-                    if ui.button("✕").clicked() {
-                        self.find_open = false;
                     }
                 });
             });

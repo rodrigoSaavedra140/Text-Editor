@@ -139,7 +139,6 @@ pub struct Theme {
     pub surface_bg: egui::Color32,
     pub elevated_bg: egui::Color32,
     pub border_subtle: egui::Color32,
-    #[allow(dead_code)]
     pub border_focus: egui::Color32,
     pub badge_bg: egui::Color32,
     pub text: egui::Color32,
