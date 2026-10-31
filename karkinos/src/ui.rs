@@ -381,6 +381,33 @@ impl EditorApp {
     }
 
     /// S4 (Rust IDE): Modal popup for Quick Fixes & Code Actions (Ctrl+. / Alt+Enter)
+    /// UI-3 (v0.2.21): velo a pantalla completa mientras hay un modal activo.
+    /// Es un área de `Order::Middle` sin interacción, creada antes de la
+    /// tarjeta: egui dibuja las áreas en su orden de memoria, así que la
+    /// tarjeta queda encima. Una capa sin área caería en un orden no
+    /// determinista junto a los paneles de fondo.
+    fn paint_modal_backdrop(ctx: &egui::Context) {
+        let id = egui::Id::new("modal_backdrop");
+        let _ = egui::Area::new(id)
+            .order(egui::Order::Middle)
+            .interactable(false)
+            .fixed_pos(egui::Pos2::ZERO)
+            .show(ctx, |_ui| {});
+        ctx.layer_painter(egui::LayerId::new(egui::Order::Middle, id))
+            .rect_filled(ctx.screen_rect(), 0.0, egui::Color32::from_black_alpha(130));
+    }
+
+    /// UI-3 (v0.2.21): pastilla de atajo de teclado, p. ej. "ESC to close".
+    fn kbd_hint(ui: &mut egui::Ui, text: &str, theme: &crate::theme::Theme) {
+        egui::Frame::none()
+            .fill(theme.badge_bg)
+            .rounding(egui::Rounding::same(4.0))
+            .inner_margin(egui::Margin::symmetric(6.0, 2.0))
+            .show(ui, |ui| {
+                ui.label(egui::RichText::new(text).color(theme.text_muted).size(11.0));
+            });
+    }
+
     fn show_code_actions_modal(&mut self, ctx: &egui::Context) {
         if !self.lsp.code_actions_menu_open {
             return;
@@ -391,21 +418,39 @@ impl EditorApp {
             return;
         }
 
+        let theme = self.theme_mode.theme();
         let mut applied_action = None;
         let mut close_modal = false;
 
-        egui::Window::new("💡 Quick Fix / Code Actions (Ctrl+.)")
+        // UI-3 (v0.2.21): tarjeta flotante sin barra de título; el título
+        // pasa a ser una línea muted dentro de la tarjeta.
+        egui::Window::new("code_actions_modal")
+            .title_bar(false)
             .collapsible(false)
             .resizable(false)
-            .default_width(420.0)
-            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 70.0))
+            .min_width(420.0)
+            .max_width(420.0)
+            .frame(crate::theme::modal_card_frame(&theme))
             .show(ctx, |ui| {
+                ui.label(
+                    egui::RichText::new("💡 Quick Fix / Code Actions (Ctrl+.)")
+                        .color(theme.text_muted)
+                        .size(12.0),
+                );
+                ui.add_space(6.0);
+
                 if self.lsp.code_actions.is_empty() {
                     ui.label("No quick fixes or assists available at cursor.");
                     ui.add_space(8.0);
-                    if ui.button("Close (Esc)").clicked() {
-                        close_modal = true;
-                    }
+                    ui.horizontal(|ui| {
+                        if ui.button("Close").clicked() {
+                            close_modal = true;
+                        }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            Self::kbd_hint(ui, "ESC to close", &theme);
+                        });
+                    });
                 } else {
                     ui.label(egui::RichText::new("Select an assist to apply:").small());
                     ui.add_space(4.0);
@@ -426,9 +471,14 @@ impl EditorApp {
                     });
 
                     ui.separator();
-                    if ui.button("Cancel (Esc)").clicked() {
-                        close_modal = true;
-                    }
+                    ui.horizontal(|ui| {
+                        if ui.button("Cancel").clicked() {
+                            close_modal = true;
+                        }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            Self::kbd_hint(ui, "ESC to close", &theme);
+                        });
+                    });
                 }
             });
 
@@ -450,15 +500,26 @@ impl EditorApp {
             return;
         }
 
+        let theme = self.theme_mode.theme();
         let mut apply = false;
         let mut cancel = false;
 
-        egui::Window::new("✏ Rename Symbol (F2)")
+        // UI-3 (v0.2.21): tarjeta flotante sin barra de título.
+        egui::Window::new("rename_modal")
+            .title_bar(false)
             .collapsible(false)
             .resizable(false)
-            .default_width(380.0)
-            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 70.0))
+            .min_width(380.0)
+            .max_width(380.0)
+            .frame(crate::theme::modal_card_frame(&theme))
             .show(ctx, |ui| {
+                ui.label(
+                    egui::RichText::new("✏ Rename Symbol (F2)")
+                        .color(theme.text_muted)
+                        .size(12.0),
+                );
+                ui.add_space(4.0);
                 ui.label("Enter new name for symbol:");
                 ui.add_space(4.0);
 
@@ -477,9 +538,14 @@ impl EditorApp {
                     if ui.button("Rename").clicked() {
                         apply = true;
                     }
-                    if ui.button("Cancel (Esc)").clicked() {
+                    if ui.button("Cancel").clicked() {
                         cancel = true;
                     }
+                    // A la derecha; el primero agregado queda más a la derecha.
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        Self::kbd_hint(ui, "↵ to rename", &theme);
+                        Self::kbd_hint(ui, "ESC to cancel", &theme);
+                    });
                 });
             });
 
@@ -907,24 +973,29 @@ impl EditorApp {
             return;
         }
 
+        let theme = self.theme_mode.theme();
         let mut is_open = true;
         let mut query_changed = false;
         let mut open_selected = false;
 
-        egui::Window::new("🔍 Quick Open (Ctrl+P)")
+        // UI-3 (v0.2.21): paleta flotante sin barra de título, de 560 px y
+        // anclada arriba al centro. Entrada de 36 px con 🔍 y pastillas de atajo.
+        egui::Window::new("quick_open_modal")
             .open(&mut is_open)
+            .title_bar(false)
             .collapsible(false)
             .resizable(false)
-            .default_width(520.0)
-            .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 50.0))
+            .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 70.0))
+            .min_width(560.0)
+            .max_width(560.0)
+            .frame(crate::theme::modal_card_frame(&theme))
             .show(ctx, |ui| {
-                ui.set_min_width(480.0);
                 ui.horizontal(|ui| {
-                    ui.label("🔍");
+                    ui.label(egui::RichText::new("🔍").color(theme.text_muted));
                     let input_resp = ui.add_sized(
-                        [ui.available_width() - 8.0, 24.0],
+                        [ui.available_width() - 190.0, 36.0],
                         egui::TextEdit::singleline(&mut self.quick_open.query)
-                            .hint_text("Type to search files... (↑/↓ navigate, Enter open, Esc close)"),
+                            .hint_text("Search files... (↑/↓ navigate)"),
                     );
                     if self.quick_open.request_focus {
                         input_resp.request_focus();
@@ -933,6 +1004,11 @@ impl EditorApp {
                     if input_resp.changed() {
                         query_changed = true;
                     }
+                    // A la derecha; el primero agregado queda más a la derecha.
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        Self::kbd_hint(ui, "↵ to select", &theme);
+                        Self::kbd_hint(ui, "ESC to close", &theme);
+                    });
                 });
 
                 if ctx.input(|i| i.key_pressed(egui::Key::ArrowUp)) {
@@ -968,13 +1044,32 @@ impl EditorApp {
                         let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or(&path_str);
                         let parent = path.parent().and_then(|p| p.to_str()).unwrap_or("");
 
-                        let text = if parent.is_empty() {
-                            egui::RichText::new(file_name).strong()
-                        } else {
-                            egui::RichText::new(format!("{}  ({})", file_name, parent))
-                        };
-
-                        let row = ui.selectable_label(is_selected, text);
+                        // Fila de 32 px: fondo redondeado al seleccionar o al pasar el mouse.
+                        let (rect, row) = ui.allocate_exact_size(
+                            egui::vec2(ui.available_width(), 32.0),
+                            egui::Sense::click(),
+                        );
+                        if is_selected {
+                            ui.painter().rect_filled(rect, egui::Rounding::same(6.0), theme.surface_bg);
+                        } else if row.hovered() {
+                            ui.painter().rect_filled(rect, egui::Rounding::same(6.0), theme.badge_bg);
+                        }
+                        let name_rect = ui.painter().text(
+                            egui::pos2(rect.left() + 10.0, rect.center().y),
+                            egui::Align2::LEFT_CENTER,
+                            file_name,
+                            egui::FontId::proportional(14.0),
+                            theme.text,
+                        );
+                        if !parent.is_empty() {
+                            ui.painter().text(
+                                egui::pos2(name_rect.right() + 10.0, rect.center().y),
+                                egui::Align2::LEFT_CENTER,
+                                parent,
+                                egui::FontId::proportional(12.0),
+                                theme.text_muted,
+                            );
+                        }
                         if row.clicked() {
                             clicked_idx = Some(idx);
                         }
@@ -2103,6 +2198,10 @@ impl eframe::App for EditorApp {
         // S4: igual que el confirm, arriba de todo (los paneles
         // dibujados antes no le pisan al campo de entrada).
         self.show_goto_line(ctx);
+        // UI-3 (v0.2.21): velo de fondo mientras haya un modal de búsqueda, acciones o rename.
+        if self.quick_open.open || self.lsp.code_actions_menu_open || self.lsp.rename_dialog_open {
+            Self::paint_modal_backdrop(ctx);
+        }
         // S7: diálogo modal de búsqueda rápida de archivos (Ctrl+P).
         self.show_quick_open(ctx);
         // Diálogo modal para nombrar archivo al guardar si no tiene nombre.

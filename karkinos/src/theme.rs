@@ -135,9 +135,8 @@ pub struct Theme {
     pub mode: ThemeMode,
     pub bg: egui::Color32,
     // UI-1: tokens nuevos; cada `allow` que queda se retira al cablear su
-    // token en la unidad consumidora (elevated_bg y border_focus: T-UI3).
+    // token en la unidad consumidora (border_focus: foco de inputs, T-UI5).
     pub surface_bg: egui::Color32,
-    #[allow(dead_code)]
     pub elevated_bg: egui::Color32,
     pub border_subtle: egui::Color32,
     #[allow(dead_code)]
@@ -159,6 +158,23 @@ pub struct Theme {
     pub syntax_string: egui::Color32,
     pub syntax_comment: egui::Color32,
     pub syntax_number: egui::Color32,
+}
+
+/// UI-3 (v0.2.21): marco de las tarjetas flotantes (Quick Open, Code Actions
+/// y Rename). Sin barra de título: fondo de elevación, borde sutil, esquinas
+/// de 10 px y sombra de elevación con el desfase de la UI-1.
+pub fn modal_card_frame(theme: &Theme) -> egui::Frame {
+    egui::Frame::none()
+        .fill(theme.elevated_bg)
+        .rounding(egui::Rounding::same(10.0))
+        .stroke(egui::Stroke::new(1.0_f32, theme.border_subtle))
+        .inner_margin(egui::Margin::same(12.0))
+        .shadow(egui::epaint::Shadow {
+            offset: egui::vec2(0.0, 8.0),
+            blur: 24.0,
+            spread: 0.0,
+            color: egui::Color32::from_black_alpha(160),
+        })
 }
 
 #[cfg(test)]
@@ -222,5 +238,19 @@ mod tests {
             t.border_subtle,
             egui::Color32::from_rgba_unmultiplied(255, 255, 255, 18)
         );
+    }
+
+    /// UI-3 (v0.2.21): las tarjetas flotantes salen de los tokens de
+    /// elevación, con esquinas de 10 px, margen de 12 px y sombra de 24 px.
+    #[test]
+    fn modal_card_frame_usa_tokens_y_elevacion() {
+        let theme = ThemeMode::Dark.theme();
+        let frame = modal_card_frame(&theme);
+        assert_eq!(frame.fill, theme.elevated_bg);
+        assert_eq!(frame.rounding, egui::Rounding::same(10.0));
+        assert_eq!(frame.stroke.color, theme.border_subtle);
+        assert_eq!(frame.inner_margin, egui::Margin::same(12.0));
+        assert_eq!(frame.shadow.blur, 24.0);
+        assert_eq!(frame.shadow.color, egui::Color32::from_black_alpha(160));
     }
 }
