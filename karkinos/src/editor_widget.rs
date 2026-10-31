@@ -60,6 +60,8 @@ pub struct EditorState {
     pub show_completions: bool,
     pub selected_completion: usize,
     pub inlay_hints: Vec<karkinos_core::lsp::LspInlayHint>,
+    pub breakpoints: std::collections::HashSet<usize>,
+    pub stopped_line: Option<usize>,
 }
 
 impl Default for EditorState {
@@ -86,6 +88,8 @@ impl Default for EditorState {
             show_completions: false,
             selected_completion: 0,
             inlay_hints: Vec::new(),
+            breakpoints: std::collections::HashSet::new(),
+            stopped_line: None,
         }
     }
 }
@@ -1301,6 +1305,28 @@ pub fn show(
             );
         }
 
+        // S4 (Rust IDE): Indicador de Breakpoint en el gutter
+        if state.breakpoints.contains(&i) {
+            gutter_painter.text(
+                egui::pos2(gutter_rect.left() + 2.0, line_top_y),
+                egui::Align2::LEFT_TOP,
+                "●",
+                egui::FontId::monospace(state.font_size * 0.9),
+                egui::Color32::from_rgb(235, 50, 50),
+            );
+        }
+
+        // S4 (Rust IDE): Indicador de línea detenida en debugger (execution pointer)
+        if state.stopped_line == Some(i) {
+            gutter_painter.text(
+                egui::pos2(gutter_rect.left() + 4.0, line_top_y),
+                egui::Align2::LEFT_TOP,
+                "▶",
+                egui::FontId::monospace(state.font_size * 0.9),
+                egui::Color32::from_rgb(255, 215, 0),
+            );
+        }
+
         let char_len = state
             .char_lens
             .get(i)
@@ -1334,6 +1360,19 @@ pub fn show(
             let sb = if is_pure_ascii { start } else { char_to_byte(line, start) };
             let eb = if is_pure_ascii { end } else { char_to_byte(line, end) };
             let chunk = &line[sb..eb];
+
+            // S4 (Rust IDE): Resaltado de fondo para la línea activa en depuración
+            if state.stopped_line == Some(i) {
+                let stopped_rect = egui::Rect::from_min_max(
+                    egui::pos2(rect.left(), y),
+                    egui::pos2(rect.right(), y + row_height),
+                );
+                painter.rect_filled(
+                    stopped_rect,
+                    0.0,
+                    egui::Color32::from_rgba_unmultiplied(255, 215, 0, 35),
+                );
+            }
 
             // S2 (Etapa 2): Resaltado de todas las coincidencias de búsqueda visibles
             if let (Some((global_start, matches_in_line)), Some(ref s)) = (line_matches, &search) {

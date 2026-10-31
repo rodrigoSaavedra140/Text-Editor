@@ -311,6 +311,11 @@ pub struct EditorApp {
     pub code_actions_menu_open: bool,
     pub rename_dialog_open: bool,
     pub rename_input: String,
+    // S4 (Rust IDE): DAP Native Debugger & Breakpoints
+    pub dap_client: Option<karkinos_core::DapClient>,
+    pub breakpoints: std::collections::HashSet<(PathBuf, usize)>,
+    pub debug_panel_open: bool,
+    pub debug_stopped_line: Option<(PathBuf, usize)>,
 }
 
 impl Default for EditorApp {
@@ -379,6 +384,10 @@ impl Default for EditorApp {
             code_actions_menu_open: false,
             rename_dialog_open: false,
             rename_input: String::new(),
+            dap_client: None,
+            breakpoints: std::collections::HashSet::new(),
+            debug_panel_open: false,
+            debug_stopped_line: None,
         }
     }
 }
@@ -491,6 +500,8 @@ impl EditorApp {
                 let uri = format!("file://{}", path.display());
                 self.editor_state.diagnostics = client.diagnostics_for_file(&uri);
             }
+
+            self.sync_editor_breakpoints();
         }
     }
 
@@ -1010,6 +1021,181 @@ impl EditorApp {
             }
         }
         self.status = format!("Applied edits across {} file(s)", affected_files);
+    }
+
+    /// S4 (Rust IDE): Toggles a breakpoint on the current file and specified line.
+    pub fn toggle_breakpoint(&mut self, line: usize) {
+        let Some(path) = self.current_file.clone() else {
+            self.status = "Cannot set breakpoint on unsaved file".to_string();
+            return;
+        };
+
+        let key = (path.clone(), line);
+        let added = if self.breakpoints.contains(&key) {
+            self.breakpoints.remove(&key);
+            false
+        } else {
+            self.breakpoints.insert(key);
+            true
+        };
+
+        self.sync_editor_breakpoints();
+
+        // If debugger is actively running, sync to DAP server
+        if let Some(ref client) = self.dap_client {
+            let active_lines: Vec<usize> = self
+                .breakpoints
+                .iter()
+                .filter(|(p, _)| p == &path)
+                .map(|(_, l)| *l)
+                .collect();
+            client.set_breakpoints(&path, &active_lines);
+        }
+
+        self.status = format!(
+            "Breakpoint {} at line {}",
+            if added { "set" } else { "removed" },
+            line + 1
+        );
+    }
+
+    /// S4 (Rust IDE): Synchronizes breakpoints and stopped line state with active editor state.
+    pub fn sync_editor_breakpoints(&mut self) {
+        if let Some(ref path) = self.current_file {
+            self.editor_state.breakpoints = self
+                .breakpoints
+                .iter()
+                .filter(|(p, _)| p == path)
+                .map(|(_, l)| *l)
+                .collect();
+
+            if let Some((ref stopped_path, stopped_line)) = self.debug_stopped_line {
+                if stopped_path == path {
+                    self.editor_state.stopped_line = Some(stopped_line);
+                } else {
+                    self.editor_state.stopped_line = None;
+                }
+            } else {
+                self.editor_state.stopped_line = None;
+            }
+        } else {
+            self.editor_state.breakpoints.clear();
+            self.editor_state.stopped_line = None;
+        }
+    }
+
+    /// S4 (Rust IDE): Starts or resumes a debug session via DAP (lldb-dap).
+    pub fn start_debugging(&mut self) {
+        self.debug_panel_open = true;
+
+        if let Some(ref client) = self.dap_client {
+            if client.state().is_stopped {
+                client.continue_execution();
+                self.status = "Debugger: Resumed execution".to_string();
+                return;
+            }
+        }
+
+        // Locate executable target: target/debug/<name> or current dir
+        let target_bin = self
+            .browse_dir
+            .join("target")
+            .join("debug")
+            .join("karkinos");
+        let bin_path = if target_bin.exists() {
+            target_bin
+        } else {
+            self.browse_dir.join("target").join("debug").join("app")
+        };
+
+        let client = karkinos_core::DapClient::spawn("lldb-dap", &[], &self.browse_dir)
+            .unwrap_or_else(|_| karkinos_core::DapClient::mock());
+
+        // Sync all breakpoints
+        let mut grouped: std::collections::HashMap<PathBuf, Vec<usize>> =
+            std::collections::HashMap::new();
+        for (path, line) in &self.breakpoints {
+            grouped.entry(path.clone()).or_insert_with(Vec::new).push(*line);
+        }
+        for (path, lines) in grouped {
+            client.set_breakpoints(&path, &lines);
+        }
+
+        client.launch(&bin_path, &[]);
+        self.dap_client = Some(client);
+        self.status = format!("Debugger started: {}", bin_path.display());
+    }
+
+    /// S4 (Rust IDE): Steps over current instruction (next).
+    pub fn step_over(&mut self) {
+        if let Some(ref client) = self.dap_client {
+            client.step_over();
+            self.status = "Debugger: Step over".to_string();
+        }
+    }
+
+    /// S4 (Rust IDE): Steps into current instruction (stepIn).
+    pub fn step_in(&mut self) {
+        if let Some(ref client) = self.dap_client {
+            client.step_in();
+            self.status = "Debugger: Step in".to_string();
+        }
+    }
+
+    /// S4 (Rust IDE): Steps out of current function (stepOut).
+    pub fn step_out(&mut self) {
+        if let Some(ref client) = self.dap_client {
+            client.step_out();
+            self.status = "Debugger: Step out".to_string();
+        }
+    }
+
+    /// S4 (Rust IDE): Pauses running debuggee.
+    pub fn pause_debugger(&mut self) {
+        if let Some(ref client) = self.dap_client {
+            client.pause();
+            self.status = "Debugger: Pausing target…".to_string();
+        }
+    }
+
+    /// S4 (Rust IDE): Terminates the active debug session.
+    pub fn stop_debugging(&mut self) {
+        if let Some(ref client) = self.dap_client {
+            client.disconnect();
+            self.status = "Debugger: Stopped".to_string();
+        }
+        self.dap_client = None;
+        self.debug_stopped_line = None;
+        self.editor_state.stopped_line = None;
+    }
+
+    /// S4 (Rust IDE): Polls incoming DAP events (stopped, exited, output).
+    pub fn poll_dap_results(&mut self) {
+        if let Some(ref client) = self.dap_client {
+            let st = client.state();
+            if st.is_stopped {
+                if let Some(ref frame) = st.current_frame {
+                    if let Some(ref path) = frame.source_path {
+                        if self.current_file.as_ref() != Some(path) && path.exists() {
+                            self.open_path(path.clone());
+                        }
+                        self.debug_stopped_line = Some((path.clone(), frame.line));
+                        self.editor_state.stopped_line = Some(frame.line);
+                        self.editor_state.cursor_line = frame.line;
+                        self.editor_state.cursor_col = frame.column;
+                        self.editor_state.needs_autoscroll = true;
+                        self.status = format!(
+                            "Stopped at line {} ({})",
+                            frame.line + 1,
+                            frame.name
+                        );
+                    }
+                }
+            } else if !st.is_active {
+                self.debug_stopped_line = None;
+                self.editor_state.stopped_line = None;
+            }
+        }
     }
 
     /// S3 (Rust IDE): Triggers an asynchronous search on Open VSX
@@ -2747,5 +2933,67 @@ mod tests {
         assert_eq!(text, "pub fn compute_result() -> i32 { 42 }\n");
         assert!(app.dirty);
         assert!(app.status.contains("Applied edits across 1 file(s)"));
+    }
+
+    #[test]
+    fn test_editor_app_breakpoints_and_dap_debugging() {
+        use karkinos_core::dap::{DapClient, DapStackFrame, DapStopReason, DapVariable};
+
+        let mut app = EditorApp::default();
+        let file_path = PathBuf::from("src/main.rs");
+        app.current_file = Some(file_path.clone());
+        app.set_text("fn main() {\n    let val = 10;\n    println!(\"{}\", val);\n}\n");
+
+        // Toggle breakpoint at line 1
+        app.toggle_breakpoint(1);
+        assert!(app.breakpoints.contains(&(file_path.clone(), 1)));
+        assert!(app.editor_state.breakpoints.contains(&1));
+        assert!(app.status.contains("Breakpoint set at line 2"));
+
+        // Toggle breakpoint again -> removes it
+        app.toggle_breakpoint(1);
+        assert!(!app.breakpoints.contains(&(file_path.clone(), 1)));
+        assert!(!app.editor_state.breakpoints.contains(&1));
+        assert!(app.status.contains("Breakpoint removed at line 2"));
+
+        // Set breakpoint again
+        app.toggle_breakpoint(1);
+
+        // Start debugging with mock DAP client
+        let dap = DapClient::mock();
+        dap.set_mock_stopped(
+            DapStopReason::Breakpoint,
+            DapStackFrame {
+                id: 1,
+                name: "main()".to_string(),
+                source_path: Some(file_path.clone()),
+                line: 1,
+                column: 4,
+            },
+            vec![DapVariable {
+                name: "val".to_string(),
+                value: "10".to_string(),
+                type_name: Some("i32".to_string()),
+            }],
+        );
+
+        app.dap_client = Some(dap);
+        app.poll_dap_results();
+
+        assert_eq!(app.debug_stopped_line, Some((file_path.clone(), 1)));
+        assert_eq!(app.editor_state.stopped_line, Some(1));
+        assert_eq!(app.editor_state.cursor_line, 1);
+        assert!(app.status.contains("Stopped at line 2"));
+
+        // Test step over
+        app.step_over();
+        assert!(app.status.contains("Debugger: Step over"));
+
+        // Test stop debugging
+        app.stop_debugging();
+        assert!(app.dap_client.is_none());
+        assert!(app.debug_stopped_line.is_none());
+        assert!(app.editor_state.stopped_line.is_none());
+        assert!(app.status.contains("Debugger: Stopped"));
     }
 }

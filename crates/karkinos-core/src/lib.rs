@@ -9,6 +9,7 @@
 
 pub mod buffer;
 pub mod cargo;
+pub mod dap;
 pub mod document;
 pub mod ending;
 pub mod lsp;
@@ -20,6 +21,7 @@ pub mod undo;
 
 pub use buffer::TextBuffer;
 pub use cargo::{CargoAction, CargoDiagnostic, CargoOutputLine, CargoRunner, CargoStatus};
+pub use dap::{DapBreakpoint, DapClient, DapStackFrame, DapState, DapStopReason, DapVariable};
 pub use document::Document;
 pub use ending::{default_new_file_path, detect_line_ending, serialize_line_ending, LineEnding};
 pub use lsp::{

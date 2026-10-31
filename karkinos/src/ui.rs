@@ -646,6 +646,17 @@ impl EditorApp {
                         self.cargo_active_tab = 1;
                     }
 
+                    let dap_label = if self.dap_client.as_ref().map(|c| c.state().is_stopped).unwrap_or(false) {
+                        "🐞 Debugger (STOPPED)"
+                    } else if self.dap_client.is_some() {
+                        "🐞 Debugger (Running)"
+                    } else {
+                        "🐞 Debugger"
+                    };
+                    if ui.selectable_label(self.cargo_active_tab == 2, dap_label).clicked() {
+                        self.cargo_active_tab = 2;
+                    }
+
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.small_button("✕").clicked() {
                             close_panel = true;
@@ -677,7 +688,7 @@ impl EditorApp {
                                 ui.label(egui::RichText::new(line.text).monospace().color(color));
                             }
                         });
-                } else {
+                } else if self.cargo_active_tab == 1 {
                     let diags = self.cargo_runner.diagnostics();
                     if diags.is_empty() {
                         ui.label(egui::RichText::new("No compiler errors or warnings detected.").italics().color(egui::Color32::from_gray(140)));
@@ -711,6 +722,108 @@ impl EditorApp {
                             }
                         });
                     }
+                } else if self.cargo_active_tab == 2 {
+                    // S4 (Rust IDE): DAP Native Debugger & Inspector
+                    let dap_state = self.dap_client.as_ref().map(|c| c.state()).unwrap_or_default();
+
+                    ui.horizontal(|ui| {
+                        let is_active = dap_state.is_active;
+                        let is_stopped = dap_state.is_stopped;
+
+                        if !is_active {
+                            if ui.button("▶ Start Debugging (F5)").clicked() {
+                                self.start_debugging();
+                            }
+                        } else if is_stopped {
+                            if ui.button("▶ Continue (F5)").clicked() {
+                                self.start_debugging();
+                            }
+                        } else {
+                            if ui.button("⏸ Pause").clicked() {
+                                self.pause_debugger();
+                            }
+                        }
+
+                        if ui.add_enabled(is_stopped, egui::Button::new("↷ Step Over (F10)")).clicked() {
+                            self.step_over();
+                        }
+                        if ui.add_enabled(is_stopped, egui::Button::new("⇲ Step In (F11)")).clicked() {
+                            self.step_in();
+                        }
+                        if ui.add_enabled(is_stopped, egui::Button::new("⇱ Step Out (Shift+F11)")).clicked() {
+                            self.step_out();
+                        }
+                        if ui.add_enabled(is_active, egui::Button::new("⏹ Stop (Shift+F5)")).clicked() {
+                            self.stop_debugging();
+                        }
+
+                        if let Some(ref reason) = dap_state.stop_reason {
+                            ui.label(egui::RichText::new(format!("Stopped: {:?}", reason)).strong().color(egui::Color32::from_rgb(255, 215, 0)));
+                        }
+                    });
+
+                    ui.separator();
+
+                    ui.columns(3, |cols| {
+                        // Col 0: Call Stack
+                        cols[0].label(egui::RichText::new("Call Stack:").strong());
+                        if dap_state.stack_frames.is_empty() {
+                            cols[0].label(egui::RichText::new("No active frames").italics().small());
+                        } else {
+                            egui::ScrollArea::vertical().id_source("dap_stack_scroll").max_height(140.0).show(&mut cols[0], |ui| {
+                                for frame in &dap_state.stack_frames {
+                                    let label = format!("{}:{}", frame.name, frame.line + 1);
+                                    if ui.selectable_label(false, label).clicked() {
+                                        if let Some(ref path) = frame.source_path {
+                                            if path.exists() {
+                                                self.open_path(path.clone());
+                                                self.editor_state.cursor_line = frame.line;
+                                                self.editor_state.cursor_col = frame.column;
+                                                self.editor_state.needs_autoscroll = true;
+                                            }
+                                        }
+                                    }
+                                }
+                            });
+                        }
+
+                        // Col 1: Variables
+                        cols[1].label(egui::RichText::new("Variables:").strong());
+                        if dap_state.variables.is_empty() {
+                            cols[1].label(egui::RichText::new("No local variables").italics().small());
+                        } else {
+                            egui::ScrollArea::vertical().id_source("dap_vars_scroll").max_height(140.0).show(&mut cols[1], |ui| {
+                                for var in &dap_state.variables {
+                                    let type_part = var.type_name.as_deref().map(|t| format!(": {}", t)).unwrap_or_default();
+                                    ui.label(egui::RichText::new(format!("{}{}", var.name, type_part)).monospace().color(theme.syntax_keyword));
+                                    ui.label(egui::RichText::new(format!(" = {}", var.value)).monospace().color(theme.text));
+                                }
+                            });
+                        }
+
+                        // Col 2: Breakpoints
+                        cols[2].label(egui::RichText::new("Breakpoints:").strong());
+                        if self.breakpoints.is_empty() {
+                            cols[2].label(egui::RichText::new("No breakpoints set (F9 to toggle)").italics().small());
+                        } else {
+                            let mut to_remove = None;
+                            egui::ScrollArea::vertical().id_source("dap_bps_scroll").max_height(140.0).show(&mut cols[2], |ui| {
+                                for (path, line) in &self.breakpoints {
+                                    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+                                    ui.horizontal(|ui| {
+                                        ui.label(egui::RichText::new(format!("● {}:{}", file_name, line + 1)).color(egui::Color32::from_rgb(240, 70, 70)));
+                                        if ui.small_button("×").clicked() {
+                                            to_remove = Some((path.clone(), *line));
+                                        }
+                                    });
+                                }
+                            });
+                            if let Some(target) = to_remove {
+                                self.breakpoints.remove(&target);
+                                self.sync_editor_breakpoints();
+                            }
+                        }
+                    });
                 }
             });
 
@@ -1310,6 +1423,8 @@ impl eframe::App for EditorApp {
         self.poll_lsp_results();
         // S3 (Rust IDE): Procesar respuestas pendientes de Open VSX
         self.poll_open_vsx();
+        // S4 (Rust IDE): Procesar respuestas y eventos del DAP (debugger)
+        self.poll_dap_results();
 
         // S3: consolidación de chunks de undo por timeout de inactividad (~700ms).
         let now = std::time::Instant::now();
@@ -1394,16 +1509,26 @@ impl eframe::App for EditorApp {
             want_hover,
             want_code_action,
             want_rename,
+            want_breakpoint_toggle,
+            want_debug_step_over,
+            want_debug_step_in,
+            want_debug_step_out,
+            want_debug_stop,
         ) = ctx.input(|i| {
             (
                 i.key_pressed(egui::Key::F7),
-                i.key_pressed(egui::Key::F5),
+                i.key_pressed(egui::Key::F5) && !i.modifiers.shift,
                 i.modifiers.ctrl && i.key_pressed(egui::Key::Backslash),
                 i.key_pressed(egui::Key::F12),
                 i.key_pressed(egui::Key::F1) || (i.modifiers.ctrl && i.key_pressed(egui::Key::K)),
                 (i.modifiers.ctrl && i.key_pressed(egui::Key::Period))
                     || (i.modifiers.alt && i.key_pressed(egui::Key::Enter)),
                 i.key_pressed(egui::Key::F2),
+                i.key_pressed(egui::Key::F9),
+                i.key_pressed(egui::Key::F10),
+                i.key_pressed(egui::Key::F11) && !i.modifiers.shift,
+                i.key_pressed(egui::Key::F11) && i.modifiers.shift,
+                i.key_pressed(egui::Key::F5) && i.modifiers.shift,
             )
         });
         if want_cargo_check {
@@ -1427,6 +1552,22 @@ impl eframe::App for EditorApp {
         if want_rename {
             self.rename_input.clear();
             self.rename_dialog_open = true;
+        }
+        if want_breakpoint_toggle {
+            let line = self.editor_state.cursor_line;
+            self.toggle_breakpoint(line);
+        }
+        if want_debug_step_over {
+            self.step_over();
+        }
+        if want_debug_step_in {
+            self.step_in();
+        }
+        if want_debug_step_out {
+            self.step_out();
+        }
+        if want_debug_stop {
+            self.stop_debugging();
         }
         if want_quit {
             self.try_close(ctx);
@@ -1605,6 +1746,11 @@ impl eframe::App for EditorApp {
                     }
                     if ui.button("▶ Run").on_hover_text("Run cargo run (F5)").clicked() {
                         self.run_cargo(karkinos_core::cargo::CargoAction::Run);
+                    }
+                    if ui.button("🐞 Debug").on_hover_text("Start / Resume Debugger (F5)").clicked() {
+                        self.cargo_panel_open = true;
+                        self.cargo_active_tab = 2;
+                        self.start_debugging();
                     }
                     if ui.button("Test").on_hover_text("Run cargo test").clicked() {
                         self.run_cargo(karkinos_core::cargo::CargoAction::Test);
