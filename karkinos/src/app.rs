@@ -65,6 +65,8 @@ pub struct EditorApp {
     pub cargo: crate::cargo_service::CargoService,
     // S5d (Roadmap v0.2.9): servicio del debugger DAP (sesión + breakpoints).
     pub dap: crate::dap_service::DapService,
+    // S5 (Roadmap v0.2.25): servicio de terminal interactiva PTY.
+    pub terminal: crate::terminal_service::TerminalService,
     pub editor_state: EditorState,
     // Textura del logo, cargada una sola vez en el primer frame
     // (None hasta ese momento).
@@ -141,6 +143,7 @@ impl Default for EditorApp {
             lsp: crate::lsp_service::LspService::default(),
             cargo: crate::cargo_service::CargoService::default(),
             dap: crate::dap_service::DapService::default(),
+            terminal: crate::terminal_service::TerminalService::default(),
             find_open: false,
             find_query: String::new(),
             find_replace: String::new(),

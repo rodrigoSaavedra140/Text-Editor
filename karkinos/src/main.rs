@@ -9,6 +9,7 @@ mod editor_widget;
 mod lsp_service;
 mod quick_open;
 mod syntax;
+mod terminal_service;
 mod theme;
 mod title_bar;
 mod ui;

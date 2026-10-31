@@ -17,6 +17,7 @@ pub mod open_vsx;
 pub mod platform;
 pub mod plugin;
 pub mod syntax_ast;
+pub mod terminal;
 pub mod text_ops;
 pub mod undo;
 
@@ -36,6 +37,7 @@ pub use syntax_ast::{
     AstEngine, AstHighlightSpan, AstLanguage, AstNodeInfo, FoldingKind, FoldingRange,
     SemanticTokenType,
 };
+pub use terminal::{PtyTerminal, TerminalCell, TerminalColor, TerminalSnapshot};
 pub use text_ops::{
     char_to_byte, dedent_line, find_matching_bracket, indent_line, inherited_indent,
     is_word_char, line_char_count, next_word_pos, prev_word_pos, toggle_comment_range,

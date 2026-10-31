@@ -742,19 +742,28 @@ impl EditorApp {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
 
-                    let (status_text, status_color) = match status {
-                        karkinos_core::cargo::CargoStatus::Idle => ("Idle", egui::Color32::from_gray(140)),
-                        karkinos_core::cargo::CargoStatus::Running => ("Running…", egui::Color32::from_rgb(255, 190, 60)),
-                        karkinos_core::cargo::CargoStatus::Success => ("Success", egui::Color32::from_rgb(63, 185, 80)),
-                        karkinos_core::cargo::CargoStatus::Failed(_code) => {
-                            ("Failed", egui::Color32::from_rgb(248, 81, 73))
+                    let (status_text, status_color) = if self.cargo.active_tab == 0 {
+                        if self.terminal.is_alive() {
+                            ("Running", egui::Color32::from_rgb(63, 185, 80))
+                        } else {
+                            ("Idle", egui::Color32::from_gray(140))
                         }
-                        karkinos_core::cargo::CargoStatus::Killed => ("Terminated", egui::Color32::from_gray(160)),
+                    } else {
+                        match status {
+                            karkinos_core::cargo::CargoStatus::Idle => ("Idle", egui::Color32::from_gray(140)),
+                            karkinos_core::cargo::CargoStatus::Running => ("Running…", egui::Color32::from_rgb(255, 190, 60)),
+                            karkinos_core::cargo::CargoStatus::Success => ("Success", egui::Color32::from_rgb(63, 185, 80)),
+                            karkinos_core::cargo::CargoStatus::Failed(_code) => {
+                                ("Failed", egui::Color32::from_rgb(248, 81, 73))
+                            }
+                            karkinos_core::cargo::CargoStatus::Killed => ("Terminated", egui::Color32::from_gray(160)),
+                        }
                     };
 
+                    let pill_prefix = if self.cargo.active_tab == 0 { "💻" } else { "🦀" };
                     crate::title_bar::status_pill(
                         ui,
-                        egui::RichText::new(format!("🦀 {}", status_text))
+                        egui::RichText::new(format!("{} {}", pill_prefix, status_text))
                             .color(status_color)
                             .strong()
                             .size(11.0),
@@ -779,10 +788,11 @@ impl EditorApp {
 
                     ui.separator();
 
+                    let term_tab_label = format!("💻 {}", self.terminal.shell_name());
                     if Self::dock_segmented_tab(
                         ui,
                         self.cargo.active_tab == 0,
-                        egui::RichText::new("⚡ Terminal Output")
+                        egui::RichText::new(term_tab_label)
                             .color(if self.cargo.active_tab == 0 { theme.text } else { theme.text_muted })
                             .size(12.0),
                         theme,
@@ -842,10 +852,19 @@ impl EditorApp {
                         {
                             close_panel = true;
                         }
-                        if ui.small_button("🗑 Clear").clicked() {
-                            self.cargo.runner.clear();
+                        if ui.small_button("🗑 Clear").on_hover_text("Clear console (Ctrl+L)").clicked() {
+                            if self.cargo.active_tab == 0 {
+                                self.terminal.clear();
+                            } else {
+                                self.cargo.runner.clear();
+                            }
                         }
-                        if self.cargo.runner.is_running() {
+                        if self.cargo.active_tab == 0 {
+                            if ui.small_button("🔄 Restart").on_hover_text("Restart interactive terminal session").clicked() {
+                                let cwd = self.current_working_dir();
+                                self.terminal.restart(&cwd);
+                            }
+                        } else if self.cargo.runner.is_running() {
                             if ui.small_button("⏹ Stop").clicked() {
                                 self.cargo.runner.kill();
                             }
@@ -856,75 +875,7 @@ impl EditorApp {
                 ui.separator();
 
                 if self.cargo.active_tab == 0 {
-                    let lines = self.cargo.runner.raw_lines();
-                    let mut submit_command = false;
-
-                    egui::Frame::none()
-                        .fill(theme.bg)
-                        .inner_margin(egui::Margin::same(6.0))
-                        .show(ui, |ui| {
-                            let available_h = (ui.available_height() - 34.0).max(40.0);
-                            egui::ScrollArea::both()
-                                .max_height(available_h)
-                                .stick_to_bottom(true)
-                                .show(ui, |ui| {
-                                    for line in lines {
-                                        let color = if line.is_error || line.text.contains("error:") {
-                                            egui::Color32::from_rgb(248, 81, 73)
-                                        } else if line.text.starts_with("$ ") {
-                                            theme.accent
-                                        } else if line.text.contains("warning:") {
-                                            egui::Color32::from_rgb(227, 179, 65)
-                                        } else {
-                                            theme.text
-                                        };
-                                        ui.label(egui::RichText::new(line.text).monospace().size(12.0).color(color));
-                                    }
-                                });
-
-                            ui.separator();
-
-                            ui.horizontal(|ui| {
-                                ui.label(egui::RichText::new("❯").color(theme.accent).strong());
-
-                                let input_resp = ui.add_sized(
-                                    [ui.available_width() - 80.0, 24.0],
-                                    egui::TextEdit::singleline(&mut self.cargo.terminal_input)
-                                        .hint_text(if self.cargo.runner.is_running() {
-                                            "Send input to running process... (Enter to send)"
-                                        } else {
-                                            "Type command (e.g. cargo test, cargo check, ls)... (Enter to run, ↑↓ history)"
-                                        })
-                                        .font(egui::TextStyle::Monospace),
-                                );
-
-                                if input_resp.has_focus() {
-                                    if ui.input(|i| i.key_pressed(egui::Key::ArrowUp)) {
-                                        self.cargo.history_prev();
-                                    }
-                                    if ui.input(|i| i.key_pressed(egui::Key::ArrowDown)) {
-                                        self.cargo.history_next();
-                                    }
-                                }
-
-                                if (input_resp.lost_focus() || input_resp.has_focus())
-                                    && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                                {
-                                    submit_command = true;
-                                    input_resp.request_focus();
-                                }
-
-                                let btn_label = if self.cargo.runner.is_running() { "↵ Send" } else { "▶ Run" };
-                                if ui.small_button(btn_label).clicked() {
-                                    submit_command = true;
-                                }
-                            });
-                        });
-
-                    if submit_command {
-                        let dir = self.current_working_dir();
-                        self.cargo.execute_or_input(&dir);
-                    }
+                    self.show_interactive_terminal(ui, ctx, theme);
                 } else if self.cargo.active_tab == 1 {
                     let diags = self.cargo.runner.diagnostics();
                     if diags.is_empty() {
@@ -1070,6 +1021,175 @@ impl EditorApp {
 
         if let Some(target) = jump_target {
             self.jump_to_cargo_diagnostic(&target);
+        }
+    }
+
+    /// S5 (Roadmap v0.2.25): Renderiza el emulador de terminal interactiva PTY (vt100 + portable-pty).
+    fn show_interactive_terminal(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, theme: &crate::theme::Theme) {
+        ctx.request_repaint_after(std::time::Duration::from_millis(30));
+
+        let cwd = self.current_working_dir();
+        let font_id = egui::FontId::monospace(12.0);
+        let char_width = ui.fonts(|f| f.glyph_width(&font_id, 'M')).max(6.0);
+        let line_height = ui.fonts(|f| f.row_height(&font_id)).max(14.0);
+
+        let available_size = ui.available_size();
+        let cols = ((available_size.x - 16.0) / char_width).floor().max(20.0) as u16;
+        let rows = ((available_size.y - 12.0) / line_height).floor().max(5.0) as u16;
+
+        self.terminal.ensure_running(&cwd, cols, rows);
+
+        egui::Frame::none()
+            .fill(theme.bg)
+            .inner_margin(egui::Margin::same(4.0))
+            .show(ui, |ui| {
+                let (rect, resp) = ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
+                let painter = ui.painter_at(rect);
+
+                if resp.clicked() {
+                    resp.request_focus();
+                }
+
+                // Si el área de la terminal tiene foco o está hovered, procesa eventos de teclado
+                if resp.has_focus() || resp.hovered() {
+                    let events = ui.input(|i| i.events.clone());
+                    for event in events {
+                        match event {
+                            egui::Event::Key { key, pressed: true, modifiers, .. } => {
+                                if self.terminal.handle_key_event(key, &modifiers) {
+                                    ctx.request_repaint();
+                                }
+                            }
+                            egui::Event::Text(ref text) => {
+                                let ctrl = ui.input(|i| i.modifiers.ctrl || i.modifiers.command);
+                                if !ctrl && !text.is_empty() {
+                                    let _ = self.terminal.send_str(text);
+                                    ctx.request_repaint();
+                                }
+                            }
+                            egui::Event::Paste(ref text) => {
+                                let _ = self.terminal.send_str(text);
+                                ctx.request_repaint();
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
+                // Renderiza la cuadrícula 2D del emulador VT100
+                if let Some(snap) = self.terminal.snapshot() {
+                    let origin_x = rect.min.x + 6.0;
+                    let origin_y = rect.min.y + 4.0;
+
+                    for (row_idx, row_cells) in snap.grid.iter().enumerate() {
+                        if row_idx as f32 * line_height > rect.height() {
+                            break;
+                        }
+                        let y = origin_y + row_idx as f32 * line_height;
+
+                        // 1. Fondos de celda no predeterminados
+                        for (col_idx, cell) in row_cells.iter().enumerate() {
+                            if col_idx as f32 * char_width > rect.width() {
+                                break;
+                            }
+                            if cell.bg != karkinos_core::terminal::TerminalColor::Default {
+                                let cell_rect = egui::Rect::from_min_size(
+                                    egui::pos2(origin_x + col_idx as f32 * char_width, y),
+                                    egui::vec2(char_width, line_height),
+                                );
+                                painter.rect_filled(cell_rect, 0.0, Self::terminal_color_to_egui(cell.bg, false, theme));
+                            }
+                        }
+
+                        // 2. Caracteres y estilos agrupados en corridas para máximo rendimiento
+                        let mut run_text = String::new();
+                        let mut run_start_col = 0;
+                        let mut current_fg = karkinos_core::terminal::TerminalColor::Default;
+                        let mut current_bold = false;
+
+                        for (col_idx, cell) in row_cells.iter().enumerate() {
+                            if col_idx as f32 * char_width > rect.width() {
+                                break;
+                            }
+                            let fg = cell.fg;
+                            let bold = cell.bold;
+                            if fg != current_fg || bold != current_bold {
+                                if !run_text.is_empty() {
+                                    let x = origin_x + run_start_col as f32 * char_width;
+                                    let color = Self::terminal_color_to_egui(current_fg, current_bold, theme);
+                                    painter.text(egui::pos2(x, y), egui::Align2::LEFT_TOP, &run_text, font_id.clone(), color);
+                                    run_text.clear();
+                                }
+                                current_fg = fg;
+                                current_bold = bold;
+                                run_start_col = col_idx;
+                            }
+                            run_text.push_str(if cell.contents.is_empty() { " " } else { &cell.contents });
+                        }
+                        if !run_text.is_empty() {
+                            let x = origin_x + run_start_col as f32 * char_width;
+                            let color = Self::terminal_color_to_egui(current_fg, current_bold, theme);
+                            painter.text(egui::pos2(x, y), egui::Align2::LEFT_TOP, &run_text, font_id.clone(), color);
+                        }
+
+                        // 3. Cursor del emulador
+                        if row_idx as u16 == snap.cursor_pos.0 && !snap.hide_cursor {
+                            let cursor_col = snap.cursor_pos.1 as usize;
+                            let cursor_rect = egui::Rect::from_min_size(
+                                egui::pos2(origin_x + cursor_col as f32 * char_width, y),
+                                egui::vec2(char_width, line_height),
+                            );
+                            painter.rect_filled(cursor_rect, 1.0, theme.accent.gamma_multiply(0.7));
+                        }
+                    }
+                }
+            });
+    }
+
+    /// Convierte colores de celda de terminal a `egui::Color32`.
+    fn terminal_color_to_egui(
+        color: karkinos_core::terminal::TerminalColor,
+        bold: bool,
+        theme: &crate::theme::Theme,
+    ) -> egui::Color32 {
+        match color {
+            karkinos_core::terminal::TerminalColor::Default => {
+                if bold {
+                    egui::Color32::WHITE
+                } else {
+                    theme.text
+                }
+            }
+            karkinos_core::terminal::TerminalColor::Rgb(r, g, b) => egui::Color32::from_rgb(r, g, b),
+            karkinos_core::terminal::TerminalColor::Idx(idx) => match idx {
+                0 => egui::Color32::from_rgb(0, 0, 0),
+                1 => egui::Color32::from_rgb(205, 49, 49),
+                2 => egui::Color32::from_rgb(13, 188, 121),
+                3 => egui::Color32::from_rgb(229, 229, 16),
+                4 => egui::Color32::from_rgb(36, 114, 200),
+                5 => egui::Color32::from_rgb(188, 63, 188),
+                6 => egui::Color32::from_rgb(17, 168, 205),
+                7 => egui::Color32::from_rgb(229, 229, 229),
+                8 => egui::Color32::from_rgb(102, 102, 102),
+                9 => egui::Color32::from_rgb(241, 76, 76),
+                10 => egui::Color32::from_rgb(35, 209, 139),
+                11 => egui::Color32::from_rgb(245, 245, 67),
+                12 => egui::Color32::from_rgb(59, 142, 234),
+                13 => egui::Color32::from_rgb(214, 112, 214),
+                14 => egui::Color32::from_rgb(41, 184, 219),
+                15 => egui::Color32::from_rgb(255, 255, 255),
+                16..=231 => {
+                    let i = idx - 16;
+                    let r = (i / 36) * 51;
+                    let g = ((i % 36) / 6) * 51;
+                    let b = (i % 6) * 51;
+                    egui::Color32::from_rgb(r, g, b)
+                }
+                232..=255 => {
+                    let v = (idx - 232) * 10 + 8;
+                    egui::Color32::from_rgb(v, v, v)
+                }
+            },
         }
     }
 
