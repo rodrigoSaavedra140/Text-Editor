@@ -9,7 +9,7 @@ use std::io::{Read, Write};
 use std::num::NonZeroU16;
 use std::path::{Path, PathBuf};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     Arc, Mutex,
 };
 use std::thread;
@@ -75,6 +75,10 @@ pub struct PtyTerminal {
     parser: Arc<Mutex<vt100::Parser>>,
     child: Arc<Mutex<Option<Box<dyn Child + Send + Sync>>>>,
     is_alive: Arc<AtomicBool>,
+    // OPT-1 (v0.2.26): contador que sube con cada lote de bytes que el
+    // hilo lector entrega al parser. La UI lo usa para no regenerar el
+    // snapshot de la grilla cuando la pantalla no cambió.
+    revision: Arc<AtomicU64>,
     pub shell_name: String,
     cols: u16,
     rows: u16,
@@ -164,12 +168,14 @@ impl PtyTerminal {
         let nz_cols = NonZeroU16::new(cols).unwrap_or(NonZeroU16::new(80).unwrap());
         let parser = Arc::new(Mutex::new(vt100::Parser::new(nz_rows, nz_cols, 1000)));
         let is_alive = Arc::new(AtomicBool::new(true));
+        let revision = Arc::new(AtomicU64::new(0));
         let child_arc = Arc::new(Mutex::new(Some(child)));
 
         // Background reader thread: continuously consumes bytes from PTY master and feeds vt100
         {
             let parser_clone = Arc::clone(&parser);
             let is_alive_clone = Arc::clone(&is_alive);
+            let revision_clone = Arc::clone(&revision);
             thread::Builder::new()
                 .name("pty-reader".to_string())
                 .spawn(move || {
@@ -181,6 +187,7 @@ impl PtyTerminal {
                                 if let Ok(mut p) = parser_clone.lock() {
                                     p.process(&buf[..n]);
                                 }
+                                revision_clone.fetch_add(1, Ordering::Relaxed);
                             }
                             Err(_) => break, // Error or PTY closed
                         }
@@ -196,6 +203,7 @@ impl PtyTerminal {
             parser,
             child: child_arc,
             is_alive,
+            revision,
             shell_name: shell_basename,
             cols,
             rows,
@@ -224,6 +232,9 @@ impl PtyTerminal {
             let nz_cols = NonZeroU16::new(cols).unwrap_or(NonZeroU16::new(80).unwrap());
             p.set_size(nz_rows, nz_cols);
         }
+        // OPT-1: el tamaño de la grilla cambió, así que cualquier snapshot
+        // cacheado quedó viejo aunque no hayan llegado bytes nuevos.
+        self.revision.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Writes raw bytes directly to the PTY master stream.
@@ -244,6 +255,13 @@ impl PtyTerminal {
     /// Writes a UTF-8 string directly into the PTY.
     pub fn write_str(&self, text: &str) -> Result<(), String> {
         self.write_bytes(text.as_bytes())
+    }
+
+    /// OPT-1 (v0.2.26): revisión monotónica de la grilla. Cambia cuando el
+    /// hilo lector procesa bytes nuevos o cuando se redimensiona la pantalla;
+    /// no cambia si la terminal está en reposo.
+    pub fn revision(&self) -> u64 {
+        self.revision.load(Ordering::Relaxed)
     }
 
     /// Takes a thread-safe snapshot of the current 2D screen grid for UI presentation.

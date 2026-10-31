@@ -1026,7 +1026,10 @@ impl EditorApp {
 
     /// S5 (Roadmap v0.2.25): Renderiza el emulador de terminal interactiva PTY (vt100 + portable-pty).
     fn show_interactive_terminal(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, theme: &crate::theme::Theme) {
-        ctx.request_repaint_after(std::time::Duration::from_millis(30));
+        // OPT-1 (v0.2.26): nada de repintado a 30 ms por frame. La terminal
+        // sólo se repinta rápido mientras llega salida del PTY (la revisión
+        // avanza); en reposo baja a 150 ms para el cursor, y sin sesión viva
+        // no se pide repintado periódico.
 
         let cwd = self.current_working_dir();
         let font_id = egui::FontId::monospace(12.0);
@@ -1038,6 +1041,7 @@ impl EditorApp {
         let rows = ((available_size.y - 12.0) / line_height).floor().max(5.0) as u16;
 
         self.terminal.ensure_running(&cwd, cols, rows);
+        let revision_before = self.terminal.revision();
 
         egui::Frame::none()
             .fill(theme.bg)
@@ -1144,6 +1148,12 @@ impl EditorApp {
                     }
                 }
             });
+
+        // OPT-1: repintado proporcional a la actividad real del PTY.
+        if self.terminal.is_alive() {
+            let delay_ms = if self.terminal.revision() != revision_before { 30 } else { 150 };
+            ctx.request_repaint_after(std::time::Duration::from_millis(delay_ms));
+        }
     }
 
     /// Convierte colores de celda de terminal a `egui::Color32`.

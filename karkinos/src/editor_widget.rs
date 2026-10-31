@@ -12,6 +12,22 @@ pub fn clamp_font_size(size: f32) -> f32 {
     size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE)
 }
 
+/// OPT-3 (v0.2.26): fracción de acercamiento al destino por frame. Con 0.25
+/// la animación llega al destino en pocos frames y no se siente un salto.
+pub const SCROLL_EASING: f32 = 0.25;
+
+/// OPT-3: un paso de interpolación exponencial hacia `target`. Devuelve el
+/// scroll nuevo y si la animación sigue en curso (todavía hay diferencia
+/// visible) o ya se puede asentar en el destino.
+pub fn smooth_scroll_step(scroll: f32, target: f32) -> (f32, bool) {
+    let diff = target - scroll;
+    if diff.abs() > 0.5 {
+        (scroll + diff * SCROLL_EASING, true)
+    } else {
+        (target, false)
+    }
+}
+
 /// Estado del cursor/selección/scroll del editor — vive en EditorApp,
 /// no acá, porque tiene que sobrevivir entre frames.
 #[derive(Debug, Clone)]
@@ -20,6 +36,12 @@ pub struct EditorState {
     pub cursor_col: usize, // índice de CARÁCTER (no byte) dentro de la línea LÓGICA
     pub sel_anchor: Option<(usize, usize)>,
     pub scroll: f32, // vertical, en píxeles (ya no hay scroll horizontal: el texto se ajusta de línea)
+    // OPT-3 (v0.2.26): el scroll de rueda escribe acá y el render interpola
+    // hacia este destino. `applied_scroll` guarda lo último que escribió el
+    // render para detectar cambios externos (pestaña, restore, Ctrl+G) y
+    // resincronizar el target en vez de pelear con la animación.
+    pub target_scroll: f32,
+    applied_scroll: f32,
     was_focused: bool,
     // Caché de cuántas FILAS VISUALES ocupa cada línea lógica (una
     // línea larga puede ocupar varias filas si se ajusta). Se
@@ -62,6 +84,10 @@ pub struct EditorState {
     pub show_completions: bool,
     pub selected_completion: usize,
     pub inlay_hints: Vec<karkinos_core::lsp::LspInlayHint>,
+    // OPT-2 (v0.2.26): galleys ya tipografiados de los inlay hints, por
+    // (etiqueta, centésimas del tamaño de fuente). Evita re-tipografiar
+    // ": i32" o ": &str" en cada frame por cada hint visible.
+    hint_galleys: std::collections::HashMap<(String, u32), std::sync::Arc<egui::Galley>>,
     pub breakpoints: std::collections::HashSet<usize>,
     pub stopped_line: Option<usize>,
     // S1 (Roadmap v0.2.9): galleys ya tipografiados por (hash del chunk,
@@ -85,6 +111,8 @@ impl Default for EditorState {
             cursor_col: 0,
             sel_anchor: None,
             scroll: 0.0,
+            target_scroll: 0.0,
+            applied_scroll: 0.0,
             was_focused: false,
             row_counts: Vec::new(),
             char_lens: Vec::new(),
@@ -102,6 +130,7 @@ impl Default for EditorState {
             show_completions: false,
             selected_completion: 0,
             inlay_hints: Vec::new(),
+            hint_galleys: std::collections::HashMap::new(),
             breakpoints: std::collections::HashSet::new(),
             stopped_line: None,
             layout_cache: crate::syntax::LineLayoutCache::new(),
@@ -750,7 +779,9 @@ pub fn show(
                 let thumb_h = (rect.height() / total_height * rect.height()).max(24.0);
                 let usable = (rect.height() - thumb_h).max(1.0);
                 let rel = ((pos.y - rect.top() - thumb_h / 2.0) / usable).clamp(0.0, 1.0);
+                // OPT-3: arrastrar la barra es control directo, sin animación.
                 state.scroll = rel * max_scroll;
+                state.target_scroll = state.scroll;
             }
         }
         if response.clicked() {
@@ -1219,6 +1250,12 @@ pub fn show(
         }
     }
 
+    // OPT-3: si otro módulo movió `scroll` (cambio de pestaña, restore,
+    // Ctrl+G), el target se alinea para no pelear con la animación.
+    if (state.scroll - state.applied_scroll).abs() > 0.01 {
+        state.target_scroll = state.scroll;
+    }
+
     // --- autoscroll vertical: que el cursor nunca quede fuera de
     // vista, SOLO cuando se acaba de mover ---
     if cursor_moved {
@@ -1229,6 +1266,8 @@ pub fn show(
         } else if cursor_y + row_height > state.scroll + rect.height() {
             state.scroll = cursor_y + row_height - rect.height();
         }
+        // OPT-3: el cursor manda; el target acompaña sin animación.
+        state.target_scroll = state.scroll;
     }
 
     // --- scroll con la rueda del mouse / trackpad ---
@@ -1244,7 +1283,8 @@ pub fn show(
                 state.zoom_out();
             }
         } else {
-            state.scroll -= scroll_delta.y;
+            // OPT-3: la rueda mueve el destino; el render interpola.
+            state.target_scroll -= scroll_delta.y;
         }
         // S10: el tamaño puede haber cambiado por zoom o desde afuera
         // (botones +/-): pedir re-layout/autoscroll cuando difiere del
@@ -1254,7 +1294,14 @@ pub fn show(
             state.request_autoscroll();
         }
     }
-    state.scroll = state.scroll.clamp(0.0, max_scroll);
+    // OPT-3: interpolación suave hacia el destino, con asentamiento exacto.
+    state.target_scroll = state.target_scroll.clamp(0.0, max_scroll);
+    let (next_scroll, animating) = smooth_scroll_step(state.scroll, state.target_scroll);
+    state.scroll = next_scroll.clamp(0.0, max_scroll);
+    if animating {
+        ui.ctx().request_repaint();
+    }
+    state.applied_scroll = state.scroll;
 
     // --- dibujar SOLO las filas visibles ---
     let clip_rect = if show_scrollbar {
@@ -1536,12 +1583,33 @@ pub fn show(
                     && hint.position.character <= end
                 {
                     let hx = text_left + (hint.position.character - start) as f32 * char_width;
-                    let hint_font = egui::FontId::monospace(state.font_size * 0.78);
+                    let hint_font_size = state.font_size * 0.78;
                     let hint_color = egui::Color32::from_rgb(130, 155, 195);
                     let hint_bg = egui::Color32::from_rgba_unmultiplied(35, 45, 65, 140);
 
-                    let hint_galley =
-                        ui.fonts(|f| f.layout_no_wrap(hint.label.clone(), hint_font, hint_color));
+                    // OPT-2: mismo galley reutilizado hasta que cambie la
+                    // etiqueta o el tamaño de fuente (dos lecturas, cero
+                    // layout por frame para hints repetidos como ": i32").
+                    let hint_key = (hint.label.clone(), (hint_font_size * 100.0) as u32);
+                    let hint_galley = match state.hint_galleys.get(&hint_key).cloned() {
+                        Some(galley) => galley,
+                        None => {
+                            let galley = ui.fonts(|f| {
+                                f.layout_no_wrap(
+                                    hint.label.clone(),
+                                    egui::FontId::monospace(hint_font_size),
+                                    hint_color,
+                                )
+                            });
+                            // Cota defensiva: si el LSP inventara etiquetas
+                            // nuevas toda la sesión, el caché no crece sin fin.
+                            if state.hint_galleys.len() >= 512 {
+                                state.hint_galleys.clear();
+                            }
+                            state.hint_galleys.insert(hint_key, galley.clone());
+                            galley
+                        }
+                    };
                     let hint_size = hint_galley.size();
                     let hint_rect = egui::Rect::from_min_size(
                         egui::pos2(hx, y + 2.0),
@@ -2124,5 +2192,59 @@ mod tests {
         assert_eq!(sql_lines[0], "-- SELECT * FROM users;");
         toggle_comment_range(&mut sql_lines, 0, 0, "--");
         assert_eq!(sql_lines[0], "SELECT * FROM users;");
+    }
+
+    // OPT-3 (v0.2.26): interpolación exponencial del scroll.
+
+    #[test]
+    fn smooth_scroll_converges_and_settles_exactly() {
+        let target = 320.0;
+        let mut scroll = 0.0;
+        let mut steps = 0;
+        loop {
+            let (next, animating) = smooth_scroll_step(scroll, target);
+            scroll = next;
+            steps += 1;
+            if !animating {
+                break;
+            }
+            assert!(steps < 200, "la animación tiene que converger");
+        }
+        assert_eq!(scroll, target, "asienta exacto en el destino");
+        assert!(steps > 1, "no salta en un solo paso");
+    }
+
+    #[test]
+    fn smooth_scroll_never_overshoots_the_target() {
+        let target = 120.0;
+        let mut scroll = 0.0;
+        for _ in 0..200 {
+            let (next, animating) = smooth_scroll_step(scroll, target);
+            assert!(next <= target, "no pasa el destino: {next} > {target}");
+            scroll = next;
+            if !animating {
+                break;
+            }
+        }
+        assert_eq!(scroll, target);
+
+        // Y también en sentido contrario (scroll hacia arriba).
+        let mut scroll = target;
+        for _ in 0..200 {
+            let (next, animating) = smooth_scroll_step(scroll, 0.0);
+            assert!(next >= 0.0, "no sube por encima del destino: {next}");
+            scroll = next;
+            if !animating {
+                break;
+            }
+        }
+        assert_eq!(scroll, 0.0);
+    }
+
+    #[test]
+    fn smooth_scroll_small_difference_settles_immediately() {
+        let (scroll, animating) = smooth_scroll_step(10.0, 10.4);
+        assert_eq!(scroll, 10.4, "diferencias sub-pixel se asientan solas");
+        assert!(!animating, "no se pide repaint por menos de medio pixel");
     }
 }
