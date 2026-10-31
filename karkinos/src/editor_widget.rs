@@ -71,6 +71,9 @@ pub struct EditorState {
     // se vacía sola cuando el árbol cambió (las líneas sin editar pueden
     // cambiar de color semántico).
     pub ast_rev: u64,
+    // S2 (Roadmap v0.2.9): instante (egui time, segundos) de la última
+    // interacción de teclado/mouse/botón — reinicia la fase del blink.
+    pub last_activity_time: f64,
 }
 
 impl Default for EditorState {
@@ -101,6 +104,7 @@ impl Default for EditorState {
             stopped_line: None,
             layout_cache: crate::syntax::LineLayoutCache::new(),
             ast_rev: 0,
+            last_activity_time: 0.0,
         }
     }
 }
@@ -171,6 +175,30 @@ const PAD_X: f32 = 8.0;
 const PAD_Y: f32 = 6.0;
 // Ancho de la franja de la barra de scroll vertical, a la derecha.
 const SCROLLBAR_W: f32 = 12.0;
+
+// S2 (Roadmap v0.2.9): período del parpadeo del caret, en segundos.
+// El pesto SOLIDO durante CARET_BLINK_PERIOD_S tras cada interacción y
+// alterna ON/OFF cada medio período después: 1 Hz visible clásico de editor.
+pub const CARET_BLINK_PERIOD_S: f64 = 0.5;
+
+/// S2 (Roadmap v0.2.9): ¿ debería verse el caret en el instante `now`?
+/// Sólido durante el primer período tras `last_activity` y parpadeando
+/// después: en [P, 2P) apagado, en [2P, 3P) encendido, etc. (P = período).
+fn caret_blink_visible(now: f64, last_activity: f64) -> bool {
+    let idle = (now - last_activity).max(0.0);
+    if idle < CARET_BLINK_PERIOD_S {
+        return true;
+    }
+    ((idle / CARET_BLINK_PERIOD_S).floor() as u64) % 2 == 0
+}
+
+/// S2 (Roadmap v0.2.9): segundos hasta el próximo cruce de fase (para
+/// `request_repaint_after`): el parpadeo vive con eventos, nunca en
+/// loop continuo — reposo efectivo ~0% de CPU salvo el blink a 2 Hz.
+fn caret_blink_next_wake(now: f64, last_activity: f64) -> f32 {
+    let idle = (now - last_activity).max(0.0);
+    (CARET_BLINK_PERIOD_S - (idle % CARET_BLINK_PERIOD_S)) as f32
+}
 
 fn clamp_col(lines: &[String], line: usize, col: usize) -> usize {
     col.min(line_char_count(&lines[line]))
@@ -1235,6 +1263,23 @@ pub fn show(
     let painter = ui.painter_at(clip_rect);
     let sel = selection_range(state);
 
+    // S2 (Roadmap v0.2.9): timing del parpadeo del caret. La fase se
+    // reinicia con cualquier entrada real del usuario (teclas, botones,
+    // rueda, texto); el wake a ~2 Hz solo se pide cuando el editor TIENE
+    // el foco (abajo, tras dibujar) — en reposo la ventana duerme.
+    let now_time = ui.input(|i| i.time);
+    let user_activity = ui.input(|i| {
+        i.events.iter().any(|e| matches!(e,
+            egui::Event::Text(_)
+            | egui::Event::Key { pressed: true, .. }
+            | egui::Event::PointerButton { .. }
+            | egui::Event::MouseWheel { .. }))
+    });
+    if user_activity {
+        state.last_activity_time = now_time;
+    }
+    let caret_on = caret_blink_visible(now_time, state.last_activity_time);
+
     // S4: banda de números de línea, pintada ANTES que el texto
     // (mismo layer: orden de llamadas = orden de pintura).
     let gutter_rect =
@@ -1527,7 +1572,10 @@ pub fn show(
                 }
             }
 
-            if has_focus && i == state.cursor_line && state.cursor_col >= start
+            if has_focus
+                && caret_on
+                && i == state.cursor_line
+                && state.cursor_col >= start
                 && (state.cursor_col < end || (state.cursor_col == end && sub == rows_here - 1))
             {
                 let caret_x = text_left + (state.cursor_col - start) as f32 * char_width;
@@ -1539,6 +1587,14 @@ pub fn show(
         }
 
         visual_row += rows_here;
+    }
+
+    // S2 (Roadmap v0.2.9): wake del parpadeo — request_repaint_after
+    // pide el PRÓXIMO cruce de fase (nunca un loop continuo). Sin foco
+    // no hay caret ni blink: no se pinta ni se despierta.
+    if has_focus {
+        let wake_s = caret_blink_next_wake(now_time, state.last_activity_time).max(0.01);
+        ui.ctx().request_repaint_after(std::time::Duration::from_secs_f32(wake_s));
     }
 
     // --- barra de scroll (encima de todo, painter SIN recortar) ---
@@ -1657,6 +1713,35 @@ pub fn show(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // S2 (Roadmap v0.2.9): fase del parpadeo del caret — funciones puras.
+
+    #[test]
+    fn caret_blink_solida_mientras_se_tipea() {
+        // recién tecleado (0.4s de inactividad) sigue sólido
+        assert!(caret_blink_visible(0.0, 0.0));
+        assert!(caret_blink_visible(0.35, 0.0));
+        assert!(caret_blink_visible(0.49, 0.0));
+    }
+
+    #[test]
+    fn caret_blink_se_apaga_y_reaparece() {
+        // ventana [0.5, 1.0): apagado; [1.0, 1.5): encendido; alterna
+        assert!(!caret_blink_visible(0.75, 0.0));
+        assert!(caret_blink_visible(1.05, 0.0));
+        assert!(!caret_blink_visible(1.75, 0.0));
+        assert!(caret_blink_visible(2.05, 0.0));
+    }
+
+    #[test]
+    fn caret_blink_proximo_wake_en_el_cruce_de_fase() {
+        // a 0.2s de la última actividad faltan 0.3s para apagarse
+        assert!((caret_blink_next_wake(0.2, 0.0) - 0.3).abs() < 1e-6);
+        // a medio apagado faltan 0.25s para reencender
+        assert!((caret_blink_next_wake(0.75, 0.0) - 0.25).abs() < 1e-6);
+        // justo en el cruce: pide un período completo
+        assert!((caret_blink_next_wake(1.0, 0.0) - 0.5).abs() < 1e-6);
+    }
 
     // egui-winit consume Ctrl+C/X y las re-envia como Event::Copy/Cut
     // (sin payload): el widget decide que copiar con su estado propio.
