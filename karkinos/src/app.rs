@@ -52,6 +52,16 @@ pub fn font_size_from_string(s: &str) -> Option<f32> {
     s.parse::<f32>().ok().map(|v| v.clamp(ZOOM_MIN, ZOOM_MAX))
 }
 
+/// v0.2.41: un nombre válido para el diálogo del explorador es un único
+/// componente normal de ruta (sin separadores, `.`, `..` ni rutas absolutas).
+fn is_valid_explorer_item_name(name: &str) -> bool {
+    let mut components = std::path::Path::new(name).components();
+    matches!(
+        components.next(),
+        Some(std::path::Component::Normal(_))
+    ) && components.next().is_none()
+}
+
 
 
 pub struct EditorApp {
@@ -213,6 +223,45 @@ pub struct ExplorerState {
     pub loaded_for: Option<std::path::PathBuf>,
     /// Carpetas plegadas en el árbol (UI-6).
     pub collapsed_dirs: std::collections::HashSet<std::path::PathBuf>,
+    /// v0.2.41: diálogo inline de creación activo (`None` = cerrado).
+    pub creating_item: Option<ExplorerNewItemKind>,
+    pub new_item_name: String,
+    /// Carpeta destino del nuevo ítem; `None` usa `doc.browse_dir`.
+    pub new_item_target_dir: Option<std::path::PathBuf>,
+    /// v0.2.41: archivo pendiente de confirmación de borrado.
+    pub item_to_delete: Option<std::path::PathBuf>,
+    /// Pide foco en el input de creación al abrir el diálogo inline.
+    pub new_item_focus: bool,
+}
+
+/// v0.2.41: tipo de ítem que crea el diálogo inline del explorador.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExplorerNewItemKind {
+    File,
+    Folder,
+}
+
+impl ExplorerState {
+    /// v0.2.41: abre el diálogo de creación inline para `kind`.
+    pub fn begin_new_item(
+        &mut self,
+        kind: ExplorerNewItemKind,
+        target_dir: Option<std::path::PathBuf>,
+    ) {
+        self.creating_item = Some(kind);
+        self.new_item_name.clear();
+        self.new_item_target_dir = target_dir;
+        self.item_to_delete = None;
+        self.new_item_focus = true;
+    }
+
+    /// v0.2.41: cierra el diálogo de creación sin tocar el disco.
+    pub fn cancel_new_item(&mut self) {
+        self.creating_item = None;
+        self.new_item_name.clear();
+        self.new_item_target_dir = None;
+        self.new_item_focus = false;
+    }
 }
 
 /// UI-6 (v0.2.38): nodo del árbol de archivos del explorador.
@@ -855,6 +904,93 @@ impl EditorApp {
         }
         self.explorer.files = files;
         self.explorer.loaded_for = Some(root);
+    }
+
+    /// v0.2.41: crea el ítem pendiente del diálogo inline del explorador.
+    /// El nombre debe ser un único componente de ruta, así nunca se escribe
+    /// fuera de `target_dir`. Un archivo creado se abre de inmediato.
+    pub fn create_explorer_item(&mut self) -> Result<std::path::PathBuf, String> {
+        let Some(kind) = self.explorer.creating_item else {
+            return Err("No item is being created".to_string());
+        };
+
+        let name = self.explorer.new_item_name.trim().to_string();
+        if !is_valid_explorer_item_name(&name) {
+            let msg = "Invalid name: use a single file or folder name".to_string();
+            self.doc.status = msg.clone();
+            return Err(msg);
+        }
+
+        let target_dir = self
+            .explorer
+            .new_item_target_dir
+            .clone()
+            .unwrap_or_else(|| self.doc.browse_dir.clone());
+        let path = target_dir.join(&name);
+        if path.exists() {
+            let msg = format!("Already exists: {}", path.display());
+            self.doc.status = msg.clone();
+            return Err(msg);
+        }
+
+        let created = match kind {
+            ExplorerNewItemKind::File => std::fs::File::create(&path).map(|_| ()),
+            ExplorerNewItemKind::Folder => std::fs::create_dir(&path),
+        };
+        if let Err(e) = created {
+            let msg = format!("Could not create {}: {}", name, e);
+            self.doc.status = msg.clone();
+            return Err(msg);
+        }
+
+        self.explorer.cancel_new_item();
+        self.explorer.loaded_for = None;
+        self.refresh_explorer();
+
+        if kind == ExplorerNewItemKind::File {
+            self.open_path(path.clone());
+        }
+        self.doc.status = format!("Created {}", name);
+        Ok(path)
+    }
+
+    /// v0.2.41: elimina un archivo del disco y cierra su pestaña si estaba
+    /// abierto. Las carpetas se rechazan: el explorador solo ofrece el botón
+    /// de borrado en filas de archivo.
+    pub fn delete_explorer_file(&mut self, path: &std::path::Path) -> Result<(), String> {
+        if path.is_dir() {
+            let msg = format!("Not a file: {}", path.display());
+            self.doc.status = msg.clone();
+            return Err(msg);
+        }
+
+        if let Err(e) = std::fs::remove_file(path) {
+            let msg = format!("Could not delete {}: {}", path.display(), e);
+            self.doc.status = msg.clone();
+            return Err(msg);
+        }
+
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("file")
+            .to_string();
+
+        self.sync_active_to_tab();
+        if let Some(idx) = self
+            .doc
+            .tabs
+            .iter()
+            .position(|t| t.current_file.as_deref() == Some(path))
+        {
+            self.close_tab(idx);
+        }
+
+        self.explorer.item_to_delete = None;
+        self.explorer.loaded_for = None;
+        self.refresh_explorer();
+        self.doc.status = format!("Deleted {}", name);
+        Ok(())
     }
 
     /// F8 (Roadmap v0.2.35): lee la rama del repo una sola vez (desde
@@ -3347,7 +3483,166 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    // F7 (Roadmap v0.2.34): selector de símbolos.
+    // v0.2.41: operaciones de archivo desde el explorador.
+
+    fn explorer_temp_root(tag: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "karkinos_explorer_{}_{}_{}",
+            tag,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&root).expect("crear raíz temporal");
+        root
+    }
+
+    #[test]
+    fn explorer_crear_archivo_lo_escribe_en_disco_y_lo_abre() {
+        let root = explorer_temp_root("create_file");
+        let mut app = EditorApp::default();
+        app.doc.browse_dir = root.clone();
+        app.explorer.open = true;
+
+        app.explorer.begin_new_item(ExplorerNewItemKind::File, None);
+        app.explorer.new_item_name = "nuevo.rs".to_string();
+
+        let path = app.create_explorer_item().expect("crear archivo");
+
+        assert_eq!(path, root.join("nuevo.rs"));
+        assert!(path.is_file(), "el archivo existe en disco");
+        assert_eq!(
+            app.doc.current_file,
+            Some(path.clone()),
+            "el archivo se abre de inmediato"
+        );
+        assert!(
+            app.explorer.files.contains(&path),
+            "el explorador se refresca con el archivo nuevo"
+        );
+        assert_eq!(app.explorer.creating_item, None);
+        assert!(app.explorer.new_item_name.is_empty());
+        assert_eq!(app.doc.status, "Created nuevo.rs");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn explorer_crear_carpeta_en_disco_y_rechaza_nombres_invalidos() {
+        let root = explorer_temp_root("create_folder");
+        let mut app = EditorApp::default();
+        app.doc.browse_dir = root.clone();
+
+        app.explorer
+            .begin_new_item(ExplorerNewItemKind::Folder, Some(root.clone()));
+        app.explorer.new_item_name = "nueva_carpeta".to_string();
+
+        let path = app.create_explorer_item().expect("crear carpeta");
+
+        assert_eq!(path, root.join("nueva_carpeta"));
+        assert!(path.is_dir());
+        assert_eq!(
+            app.doc.current_file, None,
+            "una carpeta no se abre en el editor"
+        );
+        assert_eq!(app.explorer.creating_item, None);
+
+        app.explorer.begin_new_item(ExplorerNewItemKind::File, None);
+        app.explorer.new_item_name = "   ".to_string();
+        assert!(app.create_explorer_item().is_err(), "nombre vacío");
+        assert!(
+            app.explorer.creating_item.is_some(),
+            "el diálogo sigue abierto para corregir"
+        );
+
+        app.explorer.new_item_name = "../escapa".to_string();
+        assert!(app.create_explorer_item().is_err(), "no sale de la raíz");
+        assert!(!root.parent().unwrap().join("escapa").exists());
+
+        app.explorer.new_item_name = "nuevo.rs".to_string();
+        std::fs::write(root.join("nuevo.rs"), "ya existe").expect("archivo existente");
+        assert!(
+            app.create_explorer_item().is_err(),
+            "no pisa archivos existentes"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn explorer_borrar_archivo_cierra_su_pestana_y_refresca() {
+        let root = explorer_temp_root("delete_file");
+        let a = root.join("a.rs");
+        let b = root.join("b.rs");
+        std::fs::write(&a, "fn a() {}").expect("a");
+        std::fs::write(&b, "fn b() {}").expect("b");
+
+        let mut app = EditorApp::default();
+        app.doc.browse_dir = root.clone();
+        app.refresh_explorer();
+        app.open_path(a.clone());
+        app.open_path(b.clone());
+        assert_eq!(app.doc.current_file, Some(b.clone()));
+        assert_eq!(app.doc.tabs.len(), 2);
+
+        app.delete_explorer_file(&a).expect("borrar a.rs");
+
+        assert!(!a.exists(), "a.rs desaparece del disco");
+        assert!(b.exists(), "b.rs queda intacto");
+        assert_eq!(
+            app.doc.current_file,
+            Some(b.clone()),
+            "la pestaña activa no cambia"
+        );
+        assert!(app
+            .doc
+            .tabs
+            .iter()
+            .all(|t| t.current_file.as_deref() != Some(a.as_path())));
+        assert!(!app.explorer.files.contains(&a));
+        assert_eq!(app.doc.status, "Deleted a.rs");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn explorer_borrar_archivo_activo_resetea_la_pestana() {
+        let root = explorer_temp_root("delete_active");
+        let a = root.join("unico.rs");
+        std::fs::write(&a, "fn unico() {}").expect("archivo");
+
+        let mut app = EditorApp::default();
+        app.doc.browse_dir = root.clone();
+        app.open_path(a.clone());
+        assert_eq!(app.doc.tabs.len(), 1);
+
+        app.delete_explorer_file(&a).expect("borrar archivo activo");
+
+        assert!(!a.exists());
+        assert_eq!(app.doc.current_file, None);
+        assert_eq!(app.doc.tabs.len(), 1, "la única pestaña se resetea en blanco");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn explorer_borrar_archivo_inexistente_y_carpeta_devuelven_error() {
+        let root = explorer_temp_root("delete_missing");
+        let missing = root.join("no_existe.rs");
+        let mut app = EditorApp::default();
+        app.doc.browse_dir = root.clone();
+
+        assert!(app.delete_explorer_file(&missing).is_err());
+        assert!(
+            app.delete_explorer_file(&root).is_err(),
+            "rechaza carpetas, solo borra archivos"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
 
     fn symbol(name: &str, kind: karkinos_core::syntax_ast::SymbolKind, line: usize) -> karkinos_core::syntax_ast::DocumentSymbol {
         karkinos_core::syntax_ast::DocumentSymbol {

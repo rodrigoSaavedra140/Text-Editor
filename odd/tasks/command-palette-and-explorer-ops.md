@@ -12,7 +12,54 @@
 
 ---
 
-## Tarea A: Command Palette (`Ctrl+Shift+P` / `F1`) (v0.2.40)
+## Tarea B: Operaciones de Archivos en Explorer (`+ File`, `+ Folder`, `Delete`) (v0.2.41)
+
+### 1. Modelado de Estado (`karkinos/src/app.rs`)
+Extender `ExplorerState` con los campos necesarios para la creación de archivos y carpetas:
+```rust
+#[derive(Debug, Default)]
+pub struct ExplorerState {
+    pub open: bool,
+    pub files: Vec<std::path::PathBuf>,
+    pub loaded_for: Option<std::path::PathBuf>,
+    pub collapsed_dirs: std::collections::HashSet<std::path::PathBuf>,
+    /// Diálogo de creación activo: None, Some(ItemKind::File), Some(ItemKind::Folder)
+    pub creating_item: Option<ExplorerNewItemKind>,
+    pub new_item_name: String,
+    pub new_item_target_dir: Option<std::path::PathBuf>,
+    pub item_to_delete: Option<std::path::PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExplorerNewItemKind {
+    File,
+    Folder,
+}
+```
+
+Métodos en `EditorApp`:
+- `create_explorer_item(&mut self) -> Result<std::path::PathBuf, String>`:
+  - Crea el archivo o directorio en disco dentro de `target_dir` (o `browse_dir` por defecto).
+  - Si es archivo, lo abre de inmediato en el editor (`self.open_path(path)`).
+  - Refresca el explorador con `self.refresh_explorer()`.
+  - Notifica en `self.doc.status`.
+- `delete_explorer_file(&mut self, path: &std::path::Path) -> Result<(), String>`:
+  - Elimina el archivo de disco (`std::fs::remove_file`).
+  - Si estaba abierto en alguna pestaña, la cierra.
+  - Refresca el explorador.
+
+### 2. Renderizado en UI (`karkinos/src/ui.rs`)
+En `render_explorer_tab`:
+- En la barra de herramientas del encabezado del Explorer:
+  - Botón `+📄` con hover `New File`.
+  - Botón `+📁` con hover `New Folder`.
+- Si `creating_item.is_some()`:
+  - Renderizar una fila destacada de entrada con fondo `elevated_bg`, borde sutil y foco automático:
+    `[ 📄/📁 ] [ TextEdit input ] [ ✓ Ok ] [ ✕ Cancel ]`
+  - Presionar `Enter` ejecuta la creación; `Escape` cancela.
+- En cada fila de archivo del árbol:
+  - Si el mouse está sobre la fila (hovered), mostrar a la derecha un botón sutil `✕` o `🗑` para eliminar el archivo con confirmación o click directo.
+
 
 ### 1. Modelado de Comandos (`karkinos/src/app.rs`)
 Definir la estructura de una acción registrable en el Command Palette:
@@ -72,3 +119,11 @@ En `show_command_palette`:
   - Icono o categoría tenue (`theme.text_muted`).
   - Título en `theme.text`.
   - Atajo a la derecha en tipografía monoespaciada en chip sutil (`theme.badge_bg`).
+
+---
+
+## Log
+
+- L1 (2026-10-31): "Lee odd/tasks/command-palette-and-explorer-ops.md e implementa la Tarea B: Operaciones de Archivos en Explorer (+ File, + Folder, Delete) (v0.2.41). Modifica karkinos/src/app.rs y karkinos/src/ui.rs agregando los botones de nuevo archivo y carpeta, el input inline con Enter/Escape, la creacion en disco, apertura inmediata si es archivo, y boton de borrado con delete_explorer_file. Agrega tests unitarios para create_explorer_item y delete_explorer_file, verifica con cargo test --workspace, e incrementa la version a 0.2.41 en Cargo.toml."
+- 2026-10-31 — Tarea B implementada: `ExplorerState` extendido (`creating_item`, `new_item_name`, `new_item_target_dir`, `item_to_delete`, `new_item_focus`), `create_explorer_item` (nombre de un solo componente, no sobrescribe existentes, abre el archivo creado) y `delete_explorer_file` (borra en disco, cierra su pestaña y refresca). UI: botones `+📄`/`+📁`, fila inline con Enter/✓ y Escape/✕, confirmación de borrado y `🗑` por fila. 5 tests nuevos. `cargo check --workspace` sin warnings; `cargo test --workspace`: 153 + 86 verdes. Versión 0.2.41 en ambos manifests y `Cargo.lock`.
+- Nota: `refresh_explorer` corta temprano si `loaded_for` no cambió; creación y borrado lo invalidan antes de refrescar. Las carpetas vacías no aparecen en el árbol porque se construye desde la lista de archivos.

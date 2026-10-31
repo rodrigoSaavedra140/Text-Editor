@@ -737,8 +737,11 @@ impl EditorApp {
 
         let mut open_file = None;
         let mut toggle_dir = None;
+        let mut delete_file = None;
         let mut refresh = false;
         let mut collapse_all = false;
+        let mut start_new_file = false;
+        let mut start_new_folder = false;
 
         ui.horizontal(|ui| {
             ui.label(
@@ -757,6 +760,13 @@ impl EditorApp {
                 if ui.button("⟳").on_hover_text("Refresh").clicked() {
                     refresh = true;
                 }
+                // v0.2.41: creación inline de archivos y carpetas.
+                if ui.button("+📄").on_hover_text("New File").clicked() {
+                    start_new_file = true;
+                }
+                if ui.button("+📁").on_hover_text("New Folder").clicked() {
+                    start_new_folder = true;
+                }
             });
         });
         ui.add_space(2.0);
@@ -767,6 +777,109 @@ impl EditorApp {
                 .strong(),
         );
         ui.separator();
+
+        if start_new_file {
+            self.explorer.begin_new_item(
+                crate::app::ExplorerNewItemKind::File,
+                Some(self.doc.browse_dir.clone()),
+            );
+        }
+        if start_new_folder {
+            self.explorer.begin_new_item(
+                crate::app::ExplorerNewItemKind::Folder,
+                Some(self.doc.browse_dir.clone()),
+            );
+        }
+
+        if let Some(kind) = self.explorer.creating_item {
+            let mut submit = false;
+            let mut cancel = false;
+            let (icon, hint) = match kind {
+                crate::app::ExplorerNewItemKind::File => ("📄", "new_file.rs"),
+                crate::app::ExplorerNewItemKind::Folder => ("📁", "new_folder"),
+            };
+
+            egui::Frame::none()
+                .fill(theme.elevated_bg)
+                .stroke(egui::Stroke::new(1.0_f32, theme.border_subtle))
+                .rounding(egui::Rounding::same(4.0))
+                .inner_margin(egui::Margin::symmetric(6.0, 4.0))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(icon).size(12.0));
+                        let input = ui.add_sized(
+                            [(ui.available_width() - 64.0).max(60.0), 22.0],
+                            egui::TextEdit::singleline(&mut self.explorer.new_item_name)
+                                .id_source("explorer_new_item_input")
+                                .hint_text(hint),
+                        );
+                        if self.explorer.new_item_focus {
+                            input.request_focus();
+                            self.explorer.new_item_focus = false;
+                        }
+                        if input.lost_focus()
+                            && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                        {
+                            submit = true;
+                        }
+                        if ui.button("✓").on_hover_text("Create").clicked() {
+                            submit = true;
+                        }
+                        if ui.button("✕").on_hover_text("Cancel").clicked() {
+                            cancel = true;
+                        }
+                    });
+                });
+
+            if submit {
+                // Si falla, el diálogo queda abierto para corregir el nombre.
+                let _ = self.create_explorer_item();
+            } else if cancel || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                self.explorer.cancel_new_item();
+            }
+        }
+
+        if let Some(path) = self.explorer.item_to_delete.clone() {
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("file")
+                .to_string();
+            let mut confirm = false;
+            let mut cancel = false;
+
+            egui::Frame::none()
+                .fill(theme.elevated_bg)
+                .stroke(egui::Stroke::new(1.0_f32, theme.border_subtle))
+                .rounding(egui::Rounding::same(4.0))
+                .inner_margin(egui::Margin::symmetric(6.0, 4.0))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(format!("🗑 Delete {name}?"))
+                                .color(theme.text)
+                                .size(11.5),
+                        );
+                        ui.with_layout(
+                            egui::Layout::right_to_left(egui::Align::Center),
+                            |ui| {
+                                if ui.button("✕").on_hover_text("Cancel").clicked() {
+                                    cancel = true;
+                                }
+                                if ui.button("Delete").clicked() {
+                                    confirm = true;
+                                }
+                            },
+                        );
+                    });
+                });
+
+            if confirm {
+                let _ = self.delete_explorer_file(&path);
+            } else if cancel || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                self.explorer.item_to_delete = None;
+            }
+        }
 
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
@@ -780,6 +893,7 @@ impl EditorApp {
                     theme,
                     &mut toggle_dir,
                     &mut open_file,
+                    &mut delete_file,
                 );
             });
 
@@ -798,6 +912,10 @@ impl EditorApp {
                 self.explorer.collapsed_dirs.insert(dir);
             }
         }
+        if let Some(path) = delete_file {
+            self.explorer.cancel_new_item();
+            self.explorer.item_to_delete = Some(path);
+        }
         if let Some(path) = open_file {
             self.open_path(path);
         }
@@ -815,6 +933,7 @@ impl EditorApp {
         theme: &crate::theme::Theme,
         toggle_dir: &mut Option<std::path::PathBuf>,
         open_file: &mut Option<std::path::PathBuf>,
+        delete_file: &mut Option<std::path::PathBuf>,
     ) {
         for node in nodes {
             match node {
@@ -865,6 +984,7 @@ impl EditorApp {
                             theme,
                             toggle_dir,
                             open_file,
+                            delete_file,
                         );
                     }
                 }
@@ -897,7 +1017,17 @@ impl EditorApp {
                         );
                     }
 
-                    if response.clicked() {
+                    // v0.2.41: botón de borrado sutil al hacer hover. El
+                    // rect del botón se excluye del click que abre el archivo.
+                    let trash_rect = egui::Rect::from_min_size(
+                        egui::pos2(rect.right() - 22.0, rect.top() + 3.0),
+                        egui::vec2(18.0, 16.0),
+                    );
+                    let over_trash = ui
+                        .input(|i| i.pointer.interact_pos())
+                        .map_or(false, |p| trash_rect.contains(p));
+
+                    if response.clicked() && !over_trash {
                         *open_file = Some(path.clone());
                     }
 
@@ -919,6 +1049,27 @@ impl EditorApp {
                     );
 
                     response.on_hover_cursor(egui::CursorIcon::PointingHand);
+
+                    if hovered {
+                        ui.painter().text(
+                            trash_rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            "🗑",
+                            egui::FontId::proportional(10.0),
+                            theme.text_muted,
+                        );
+                        let trash = ui.interact(
+                            trash_rect,
+                            ui.id().with(("explorer_delete", path)),
+                            egui::Sense::click(),
+                        );
+                        if trash.clicked() {
+                            *delete_file = Some(path.clone());
+                        }
+                        trash
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .on_hover_text("Delete file");
+                    }
                 }
             }
         }
