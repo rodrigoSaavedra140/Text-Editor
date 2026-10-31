@@ -181,6 +181,9 @@ pub struct EditorState {
     // pegan arriba del editor al scrollear adentro. Los llena el mismo
     // parseo del worker AST que los spans.
     pub sticky_scopes: Vec<karkinos_core::syntax_ast::ScopeHeader>,
+    // F7 (Roadmap v0.2.34): símbolos del documento (fn, struct, enum, trait,
+    // método, const) extraídos por el worker AST para el selector.
+    pub symbols: Vec<karkinos_core::syntax_ast::DocumentSymbol>,
     // S3 & S4 (Etapa 4): Diagnósticos en vivo y autocompletado LSP
     pub diagnostics: Vec<karkinos_core::lsp::LspDiagnostic>,
     pub hover_text: Option<String>,
@@ -236,6 +239,7 @@ impl Default for EditorState {
             collapsed_folds: Vec::new(),
             last_collapsed_folds: Vec::new(),
             sticky_scopes: Vec::new(),
+            symbols: Vec::new(),
             diagnostics: Vec::new(),
             hover_text: None,
             completions: Vec::new(),

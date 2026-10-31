@@ -37,8 +37,8 @@ pub use open_vsx::{OpenVsxClient, OpenVsxExtension, OpenVsxSearchResult};
 pub use platform::{configure_background_command, path_to_uri, uri_to_path};
 pub use plugin::{Plugin, PluginCommand, PluginContext, PluginManager};
 pub use syntax_ast::{
-    AstEngine, AstHighlightSpan, AstLanguage, AstNodeInfo, FoldingKind, FoldingRange,
-    ScopeHeader, SemanticTokenType,
+    AstEngine, AstHighlightSpan, AstLanguage, AstNodeInfo, DocumentSymbol, FoldingKind,
+    FoldingRange, ScopeHeader, SemanticTokenType, SymbolKind,
 };
 pub use terminal::{PtyTerminal, TerminalCell, TerminalColor, TerminalSnapshot};
 pub use workspace_search::{FileMatches, SearchEvent, SearchMatch, SearchQuery, WorkspaceSearch};

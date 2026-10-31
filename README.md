@@ -55,6 +55,7 @@ The resulting executable will be located at `target/release/karkinos`.
 - `Ctrl+Tab` / `Ctrl+Shift+Tab` — Cycle through open tabs
 - `Ctrl+P` — Quick Open project file finder
 - `Ctrl+Shift+F` — Search across every file in the workspace (case sensitive, whole word, regex)
+- `Ctrl+Shift+O` — Jump to a symbol of the current document (functions, structs, enums, traits, methods, constants)
 - `Ctrl+S` — Save active document
 - `Ctrl+Shift+S` — Save As...
 - `Ctrl+Q` — Quit (with multi-tab unsaved changes protection)

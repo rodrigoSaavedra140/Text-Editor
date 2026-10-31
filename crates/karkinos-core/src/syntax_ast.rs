@@ -81,6 +81,41 @@ pub struct ScopeHeader {
     pub depth: usize,
 }
 
+/// F7 (Roadmap v0.2.34): categoría de un símbolo del documento.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SymbolKind {
+    Function,
+    Struct,
+    Enum,
+    Trait,
+    Method,
+    Constant,
+}
+
+impl SymbolKind {
+    /// Insignia corta para el selector de símbolos.
+    pub fn label(&self) -> &'static str {
+        match self {
+            SymbolKind::Function => "ƒ",
+            SymbolKind::Struct => "S",
+            SymbolKind::Enum => "E",
+            SymbolKind::Trait => "T",
+            SymbolKind::Method => "M",
+            SymbolKind::Constant => "C",
+        }
+    }
+}
+
+/// F7: símbolo navegable del documento activo (sin LSP: sale del AST).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocumentSymbol {
+    pub name: String,
+    pub kind: SymbolKind,
+    /// 0-based.
+    pub line: usize,
+    pub character: usize,
+}
+
 /// Headless AST parsing engine backed by `tree_sitter::Parser`.
 pub struct AstEngine {
     parser: tree_sitter::Parser,
@@ -199,6 +234,59 @@ impl AstEngine {
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             self.collect_sticky_scopes(child, lines, next_depth, out);
+        }
+    }
+
+    /// F7 (Roadmap v0.2.34): símbolos navegables del documento, en orden de
+    /// aparición. Las funciones dentro de un `impl`/`trait` se marcan como
+    /// método. Sale 100% del AST, sin LSP.
+    pub fn extract_document_symbols(&self, source: &str) -> Vec<DocumentSymbol> {
+        let Some(tree) = &self.tree else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        self.collect_symbols(tree.root_node(), source, false, &mut out);
+        out
+    }
+
+    fn collect_symbols(
+        &self,
+        node: tree_sitter::Node<'_>,
+        source: &str,
+        in_type_body: bool,
+        out: &mut Vec<DocumentSymbol>,
+    ) {
+        let kind = match node.kind() {
+            "function_item" | "function_definition" => Some(if in_type_body {
+                SymbolKind::Method
+            } else {
+                SymbolKind::Function
+            }),
+            "struct_item" | "class_definition" => Some(SymbolKind::Struct),
+            "enum_item" => Some(SymbolKind::Enum),
+            "trait_item" => Some(SymbolKind::Trait),
+            "const_item" | "static_item" => Some(SymbolKind::Constant),
+            _ => None,
+        };
+
+        if let Some(kind) = kind {
+            if let Some(name_node) = node.child_by_field_name("name") {
+                if let Some(name) = source.get(name_node.byte_range()) {
+                    let pos = name_node.start_position();
+                    out.push(DocumentSymbol {
+                        name: name.to_string(),
+                        kind,
+                        line: pos.row,
+                        character: pos.column,
+                    });
+                }
+            }
+        }
+
+        let children_in_type = in_type_body || matches!(node.kind(), "impl_item" | "trait_item");
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            self.collect_symbols(child, source, children_in_type, out);
         }
     }
 
@@ -445,5 +533,39 @@ struct Point {
     fn sticky_scopes_are_empty_without_a_tree() {
         let engine = AstEngine::new(AstLanguage::Rust).expect("engine rust");
         assert!(engine.sticky_scopes("fn main() {}\n").is_empty());
+    }
+
+    // F7 (Roadmap v0.2.34): símbolos del documento.
+
+    #[test]
+    fn document_symbols_cover_functions_methods_and_types() {
+        let source = concat!(
+            "const MAX: usize = 3;\n",
+            "struct Point { x: i32 }\n",
+            "enum Color { Red }\n",
+            "trait Draw {}\n",
+            "impl Point {\n",
+            "    fn draw(&self) {}\n",
+            "}\n",
+            "fn main() {}\n",
+        );
+        let mut engine = AstEngine::new(AstLanguage::Rust).expect("engine rust");
+        engine.update_from_text(source);
+
+        let symbols = engine.extract_document_symbols(source);
+        let find = |name: &str| symbols.iter().find(|s| s.name == name).cloned();
+        assert_eq!(find("MAX").map(|s| s.kind), Some(SymbolKind::Constant));
+        assert_eq!(find("Point").map(|s| s.kind), Some(SymbolKind::Struct));
+        assert_eq!(find("Color").map(|s| s.kind), Some(SymbolKind::Enum));
+        assert_eq!(find("Draw").map(|s| s.kind), Some(SymbolKind::Trait));
+        assert_eq!(find("draw").map(|s| s.kind), Some(SymbolKind::Method));
+        assert_eq!(find("main").map(|s| s.kind), Some(SymbolKind::Function));
+        assert_eq!(find("main").map(|s| s.line), Some(7));
+    }
+
+    #[test]
+    fn document_symbols_are_empty_without_a_tree() {
+        let engine = AstEngine::new(AstLanguage::Rust).expect("engine rust");
+        assert!(engine.extract_document_symbols("fn main() {}\n").is_empty());
     }
 }

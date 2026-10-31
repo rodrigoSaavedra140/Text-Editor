@@ -615,6 +615,12 @@ impl EditorApp {
                     {
                         self.open_workspace_search();
                     }
+                    if button(ui, "ƒ")
+                        .on_hover_text("Document Symbols (Ctrl+Shift+O)")
+                        .clicked()
+                    {
+                        self.open_symbol_picker();
+                    }
                     if button(ui, "🧩").on_hover_text("Extensions").clicked() {
                         self.extensions_modal_open = true;
                         self.extensions_tab = 0;
@@ -699,6 +705,111 @@ impl EditorApp {
         }
         if let Some(path) = open_file {
             self.open_path(path);
+        }
+    }
+
+    /// F7 (Roadmap v0.2.34): modal del selector de símbolos (Ctrl+Shift+O).
+    /// Lista filtrable de lo que extrajo el AST, con insignia por tipo.
+    fn show_symbol_picker(&mut self, ctx: &egui::Context, theme: &crate::theme::Theme) {
+        if !self.symbol_picker.open {
+            return;
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.symbol_picker.open = false;
+            return;
+        }
+
+        let filtered: Vec<karkinos_core::syntax_ast::DocumentSymbol> =
+            self.filtered_symbols().into_iter().cloned().collect();
+        let count = filtered.len();
+        if self.symbol_picker.selected >= count {
+            self.symbol_picker.selected = count.saturating_sub(1);
+        }
+
+        let mut jump: Option<karkinos_core::syntax_ast::DocumentSymbol> = None;
+        let mut close = false;
+
+        egui::Window::new("symbol_picker_modal")
+            .title_bar(false)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 70.0))
+            .min_width(520.0)
+            .max_width(520.0)
+            .frame(crate::theme::modal_card_frame(theme))
+            .show(ctx, |ui| {
+                ui.label(
+                    egui::RichText::new("ƒ Document Symbols (Ctrl+Shift+O)")
+                        .color(theme.text_muted)
+                        .size(12.0),
+                );
+                ui.add_space(4.0);
+
+                let input = ui.add_sized(
+                    [ui.available_width(), 30.0],
+                    egui::TextEdit::singleline(&mut self.symbol_picker.query)
+                        .id_source("symbol_picker_input")
+                        .hint_text("Filter symbols..."),
+                );
+                input.request_focus();
+                if input.changed() {
+                    self.symbol_picker.selected = 0;
+                }
+
+                if ctx.input(|i| i.key_pressed(egui::Key::ArrowUp)) && self.symbol_picker.selected > 0
+                {
+                    self.symbol_picker.selected -= 1;
+                }
+                if ctx.input(|i| i.key_pressed(egui::Key::ArrowDown))
+                    && self.symbol_picker.selected + 1 < count
+                {
+                    self.symbol_picker.selected += 1;
+                }
+                if ctx.input(|i| i.key_pressed(egui::Key::Enter)) && count > 0 {
+                    jump = Some(filtered[self.symbol_picker.selected].clone());
+                }
+
+                ui.separator();
+                egui::ScrollArea::vertical().max_height(280.0).show(ui, |ui| {
+                    for (idx, symbol) in filtered.iter().enumerate() {
+                        let selected = idx == self.symbol_picker.selected;
+                        let text = format!(
+                            "{} {}  ·  line {}",
+                            symbol.kind.label(),
+                            symbol.name,
+                            symbol.line + 1
+                        );
+                        let row = ui.selectable_label(
+                            selected,
+                            egui::RichText::new(text).color(if selected {
+                                theme.text
+                            } else {
+                                theme.text_muted
+                            }),
+                        );
+                        if row.clicked() {
+                            jump = Some(symbol.clone());
+                        }
+                    }
+                });
+
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui.button("Close").clicked() {
+                        close = true;
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        Self::kbd_hint(ui, "↵ to jump", theme);
+                        Self::kbd_hint(ui, "ESC to close", theme);
+                    });
+                });
+            });
+
+        if close {
+            self.symbol_picker.open = false;
+        }
+        if let Some(symbol) = jump {
+            self.jump_to_symbol(&symbol);
         }
     }
 
@@ -2414,6 +2525,10 @@ impl eframe::App for EditorApp {
         if ctx.input(|i| i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(egui::Key::F)) {
             self.open_workspace_search();
         }
+        // F7 (Roadmap v0.2.34): Ctrl+Shift+O abre el selector de símbolos.
+        if ctx.input(|i| i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(egui::Key::O)) {
+            self.open_symbol_picker();
+        }
         if want_goto_def {
             self.goto_definition();
         }
@@ -3063,6 +3178,8 @@ impl eframe::App for EditorApp {
         self.show_code_actions_modal(ctx);
         // S4 (Rust IDE): Symbol Rename (F2)
         self.show_rename_dialog(ctx);
+        // F7 (Roadmap v0.2.34): selector de símbolos del documento.
+        self.show_symbol_picker(ctx, &theme);
     }
 }
 

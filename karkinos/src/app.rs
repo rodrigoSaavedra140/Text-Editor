@@ -145,6 +145,8 @@ pub struct EditorApp {
     pub workspace_search_engine: karkinos_core::WorkspaceSearch,
     // Barra lateral (v0.2.33): explorador de archivos del proyecto.
     pub explorer: ExplorerState,
+    // F7 (Roadmap v0.2.34): selector de símbolos (Ctrl+Shift+O).
+    pub symbol_picker: SymbolPickerState,
 }
 
 /// F5 (Roadmap v0.2.31): eje por el que se parte el área central.
@@ -195,6 +197,14 @@ pub struct ExplorerState {
     pub loaded_for: Option<std::path::PathBuf>,
 }
 
+/// F7 (Roadmap v0.2.34): estado del selector de símbolos del documento.
+#[derive(Debug, Default)]
+pub struct SymbolPickerState {
+    pub open: bool,
+    pub query: String,
+    pub selected: usize,
+}
+
 impl Default for EditorApp {
     fn default() -> Self {
         EditorApp {
@@ -240,6 +250,7 @@ impl Default for EditorApp {
             workspace_search: WorkspaceSearchState::default(),
             workspace_search_engine: karkinos_core::WorkspaceSearch::spawn(),
             explorer: ExplorerState::default(),
+            symbol_picker: SymbolPickerState::default(),
         }
     }
 }
@@ -475,6 +486,8 @@ impl EditorApp {
             // el worker no se despierta y el plegado se apaga.
             self.editor_state.ast_spans.clear();
             self.editor_state.folding_ranges.clear();
+            self.editor_state.sticky_scopes.clear();
+            self.editor_state.symbols.clear();
             self.ast_applied_rev = self.ast_request_rev;
             // S1 (Roadmap v0.2.9): la generación del AST cambió → la
             // cache de galleys se invalida al sincronizarse (sync_ast).
@@ -498,6 +511,8 @@ impl EditorApp {
         self.editor_state.folding_ranges = result.folding;
         // F2 (Roadmap v0.2.28): encabezados pegajosos del mismo parseo.
         self.editor_state.sticky_scopes = result.scopes;
+        // F7 (Roadmap v0.2.34): símbolos del documento para Ctrl+Shift+O.
+        self.editor_state.symbols = result.symbols;
         // S1 (Roadmap v0.2.9): el AST cambió → nueva generación, la
         // cache de galleys se vacía en el próximo sync_ast del render.
         self.editor_state.ast_rev = self.editor_state.ast_rev.wrapping_add(1);
@@ -548,6 +563,34 @@ impl EditorApp {
         files.sort();
         self.explorer.files = files;
         self.explorer.loaded_for = Some(root);
+    }
+
+    /// F7 (Roadmap v0.2.34): abre el selector de símbolos del documento.
+    pub fn open_symbol_picker(&mut self) {
+        self.symbol_picker.open = true;
+        self.symbol_picker.query.clear();
+        self.symbol_picker.selected = 0;
+    }
+
+    /// F7: símbolos filtrados por el texto del selector (sin distinguir
+    /// mayúsculas). Sale del AST del worker, no de LSP.
+    pub fn filtered_symbols(&self) -> Vec<&karkinos_core::syntax_ast::DocumentSymbol> {
+        let needle = self.symbol_picker.query.trim().to_lowercase();
+        self.editor_state
+            .symbols
+            .iter()
+            .filter(|symbol| needle.is_empty() || symbol.name.to_lowercase().contains(&needle))
+            .collect()
+    }
+
+    /// F7: lleva el cursor al símbolo y cierra el selector.
+    pub fn jump_to_symbol(&mut self, symbol: &karkinos_core::syntax_ast::DocumentSymbol) {
+        let line = symbol.line.min(self.doc.lines.len().saturating_sub(1));
+        self.editor_state.cursor_line = line;
+        self.editor_state.cursor_col = symbol.character;
+        self.editor_state.sel_anchor = Some((line, symbol.character));
+        self.editor_state.request_autoscroll();
+        self.symbol_picker.open = false;
     }
 
     /// F6 (Roadmap v0.2.32): abre el panel de búsqueda global y pide foco.
@@ -2738,5 +2781,53 @@ mod tests {
         assert!(!app.explorer.open, "el segundo toggle lo cierra");
 
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    // F7 (Roadmap v0.2.34): selector de símbolos.
+
+    fn symbol(name: &str, kind: karkinos_core::syntax_ast::SymbolKind, line: usize) -> karkinos_core::syntax_ast::DocumentSymbol {
+        karkinos_core::syntax_ast::DocumentSymbol {
+            name: name.to_string(),
+            kind,
+            line,
+            character: 3,
+        }
+    }
+
+    #[test]
+    fn symbol_picker_filtra_por_nombre_sin_mayusculas() {
+        let mut app = EditorApp::default();
+        app.editor_state.symbols = vec![
+            symbol("main", karkinos_core::syntax_ast::SymbolKind::Function, 0),
+            symbol("process", karkinos_core::syntax_ast::SymbolKind::Method, 5),
+        ];
+        app.open_symbol_picker();
+        assert!(app.symbol_picker.open);
+        assert_eq!(app.filtered_symbols().len(), 2, "sin filtro muestra todo");
+
+        app.symbol_picker.query = "PROC".to_string();
+        let filtered = app.filtered_symbols();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].name, "process");
+    }
+
+    #[test]
+    fn jump_to_symbol_posiciona_cursor_y_cierra_selector() {
+        let path = std::env::temp_dir().join(format!(
+            "karkinos_symbol_{}.rs",
+            std::process::id()
+        ));
+        std::fs::write(&path, "fn uno() {}\nfn dos() {}\nfn tres() {}\n").expect("archivo");
+
+        let mut app = EditorApp::default();
+        app.open_path(path.clone());
+        app.open_symbol_picker();
+        app.jump_to_symbol(&symbol("dos", karkinos_core::syntax_ast::SymbolKind::Function, 1));
+
+        assert_eq!(app.editor_state.cursor_line, 1);
+        assert_eq!(app.editor_state.cursor_col, 3);
+        assert!(!app.symbol_picker.open, "el salto cierra el selector");
+
+        std::fs::remove_file(path).ok();
     }
 }
