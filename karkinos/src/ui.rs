@@ -586,6 +586,122 @@ impl EditorApp {
         }
     }
 
+    /// Barra lateral de navegación (v0.2.33): explorador, búsqueda global,
+    /// extensiones, consola Cargo y debugger. Reemplaza la ausencia de una
+    /// barra izquierda que el blueprint de F6 daba por hecha.
+    fn show_activity_bar(&mut self, ctx: &egui::Context, theme: &crate::theme::Theme) {
+        egui::SidePanel::left("activity_bar")
+            .exact_width(44.0)
+            .resizable(false)
+            .frame(
+                egui::Frame::none()
+                    .fill(theme.surface_bg)
+                    .inner_margin(egui::Margin::symmetric(4.0, 8.0)),
+            )
+            .show(ctx, |ui| {
+                ui.vertical_centered(|ui| {
+                    let button = |ui: &mut egui::Ui, icon: &str| {
+                        ui.add_sized(
+                            [36.0, 36.0],
+                            egui::Button::new(egui::RichText::new(icon).size(18.0)).frame(false),
+                        )
+                    };
+                    if button(ui, "📁").on_hover_text("Explorer").clicked() {
+                        self.toggle_explorer();
+                    }
+                    if button(ui, "🔎")
+                        .on_hover_text("Search in Workspace (Ctrl+Shift+F)")
+                        .clicked()
+                    {
+                        self.open_workspace_search();
+                    }
+                    if button(ui, "🧩").on_hover_text("Extensions").clicked() {
+                        self.extensions_modal_open = true;
+                        self.extensions_tab = 0;
+                    }
+                    if button(ui, "⚡")
+                        .on_hover_text("Cargo Console (Ctrl+`)")
+                        .clicked()
+                    {
+                        self.cargo.panel_open = !self.cargo.panel_open;
+                    }
+                    if button(ui, "🐞").on_hover_text("Debugger").clicked() {
+                        self.cargo.panel_open = true;
+                        self.cargo.active_tab = 2;
+                    }
+                });
+            });
+    }
+
+    /// Barra lateral: explorador de archivos del proyecto. Lista plana de
+    /// archivos (el recorrido ya excluye target/.git/node_modules) con clic
+    /// para abrir.
+    fn show_explorer_panel(&mut self, ctx: &egui::Context, theme: &crate::theme::Theme) {
+        if !self.explorer.open {
+            return;
+        }
+        let mut open_file = None;
+        let mut refresh = false;
+        let mut close = false;
+
+        egui::SidePanel::left("explorer_panel")
+            .resizable(true)
+            .default_width(240.0)
+            .min_width(180.0)
+            .frame(
+                egui::Frame::none()
+                    .fill(theme.panel_bg)
+                    .inner_margin(egui::Margin::same(8.0)),
+            )
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("📁 Explorer").color(theme.text).strong());
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("✕").on_hover_text("Close").clicked() {
+                            close = true;
+                        }
+                        if ui.button("⟳").on_hover_text("Refresh").clicked() {
+                            refresh = true;
+                        }
+                    });
+                });
+                ui.separator();
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        for path in &self.explorer.files {
+                            let relative = path
+                                .strip_prefix(&self.doc.browse_dir)
+                                .unwrap_or(path)
+                                .to_string_lossy()
+                                .replace('\\', "/");
+                            let row = ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(relative)
+                                        .color(theme.text_muted)
+                                        .size(11.5),
+                                )
+                                .sense(egui::Sense::click()),
+                            );
+                            if row.clicked() {
+                                open_file = Some(path.clone());
+                            }
+                        }
+                    });
+            });
+
+        if close {
+            self.explorer.open = false;
+        }
+        if refresh {
+            self.explorer.loaded_for = None;
+            self.refresh_explorer();
+        }
+        if let Some(path) = open_file {
+            self.open_path(path);
+        }
+    }
+
     /// F6 (Roadmap v0.2.32): panel lateral de búsqueda global en el workspace.
     /// Resultados en streaming por archivo, agrupados y colapsables; un clic
     /// abre el archivo y posiciona el cursor en la coincidencia.
@@ -2844,6 +2960,9 @@ impl eframe::App for EditorApp {
         self.show_find_bar(ctx);
         // S1 (Rust IDE): panel inferior de ejecución y diagnósticos de Cargo (F7 / F5 / Ctrl+`).
         self.show_cargo_panel(ctx, &theme);
+        // Barra lateral (v0.2.33): navegación y explorador antes del área central.
+        self.show_activity_bar(ctx, &theme);
+        self.show_explorer_panel(ctx, &theme);
         // F6 (Roadmap v0.2.32): panel lateral de búsqueda global.
         self.show_workspace_search(ctx, &theme);
 

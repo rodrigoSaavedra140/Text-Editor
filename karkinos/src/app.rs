@@ -143,6 +143,8 @@ pub struct EditorApp {
     // F6 (Roadmap v0.2.32): búsqueda global en el workspace.
     pub workspace_search: WorkspaceSearchState,
     pub workspace_search_engine: karkinos_core::WorkspaceSearch,
+    // Barra lateral (v0.2.33): explorador de archivos del proyecto.
+    pub explorer: ExplorerState,
 }
 
 /// F5 (Roadmap v0.2.31): eje por el que se parte el área central.
@@ -182,6 +184,15 @@ pub struct WorkspaceSearchState {
     pub focus_requested: bool,
     /// Momento del último cambio de texto, para el debounce.
     pub last_edit_at: Option<std::time::Instant>,
+}
+
+/// Barra lateral (v0.2.33): estado del explorador de archivos del proyecto.
+#[derive(Debug, Default)]
+pub struct ExplorerState {
+    pub open: bool,
+    pub files: Vec<std::path::PathBuf>,
+    /// Raíz para la que se cargó la lista; si cambia, se refresca.
+    pub loaded_for: Option<std::path::PathBuf>,
 }
 
 impl Default for EditorApp {
@@ -228,6 +239,7 @@ impl Default for EditorApp {
             split: None,
             workspace_search: WorkspaceSearchState::default(),
             workspace_search_engine: karkinos_core::WorkspaceSearch::spawn(),
+            explorer: ExplorerState::default(),
         }
     }
 }
@@ -515,6 +527,27 @@ impl EditorApp {
         if let Some(layout) = &mut self.split {
             layout.ratio = ratio.clamp(0.15, 0.85);
         }
+    }
+
+    /// Barra lateral (v0.2.33): abre/cierra el explorador y refresca su lista.
+    pub fn toggle_explorer(&mut self) {
+        self.explorer.open = !self.explorer.open;
+        if self.explorer.open {
+            self.refresh_explorer();
+        }
+    }
+
+    /// Barra lateral: recarga la lista de archivos del proyecto. Reusa el
+    /// recorrido del buscador global (mismas exclusiones y sin binarios).
+    pub fn refresh_explorer(&mut self) {
+        let root = self.doc.browse_dir.clone();
+        if self.explorer.loaded_for.as_ref() == Some(&root) && !self.explorer.files.is_empty() {
+            return;
+        }
+        let mut files = karkinos_core::workspace_search::walk_files(&root);
+        files.sort();
+        self.explorer.files = files;
+        self.explorer.loaded_for = Some(root);
     }
 
     /// F6 (Roadmap v0.2.32): abre el panel de búsqueda global y pide foco.
@@ -2644,8 +2677,7 @@ mod tests {
     }
 
     #[test]
-    fn jump_to_search_match_posiciona_cursor_y_seleccion() {
-        let path = std::env::temp_dir().join(format!(
+    fn jump_to_search_match_posiciona_cursor_y_seleccion() {        let path = std::env::temp_dir().join(format!(
             "karkinos_jump_{}.rs",
             std::process::id()
         ));
@@ -2668,5 +2700,43 @@ mod tests {
         assert_eq!(app.editor_state.sel_anchor, Some((1, 6)));
 
         std::fs::remove_file(path).ok();
+    }
+
+    // Barra lateral (v0.2.33): explorador.
+
+    #[test]
+    fn explorer_toggle_y_refresh_cargan_archivos_del_proyecto() {
+        let root = std::env::temp_dir().join(format!(
+            "karkinos_explorer_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(root.join("src")).expect("crear src");
+        std::fs::create_dir_all(root.join("target")).expect("crear target");
+        std::fs::write(root.join("src/main.rs"), "fn main() {}").expect("archivo");
+        std::fs::write(root.join("target/junk.rs"), "fn junk() {}").expect("archivo");
+
+        let mut app = EditorApp::default();
+        app.doc.browse_dir = root.clone();
+        assert!(!app.explorer.open);
+
+        app.toggle_explorer();
+        assert!(app.explorer.open, "el explorador queda abierto");
+        let names: Vec<String> = app
+            .explorer
+            .files
+            .iter()
+            .map(|p| p.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/"))
+            .collect();
+        assert!(names.contains(&"src/main.rs".to_string()), "{names:?}");
+        assert!(!names.iter().any(|n| n.starts_with("target/")), "{names:?}");
+
+        app.toggle_explorer();
+        assert!(!app.explorer.open, "el segundo toggle lo cierra");
+
+        std::fs::remove_dir_all(&root).ok();
     }
 }
