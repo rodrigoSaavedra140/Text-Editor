@@ -3,9 +3,9 @@
 //! Provides background execution for `cargo check`, `cargo clippy`, `cargo test`,
 //! `cargo build`, and `cargo run` with streaming output and line-exact error navigation.
 
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 
@@ -74,10 +74,12 @@ pub enum CargoStatus {
 /// Thread-safe coordinator that runs Cargo tasks asynchronously and streams output.
 pub struct CargoRunner {
     pub current_action: Option<CargoAction>,
+    pub current_command_line: Option<String>,
     status: Arc<RwLock<CargoStatus>>,
     diagnostics: Arc<RwLock<Vec<CargoDiagnostic>>>,
     raw_lines: Arc<RwLock<Vec<CargoOutputLine>>>,
     child_process: Arc<Mutex<Option<Child>>>,
+    child_stdin: Arc<Mutex<Option<ChildStdin>>>,
 }
 
 impl Default for CargoRunner {
@@ -91,10 +93,12 @@ impl CargoRunner {
     pub fn new() -> Self {
         Self {
             current_action: None,
+            current_command_line: None,
             status: Arc::new(RwLock::new(CargoStatus::Idle)),
             diagnostics: Arc::new(RwLock::new(Vec::new())),
             raw_lines: Arc::new(RwLock::new(Vec::new())),
             child_process: Arc::new(Mutex::new(None)),
+            child_stdin: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -134,6 +138,9 @@ impl CargoRunner {
 
     /// Terminate any active running Cargo process.
     pub fn kill(&mut self) {
+        if let Ok(mut lock) = self.child_stdin.lock() {
+            *lock = None;
+        }
         if let Ok(mut lock) = self.child_process.lock() {
             if let Some(ref mut child) = *lock {
                 let _ = child.kill();
@@ -141,6 +148,23 @@ impl CargoRunner {
             *lock = None;
         }
         *self.status.write().unwrap() = CargoStatus::Killed;
+    }
+
+    /// Sends user input text to standard input of the currently running process.
+    pub fn write_stdin(&self, input: &str) -> Result<(), String> {
+        if let Ok(mut lock) = self.child_stdin.lock() {
+            if let Some(ref mut stdin) = *lock {
+                stdin.write_all(input.as_bytes()).map_err(|e| e.to_string())?;
+                stdin.write_all(b"\n").map_err(|e| e.to_string())?;
+                stdin.flush().map_err(|e| e.to_string())?;
+                self.raw_lines.write().unwrap().push(CargoOutputLine {
+                    text: input.to_string(),
+                    is_error: false,
+                });
+                return Ok(());
+            }
+        }
+        Err("No active process running to accept input".to_string())
     }
 
     /// Spawns a background Cargo action within `working_dir`.
@@ -154,6 +178,17 @@ impl CargoRunner {
         self.kill();
         self.clear();
         self.current_action = Some(action);
+        self.current_command_line = None;
+
+        let display_cmd = if extra_args.is_empty() {
+            format!("$ {}", action.display_name())
+        } else {
+            format!("$ {} {}", action.display_name(), extra_args.join(" "))
+        };
+        self.raw_lines.write().unwrap().push(CargoOutputLine {
+            text: display_cmd,
+            is_error: false,
+        });
 
         let mut cmd = Command::new("cargo");
         crate::platform::configure_background_command(&mut cmd);
@@ -175,18 +210,90 @@ impl CargoRunner {
             cmd.arg(arg);
         }
 
+        self.spawn_process_pipeline(cmd, format!("cargo {}", action.as_str()))
+    }
+
+    /// Spawns an interactive shell command or cargo command from the terminal prompt.
+    pub fn spawn_command(
+        &mut self,
+        command_line: &str,
+        working_dir: &Path,
+    ) -> Result<(), String> {
+        let trimmed = command_line.trim();
+        if trimmed.is_empty() {
+            return Ok(());
+        }
+
+        // If a process is actively running, write this line to its stdin
+        if self.is_running() {
+            return self.write_stdin(trimmed);
+        }
+
+        // Check if command is a cargo action to parse compiler diagnostics
+        let parts: Vec<&str> = trimmed.split_whitespace().collect();
+        if parts.first().copied() == Some("cargo") && parts.len() > 1 {
+            let action = match parts[1] {
+                "check" => Some(CargoAction::Check),
+                "clippy" => Some(CargoAction::Clippy),
+                "test" => Some(CargoAction::Test),
+                "build" => Some(CargoAction::Build),
+                "run" => Some(CargoAction::Run),
+                _ => None,
+            };
+            if let Some(act) = action {
+                let extra = &parts[2..];
+                return self.spawn(act, working_dir, extra);
+            }
+        }
+
+        self.kill();
+        self.clear();
+        self.current_action = None;
+        self.current_command_line = Some(trimmed.to_string());
+
+        self.raw_lines.write().unwrap().push(CargoOutputLine {
+            text: format!("$ {}", trimmed),
+            is_error: false,
+        });
+
+        let mut cmd = if cfg!(windows) {
+            let mut c = Command::new("cmd.exe");
+            c.args(["/C", trimmed]);
+            c
+        } else {
+            let mut c = Command::new("sh");
+            c.args(["-c", trimmed]);
+            c
+        };
+
+        crate::platform::configure_background_command(&mut cmd);
+        cmd.current_dir(working_dir);
+
+        self.spawn_process_pipeline(cmd, trimmed.to_string())
+    }
+
+    fn spawn_process_pipeline(
+        &mut self,
+        mut cmd: Command,
+        label: String,
+    ) -> Result<(), String> {
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
+        cmd.stdin(Stdio::piped());
 
         let mut child = cmd
             .spawn()
-            .map_err(|e| format!("Failed to spawn 'cargo {}': {}", action.as_str(), e))?;
+            .map_err(|e| format!("Failed to spawn '{}': {}", label, e))?;
 
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
+        let stdin = child.stdin.take();
 
         if let Ok(mut proc_lock) = self.child_process.lock() {
             *proc_lock = Some(child);
+        }
+        if let Ok(mut stdin_lock) = self.child_stdin.lock() {
+            *stdin_lock = stdin;
         }
 
         *self.status.write().unwrap() = CargoStatus::Running;
@@ -195,9 +302,10 @@ impl CargoRunner {
         let diags_arc = Arc::clone(&self.diagnostics);
         let lines_arc = Arc::clone(&self.raw_lines);
         let proc_arc = Arc::clone(&self.child_process);
+        let stdin_arc = Arc::clone(&self.child_stdin);
 
         thread::Builder::new()
-            .name("cargo-runner-worker".to_string())
+            .name("terminal-runner-worker".to_string())
             .spawn(move || {
                 // Stdout reading thread
                 let diags_writer = Arc::clone(&diags_arc);
@@ -260,6 +368,10 @@ impl CargoRunner {
                         None
                     }
                 };
+
+                if let Ok(mut lock) = stdin_arc.lock() {
+                    *lock = None;
+                }
 
                 let new_status = match exit_status {
                     Some(s) if s.success() => CargoStatus::Success,
@@ -392,5 +504,33 @@ mod tests {
 
         runner.clear();
         assert_eq!(runner.diagnostics().len(), 0);
+    }
+
+    #[test]
+    fn test_cargo_runner_write_stdin_fails_when_idle() {
+        let runner = CargoRunner::new();
+        let res = runner.write_stdin("test input");
+        assert!(res.is_err(), "cannot write stdin to idle runner");
+    }
+
+    #[test]
+    fn test_cargo_runner_spawn_command_empty() {
+        let mut runner = CargoRunner::new();
+        let res = runner.spawn_command("   ", Path::new("."));
+        assert!(res.is_ok());
+        assert_eq!(runner.status(), CargoStatus::Idle);
+    }
+
+    #[test]
+    fn test_cargo_runner_spawn_command_execution() {
+        let mut runner = CargoRunner::new();
+        let cmd = if cfg!(windows) { "echo karkinos_test" } else { "echo karkinos_test" };
+        let res = runner.spawn_command(cmd, Path::new("."));
+        assert!(res.is_ok());
+        // Wait a brief moment for worker thread to finish
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        let lines = runner.raw_lines();
+        assert!(!lines.is_empty(), "command output should have lines");
+        assert_eq!(lines[0].text, format!("$ {}", cmd));
     }
 }

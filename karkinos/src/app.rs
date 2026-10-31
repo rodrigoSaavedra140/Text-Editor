@@ -454,13 +454,19 @@ impl EditorApp {
         handled
     }
 
-    /// S1 (Rust IDE): Ejecuta un comando de Cargo en el directorio de trabajo del proyecto
-    pub fn run_cargo(&mut self, action: karkinos_core::cargo::CargoAction) {
-        let dir = self.doc.current_file
+    /// Retorna el directorio de trabajo actual (directorio del archivo activo o browse_dir).
+    pub fn current_working_dir(&self) -> std::path::PathBuf {
+        self.doc
+            .current_file
             .as_ref()
             .and_then(|p| p.parent())
             .unwrap_or(&self.doc.browse_dir)
-            .to_path_buf();
+            .to_path_buf()
+    }
+
+    /// S1 (Rust IDE): Ejecuta un comando de Cargo en el directorio de trabajo del proyecto
+    pub fn run_cargo(&mut self, action: karkinos_core::cargo::CargoAction) {
+        let dir = self.current_working_dir();
         self.cargo.run(action, &dir);
     }
 

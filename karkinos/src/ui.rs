@@ -768,6 +768,13 @@ impl EditorApp {
                                 .color(theme.text_muted)
                                 .size(11.0),
                         );
+                    } else if let Some(ref cmd) = self.cargo.runner.current_command_line {
+                        ui.label(
+                            egui::RichText::new(cmd)
+                                .italics()
+                                .color(theme.text_muted)
+                                .size(11.0),
+                        );
                     }
 
                     ui.separator();
@@ -850,16 +857,22 @@ impl EditorApp {
 
                 if self.cargo.active_tab == 0 {
                     let lines = self.cargo.runner.raw_lines();
+                    let mut submit_command = false;
+
                     egui::Frame::none()
                         .fill(theme.bg)
                         .inner_margin(egui::Margin::same(6.0))
                         .show(ui, |ui| {
+                            let available_h = (ui.available_height() - 34.0).max(40.0);
                             egui::ScrollArea::both()
+                                .max_height(available_h)
                                 .stick_to_bottom(true)
                                 .show(ui, |ui| {
                                     for line in lines {
                                         let color = if line.is_error || line.text.contains("error:") {
                                             egui::Color32::from_rgb(248, 81, 73)
+                                        } else if line.text.starts_with("$ ") {
+                                            theme.accent
                                         } else if line.text.contains("warning:") {
                                             egui::Color32::from_rgb(227, 179, 65)
                                         } else {
@@ -868,7 +881,50 @@ impl EditorApp {
                                         ui.label(egui::RichText::new(line.text).monospace().size(12.0).color(color));
                                     }
                                 });
+
+                            ui.separator();
+
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new("❯").color(theme.accent).strong());
+
+                                let input_resp = ui.add_sized(
+                                    [ui.available_width() - 80.0, 24.0],
+                                    egui::TextEdit::singleline(&mut self.cargo.terminal_input)
+                                        .hint_text(if self.cargo.runner.is_running() {
+                                            "Send input to running process... (Enter to send)"
+                                        } else {
+                                            "Type command (e.g. cargo test, cargo check, ls)... (Enter to run, ↑↓ history)"
+                                        })
+                                        .font(egui::TextStyle::Monospace),
+                                );
+
+                                if input_resp.has_focus() {
+                                    if ui.input(|i| i.key_pressed(egui::Key::ArrowUp)) {
+                                        self.cargo.history_prev();
+                                    }
+                                    if ui.input(|i| i.key_pressed(egui::Key::ArrowDown)) {
+                                        self.cargo.history_next();
+                                    }
+                                }
+
+                                if (input_resp.lost_focus() || input_resp.has_focus())
+                                    && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                                {
+                                    submit_command = true;
+                                    input_resp.request_focus();
+                                }
+
+                                let btn_label = if self.cargo.runner.is_running() { "↵ Send" } else { "▶ Run" };
+                                if ui.small_button(btn_label).clicked() {
+                                    submit_command = true;
+                                }
+                            });
                         });
+
+                    if submit_command {
+                        let dir = self.current_working_dir();
+                        self.cargo.execute_or_input(&dir);
+                    }
                 } else if self.cargo.active_tab == 1 {
                     let diags = self.cargo.runner.diagnostics();
                     if diags.is_empty() {
