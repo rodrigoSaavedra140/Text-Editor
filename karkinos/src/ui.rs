@@ -2366,6 +2366,16 @@ impl eframe::App for EditorApp {
         if self.poll_git_diff_results() {
             ctx.request_repaint_after(std::time::Duration::from_millis(16));
         }
+        // F8 (Roadmap v0.2.35): rama + blame inline (consulta perezosa).
+        self.refresh_git_branch();
+        if self.poll_blame_results() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(16));
+        }
+        self.update_inline_blame();
+        if self.editor_state.blame_text.is_none() && self.doc.current_file.is_some() {
+            // Despertar para cumplir el dwell de 300 ms del blame.
+            ctx.request_repaint_after(std::time::Duration::from_millis(300));
+        }
         // F6 (Roadmap v0.2.32): debounce de 250 ms + streaming del worker.
         if self.workspace_search.open {
             if let Some(at) = self.workspace_search.last_edit_at {
@@ -2960,6 +2970,17 @@ impl eframe::App for EditorApp {
                         crate::title_bar::status_pill(
                             ui,
                             egui::RichText::new("Saved").color(egui::Color32::from_rgb(63, 185, 80)).size(11.0),
+                            &theme,
+                        );
+                    }
+
+                    // F8 (Roadmap v0.2.35): rama actual del repo.
+                    if let Some(branch) = &self.git_status.branch {
+                        crate::title_bar::status_pill(
+                            ui,
+                            egui::RichText::new(format!("⎇ {branch}"))
+                                .color(theme.text_muted)
+                                .size(11.0),
                             &theme,
                         );
                     }

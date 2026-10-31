@@ -147,6 +147,9 @@ pub struct EditorApp {
     pub explorer: ExplorerState,
     // F7 (Roadmap v0.2.34): selector de símbolos (Ctrl+Shift+O).
     pub symbol_picker: SymbolPickerState,
+    // F8 (Roadmap v0.2.35): rama actual y blame inline.
+    pub git_status: GitStatusState,
+    pub blame_worker: crate::git_status_worker::BlameWorker,
 }
 
 /// F5 (Roadmap v0.2.31): eje por el que se parte el área central.
@@ -205,6 +208,19 @@ pub struct SymbolPickerState {
     pub selected: usize,
 }
 
+/// F8 (Roadmap v0.2.35): rama actual y cache de blame por archivo.
+#[derive(Debug, Default)]
+pub struct GitStatusState {
+    pub branch: Option<String>,
+    pub blame_cache: std::collections::HashMap<
+        std::path::PathBuf,
+        std::sync::Arc<std::collections::HashMap<usize, karkinos_core::git_status::BlameLine>>,
+    >,
+    pub blame_requested_for: Option<std::path::PathBuf>,
+    pub cursor_settled_at: Option<std::time::Instant>,
+    pub last_cursor: (usize, usize),
+}
+
 impl Default for EditorApp {
     fn default() -> Self {
         EditorApp {
@@ -251,6 +267,8 @@ impl Default for EditorApp {
             workspace_search_engine: karkinos_core::WorkspaceSearch::spawn(),
             explorer: ExplorerState::default(),
             symbol_picker: SymbolPickerState::default(),
+            git_status: GitStatusState::default(),
+            blame_worker: crate::git_status_worker::BlameWorker::spawn(),
         }
     }
 }
@@ -563,6 +581,66 @@ impl EditorApp {
         files.sort();
         self.explorer.files = files;
         self.explorer.loaded_for = Some(root);
+    }
+
+    /// F8 (Roadmap v0.2.35): lee la rama del repo una sola vez (desde
+    /// `.git/HEAD`, sin subprocesos).
+    pub fn refresh_git_branch(&mut self) {
+        if self.git_status.branch.is_none() {
+            self.git_status.branch = karkinos_core::read_branch(&self.doc.browse_dir);
+        }
+    }
+
+    /// F8: consume los blame que terminó el worker (cacheados por archivo).
+    pub fn poll_blame_results(&mut self) -> bool {
+        let mut applied = false;
+        while let Some((path, lines)) = self.blame_worker.try_recv() {
+            self.git_status.blame_cache.insert(path, lines);
+            applied = true;
+        }
+        applied
+    }
+
+    /// F8: actualiza el ghost text del blame. Se consulta recién cuando el
+    /// cursor quedó quieto 300 ms; al moverse se limpia y arranca de nuevo.
+    pub fn update_inline_blame(&mut self) {
+        let Some(path) = self.doc.current_file.clone() else {
+            self.editor_state.blame_text = None;
+            return;
+        };
+
+        let cursor = (self.editor_state.cursor_line, self.editor_state.cursor_col);
+        if cursor != self.git_status.last_cursor {
+            self.git_status.last_cursor = cursor;
+            self.git_status.cursor_settled_at = Some(std::time::Instant::now());
+            self.editor_state.blame_text = None;
+            return;
+        }
+
+        match self.git_status.cursor_settled_at {
+            Some(at) if at.elapsed() >= std::time::Duration::from_millis(300) => {}
+            _ => return,
+        }
+
+        if !self.git_status.blame_cache.contains_key(&path) {
+            if self.git_status.blame_requested_for.as_ref() != Some(&path) {
+                self.git_status.blame_requested_for = Some(path.clone());
+                self.blame_worker.request(path);
+            }
+            return;
+        }
+
+        let line_number = self.editor_state.cursor_line + 1;
+        let now_unix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        self.editor_state.blame_text = self
+            .git_status
+            .blame_cache
+            .get(&path)
+            .and_then(|lines| lines.get(&line_number))
+            .map(|blame| karkinos_core::git_status::format_blame_line(blame, now_unix));
     }
 
     /// F7 (Roadmap v0.2.34): abre el selector de símbolos del documento.
@@ -2827,6 +2905,74 @@ mod tests {
         assert_eq!(app.editor_state.cursor_line, 1);
         assert_eq!(app.editor_state.cursor_col, 3);
         assert!(!app.symbol_picker.open, "el salto cierra el selector");
+
+        std::fs::remove_file(path).ok();
+    }
+
+    // F8 (Roadmap v0.2.35): blame inline.
+
+    #[test]
+    fn inline_blame_se_limpia_cuando_el_cursor_se_mueve() {
+        let path = std::env::temp_dir().join(format!(
+            "karkinos_blame_move_{}.rs",
+            std::process::id()
+        ));
+        std::fs::write(&path, "fn main() {}\n").expect("archivo");
+
+        let mut app = EditorApp::default();
+        app.doc.current_file = Some(path.clone());
+        app.editor_state.blame_text = Some("Ada, 2 days ago".to_string());
+        app.git_status.last_cursor = (0, 0);
+        app.editor_state.cursor_line = 3;
+
+        app.update_inline_blame();
+        assert!(app.editor_state.blame_text.is_none(), "al moverse se limpia");
+        assert!(app.git_status.cursor_settled_at.is_some());
+
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn inline_blame_aparece_tras_el_dwell_con_cache() {
+        let path = std::env::temp_dir().join(format!(
+            "karkinos_blame_{}.rs",
+            std::process::id()
+        ));
+        std::fs::write(&path, "fn main() {}\n").expect("archivo");
+
+        let mut app = EditorApp::default();
+        app.doc.current_file = Some(path.clone());
+        app.editor_state.cursor_line = 0;
+        app.editor_state.cursor_col = 0;
+        app.git_status.last_cursor = (0, 0);
+        app.git_status.cursor_settled_at =
+            Some(std::time::Instant::now() - std::time::Duration::from_millis(400));
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let mut lines = std::collections::HashMap::new();
+        lines.insert(
+            1usize,
+            karkinos_core::git_status::BlameLine {
+                author: "Ada".to_string(),
+                timestamp: now - 86_400,
+                summary: "feat: x".to_string(),
+            },
+        );
+        app.git_status
+            .blame_cache
+            .insert(path.clone(), std::sync::Arc::new(lines));
+
+        app.update_inline_blame();
+        let text = app
+            .editor_state
+            .blame_text
+            .clone()
+            .expect("con la cache y el dwell cumplido hay ghost text");
+        assert!(text.starts_with("Ada, "), "{text}");
+        assert!(text.contains("feat: x"), "{text}");
 
         std::fs::remove_file(path).ok();
     }

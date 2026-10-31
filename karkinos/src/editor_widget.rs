@@ -184,6 +184,8 @@ pub struct EditorState {
     // F7 (Roadmap v0.2.34): símbolos del documento (fn, struct, enum, trait,
     // método, const) extraídos por el worker AST para el selector.
     pub symbols: Vec<karkinos_core::syntax_ast::DocumentSymbol>,
+    // F8 (Roadmap v0.2.35): ghost text del blame para la línea activa.
+    pub blame_text: Option<String>,
     // S3 & S4 (Etapa 4): Diagnósticos en vivo y autocompletado LSP
     pub diagnostics: Vec<karkinos_core::lsp::LspDiagnostic>,
     pub hover_text: Option<String>,
@@ -240,6 +242,7 @@ impl Default for EditorState {
             last_collapsed_folds: Vec::new(),
             sticky_scopes: Vec::new(),
             symbols: Vec::new(),
+            blame_text: None,
             diagnostics: Vec::new(),
             hover_text: None,
             completions: Vec::new(),
@@ -2052,6 +2055,25 @@ pub fn show(
                 egui::FontId::monospace(state.font_size * 0.75),
                 egui::Color32::from_rgb(180, 200, 230),
             );
+        }
+
+        // F8 (Roadmap v0.2.35): ghost text de blame al final de la línea activa.
+        if i == state.cursor_line {
+            if let Some(blame) = state.blame_text.as_deref() {
+                let line_len = state
+                    .char_lens
+                    .get(i)
+                    .copied()
+                    .unwrap_or_else(|| line_char_count(line));
+                let gx = text_left + line_len as f32 * char_width + 16.0;
+                painter.text(
+                    egui::pos2(gx.min(clip_rect.right() - 4.0), line_top_y),
+                    egui::Align2::LEFT_TOP,
+                    blame,
+                    egui::FontId::monospace(state.font_size * 0.85),
+                    egui::Color32::from_gray(100),
+                );
+            }
         }
 
         visual_row += rows_here;

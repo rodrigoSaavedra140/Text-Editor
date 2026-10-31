@@ -13,6 +13,7 @@ pub mod dap;
 pub mod document;
 pub mod ending;
 pub mod git_diff;
+pub mod git_status;
 pub mod lsp;
 pub mod open_vsx;
 pub mod platform;
@@ -29,6 +30,7 @@ pub use dap::{DapBreakpoint, DapClient, DapStackFrame, DapState, DapStopReason, 
 pub use document::Document;
 pub use ending::{default_new_file_path, detect_line_ending, serialize_line_ending, LineEnding};
 pub use git_diff::{DiffStatus, FileDiffHunks};
+pub use git_status::{format_blame_line, read_branch, BlameLine};
 pub use lsp::{
     DiagnosticSeverity, InlayHintKind, LspClient, LspCodeAction, LspCompletionItem, LspDiagnostic,
     LspHover, LspInlayHint, LspLocation, LspPosition, LspRange, LspTextEdit, LspWorkspaceEdit,

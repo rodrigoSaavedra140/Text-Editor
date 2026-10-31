@@ -195,3 +195,6 @@ Evolucionar el panel inferior PTY (`PtyTerminal`) para admitir múltiples pesta�
   - Desvío: no se interceptó `@` dentro de Quick Open; el selector tiene su propio atajo y modal.
   - Tests: 2 en el core (cobertura de tipos/métodos y líneas; sin árbol) + 2 en la app (filtro sin mayúsculas; salto que posiciona y cierra).
   - Evidencia: `cargo check --workspace` 0 warnings; `cargo test --workspace` karkinos 130, karkinos-core 82.
+- **F8 (v0.2.35) — completada**: `crates/karkinos-core/src/git_status.rs` lee la rama de `.git/HEAD` sin subprocesos (incluye detached HEAD) y parsea `git blame --line-porcelain` reutilizando metadatos por sha. Worker `git_status_worker.rs` corre el blame una vez por archivo y lo cachea. UI: pill `⎇ rama` en la barra de estado y ghost text tenue al final de la línea activa (`Autor, N days ago • mensaje`) que aparece solo cuando el cursor queda quieto 300 ms.
+  - Tests: 4 en el core (rama, detached, porcelain con commits repetidos, formato y edad relativa) + 2 en la app (se limpia al moverse; aparece tras el dwell con cache).
+  - Evidencia: `cargo check --workspace` 0 warnings; `cargo test --workspace` karkinos 132, karkinos-core 86.
