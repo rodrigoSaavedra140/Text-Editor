@@ -593,15 +593,15 @@ impl EditorApp {
 
     /// S1 (Rust IDE): Panel inferior para ejecución y diagnósticos de Cargo (F7 / F5 / Ctrl+\).
     fn show_cargo_panel(&mut self, ctx: &egui::Context, theme: &crate::theme::Theme) {
-        if !self.cargo_panel_open {
+        if !self.cargo.panel_open {
             return;
         }
 
         let mut close_panel = false;
         let mut jump_target: Option<karkinos_core::cargo::CargoDiagnostic> = None;
 
-        let status = self.cargo_runner.status();
-        let (errors_count, warnings_count) = self.cargo_runner.error_and_warning_counts();
+        let status = self.cargo.runner.status();
+        let (errors_count, warnings_count) = self.cargo.runner.error_and_warning_counts();
 
         egui::TopBottomPanel::bottom("cargo_panel")
             .resizable(true)
@@ -625,14 +625,14 @@ impl EditorApp {
 
                     ui.label(egui::RichText::new(format!("[{}]", status_text)).color(status_color).strong());
 
-                    if let Some(action) = self.cargo_runner.current_action {
+                    if let Some(action) = self.cargo.runner.current_action {
                         ui.label(egui::RichText::new(action.display_name()).italics().color(egui::Color32::from_gray(170)));
                     }
 
                     ui.separator();
 
-                    if ui.selectable_label(self.cargo_active_tab == 0, "Terminal Output").clicked() {
-                        self.cargo_active_tab = 0;
+                    if ui.selectable_label(self.cargo.active_tab == 0, "Terminal Output").clicked() {
+                        self.cargo.active_tab = 0;
                     }
 
                     let diag_tab_label = format!("Diagnostics ({} err, {} warn)", errors_count, warnings_count);
@@ -644,8 +644,8 @@ impl EditorApp {
                         egui::Color32::from_gray(180)
                     };
 
-                    if ui.selectable_label(self.cargo_active_tab == 1, egui::RichText::new(diag_tab_label).color(diag_color)).clicked() {
-                        self.cargo_active_tab = 1;
+                    if ui.selectable_label(self.cargo.active_tab == 1, egui::RichText::new(diag_tab_label).color(diag_color)).clicked() {
+                        self.cargo.active_tab = 1;
                     }
 
                     let dap_label = if self.dap_client.as_ref().map(|c| c.state().is_stopped).unwrap_or(false) {
@@ -655,8 +655,8 @@ impl EditorApp {
                     } else {
                         "🐞 Debugger"
                     };
-                    if ui.selectable_label(self.cargo_active_tab == 2, dap_label).clicked() {
-                        self.cargo_active_tab = 2;
+                    if ui.selectable_label(self.cargo.active_tab == 2, dap_label).clicked() {
+                        self.cargo.active_tab = 2;
                     }
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -664,11 +664,11 @@ impl EditorApp {
                             close_panel = true;
                         }
                         if ui.small_button("Clear").clicked() {
-                            self.cargo_runner.clear();
+                            self.cargo.runner.clear();
                         }
-                        if self.cargo_runner.is_running() {
+                        if self.cargo.runner.is_running() {
                             if ui.small_button("⏹ Stop").clicked() {
-                                self.cargo_runner.kill();
+                                self.cargo.runner.kill();
                             }
                         }
                     });
@@ -676,8 +676,8 @@ impl EditorApp {
 
                 ui.separator();
 
-                if self.cargo_active_tab == 0 {
-                    let lines = self.cargo_runner.raw_lines();
+                if self.cargo.active_tab == 0 {
+                    let lines = self.cargo.runner.raw_lines();
                     egui::ScrollArea::both()
                         .stick_to_bottom(true)
                         .show(ui, |ui| {
@@ -690,8 +690,8 @@ impl EditorApp {
                                 ui.label(egui::RichText::new(line.text).monospace().color(color));
                             }
                         });
-                } else if self.cargo_active_tab == 1 {
-                    let diags = self.cargo_runner.diagnostics();
+                } else if self.cargo.active_tab == 1 {
+                    let diags = self.cargo.runner.diagnostics();
                     if diags.is_empty() {
                         ui.label(egui::RichText::new("No compiler errors or warnings detected.").italics().color(egui::Color32::from_gray(140)));
                     } else {
@@ -724,7 +724,7 @@ impl EditorApp {
                             }
                         });
                     }
-                } else if self.cargo_active_tab == 2 {
+                } else if self.cargo.active_tab == 2 {
                     // S4 (Rust IDE): DAP Native Debugger & Inspector
                     let dap_state = self.dap_client.as_ref().map(|c| c.state()).unwrap_or_default();
 
@@ -830,7 +830,7 @@ impl EditorApp {
             });
 
         if close_panel {
-            self.cargo_panel_open = false;
+            self.cargo.panel_open = false;
         }
 
         if let Some(target) = jump_target {
@@ -1562,7 +1562,7 @@ impl eframe::App for EditorApp {
             self.run_cargo(karkinos_core::cargo::CargoAction::Run);
         }
         if want_cargo_toggle {
-            self.cargo_panel_open = !self.cargo_panel_open;
+            self.cargo.panel_open = !self.cargo.panel_open;
         }
         if want_goto_def {
             self.goto_definition();
@@ -1765,16 +1765,16 @@ impl eframe::App for EditorApp {
 
                 // S1 (Rust IDE): Herramientas de Rust y Cargo alineadas arriba a la derecha (right-up)
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let panel_toggle_label = if self.cargo_panel_open { "Console ▾" } else { "Console ▸" };
+                    let panel_toggle_label = if self.cargo.panel_open { "Console ▾" } else { "Console ▸" };
                     if ui.button(panel_toggle_label).on_hover_text("Toggle Cargo Console (Ctrl+\\)").clicked() {
-                        self.cargo_panel_open = !self.cargo_panel_open;
+                        self.cargo.panel_open = !self.cargo.panel_open;
                     }
                     if ui.button("▶ Run").on_hover_text("Run cargo run (F5)").clicked() {
                         self.run_cargo(karkinos_core::cargo::CargoAction::Run);
                     }
                     if ui.button("🐞 Debug").on_hover_text("Start / Resume Debugger (F5)").clicked() {
-                        self.cargo_panel_open = true;
-                        self.cargo_active_tab = 2;
+                        self.cargo.panel_open = true;
+                        self.cargo.active_tab = 2;
                         self.start_debugging();
                     }
                     if ui.button("Test").on_hover_text("Run cargo test").clicked() {

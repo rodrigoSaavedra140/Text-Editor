@@ -61,6 +61,8 @@ pub struct EditorApp {
     pub doc: crate::document_service::DocumentService,
     // S5b (Roadmap v0.2.9): servicio LSP (conexión + protocolo de pedidos).
     pub lsp: crate::lsp_service::LspService,
+    // S5c (Roadmap v0.2.9): servicio de ejecución de Cargo (subproceso + panel).
+    pub cargo: crate::cargo_service::CargoService,
     pub editor_state: EditorState,
     // Textura del logo, cargada una sola vez en el primer frame
     // (None hasta ese momento).
@@ -113,9 +115,6 @@ pub struct EditorApp {
     open_vsx_rx: Option<std::sync::mpsc::Receiver<Result<karkinos_core::open_vsx::OpenVsxSearchResult, String>>>,
     open_vsx_download_rx: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
     // S1 (Rust IDE): Ejecutor nativo de pipelines de Cargo
-    pub cargo_runner: karkinos_core::cargo::CargoRunner,
-    pub cargo_panel_open: bool,
-    pub cargo_active_tab: usize,
     // S4 (Rust IDE): Code Actions, Inlay Hints & Rename
     // S4 (Rust IDE): DAP Native Debugger & Breakpoints
     pub dap_client: Option<karkinos_core::DapClient>,
@@ -142,6 +141,7 @@ impl Default for EditorApp {
             goto_input: String::new(),
             doc: DocumentService::default(),
             lsp: crate::lsp_service::LspService::default(),
+            cargo: crate::cargo_service::CargoService::default(),
             find_open: false,
             find_query: String::new(),
             find_replace: String::new(),
@@ -165,9 +165,6 @@ impl Default for EditorApp {
             open_vsx_status: None,
             open_vsx_rx: None,
             open_vsx_download_rx: None,
-            cargo_runner: karkinos_core::cargo::CargoRunner::new(),
-            cargo_panel_open: false,
-            cargo_active_tab: 0,
             dap_client: None,
             breakpoints: std::collections::HashSet::new(),
             debug_panel_open: false,
@@ -469,8 +466,7 @@ impl EditorApp {
             .and_then(|p| p.parent())
             .unwrap_or(&self.doc.browse_dir)
             .to_path_buf();
-        self.cargo_panel_open = true;
-        let _ = self.cargo_runner.spawn(action, &dir, &[]);
+        self.cargo.run(action, &dir);
     }
 
     /// S1 (Rust IDE): Salta a la ubicación de un diagnóstico de Cargo en el editor
@@ -2093,7 +2089,7 @@ mod tests {
         use karkinos_core::cargo::CargoDiagnostic;
 
         let mut app = EditorApp::default();
-        assert!(!app.cargo_panel_open);
+        assert!(!app.cargo.panel_open);
 
         let diag = CargoDiagnostic {
             level: "error".to_string(),
