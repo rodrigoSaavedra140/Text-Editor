@@ -59,6 +59,8 @@ pub struct EditorApp {
     // ciclo de vida de archivos). Toda la lógica pura vive en
     // document_service.rs; app.rs orquesta con presentación/LSP/AST.
     pub doc: crate::document_service::DocumentService,
+    // S5b (Roadmap v0.2.9): servicio LSP (conexión + protocolo de pedidos).
+    pub lsp: crate::lsp_service::LspService,
     pub editor_state: EditorState,
     // Textura del logo, cargada una sola vez en el primer frame
     // (None hasta ese momento).
@@ -97,7 +99,6 @@ pub struct EditorApp {
     // + scorer). UNA pareja por app; sirve al modal del tab activo.
     pub quick_open_services: crate::quick_open::QuickOpenServices,
     // S4 (Etapa 4): Cliente Language Server Protocol (LSP)
-    pub lsp_client: Option<karkinos_core::lsp::LspClient>,
     // S4 (Etapa 5): Gestor de extensiones y plugins
     pub plugin_manager: karkinos_core::plugin::PluginManager,
     pub extensions_modal_open: bool,
@@ -116,10 +117,6 @@ pub struct EditorApp {
     pub cargo_panel_open: bool,
     pub cargo_active_tab: usize,
     // S4 (Rust IDE): Code Actions, Inlay Hints & Rename
-    pub code_actions: Vec<karkinos_core::lsp::LspCodeAction>,
-    pub code_actions_menu_open: bool,
-    pub rename_dialog_open: bool,
-    pub rename_input: String,
     // S4 (Rust IDE): DAP Native Debugger & Breakpoints
     pub dap_client: Option<karkinos_core::DapClient>,
     pub breakpoints: std::collections::HashSet<(PathBuf, usize)>,
@@ -144,6 +141,7 @@ impl Default for EditorApp {
             goto_pending: false,
             goto_input: String::new(),
             doc: DocumentService::default(),
+            lsp: crate::lsp_service::LspService::default(),
             find_open: false,
             find_query: String::new(),
             find_replace: String::new(),
@@ -156,7 +154,6 @@ impl Default for EditorApp {
             theme_mode: crate::theme::ThemeMode::Dark,
             quick_open: crate::quick_open::QuickOpenState::default(),
             quick_open_services: crate::quick_open::QuickOpenServices::default(),
-            lsp_client: None,
             plugin_manager: karkinos_core::plugin::PluginManager::with_default_plugins(),
             extensions_modal_open: false,
             extensions_tab: 0,
@@ -171,10 +168,6 @@ impl Default for EditorApp {
             cargo_runner: karkinos_core::cargo::CargoRunner::new(),
             cargo_panel_open: false,
             cargo_active_tab: 0,
-            code_actions: Vec::new(),
-            code_actions_menu_open: false,
-            rename_dialog_open: false,
-            rename_input: String::new(),
             dap_client: None,
             breakpoints: std::collections::HashSet::new(),
             debug_panel_open: false,
@@ -291,7 +284,7 @@ impl EditorApp {
             self.update_ast();
 
             // S4: Fast in-memory diagnostics lookup from existing singleton LSP client without process re-spawning
-            if let (Some(ref client), Some(ref path)) = (&self.lsp_client, &self.doc.current_file) {
+            if let (Some(ref client), Some(ref path)) = (&self.lsp.client, &self.doc.current_file) {
                 let uri = karkinos_core::path_to_uri(path);
                 self.editor_state.diagnostics = client.diagnostics_for_file(&uri);
             }
@@ -445,40 +438,7 @@ impl EditorApp {
     }
 
     /// S4 (Etapa 4): Actualiza diagnósticos y estado del cliente LSP.
-    pub fn update_lsp(&mut self) {
-        if self.current_language() != crate::syntax::Language::Rust {
-            self.editor_state.diagnostics.clear();
-            return;
-        }
-
-        if self.lsp_client.is_none() {
-            let client = karkinos_core::lsp::LspClient::spawn("rust-analyzer", &[], &self.doc.browse_dir)
-                .unwrap_or_else(|_| karkinos_core::lsp::LspClient::mock());
-            self.lsp_client = Some(client);
-        }
-
-        if let (Some(ref client), Some(ref path)) = (&self.lsp_client, &self.doc.current_file) {
-            let uri = karkinos_core::path_to_uri(path);
-            let text = self.doc.current_text();
-            client.did_change(&uri, 2, &text);
-            self.editor_state.diagnostics = client.diagnostics_for_file(&uri);
-
-            if let Some(diag) = self.editor_state.diagnostics.iter().find(|d| d.range.start.line == self.editor_state.cursor_line) {
-                self.editor_state.hover_text = Some(diag.message.clone());
-                self.doc.status = format!("LSP: {}", diag.message);
-            }
-
-            let line_count = self.doc.lines.len();
-            client.request_inlay_hints(
-                &uri,
-                karkinos_core::lsp::LspRange {
-                    start: karkinos_core::lsp::LspPosition { line: 0, character: 0 },
-                    end: karkinos_core::lsp::LspPosition { line: line_count, character: 0 },
-                },
-            );
-        }
-    }
-
+    
     /// S4 (Etapa 5): Ejecuta un comando registrado por plugins sobre el documento activo.
     pub fn execute_plugin_command(&mut self, cmd_id: &str) -> bool {
         let mut doc = karkinos_core::Document::new(self.doc.active_tab);
@@ -530,31 +490,45 @@ impl EditorApp {
     }
 
     /// S2 (Rust IDE): Solicita saltar a la definición del símbolo bajo el cursor (F12)
-    pub fn goto_definition(&mut self) {
-        if self.current_language() != crate::syntax::Language::Rust {
-            return;
-        }
-        if let (Some(ref client), Some(ref path)) = (&self.lsp_client, &self.doc.current_file) {
-            let uri = karkinos_core::path_to_uri(path);
-            client.request_definition(&uri, self.editor_state.cursor_line, self.editor_state.cursor_col);
-            self.doc.status = "Resolving definition (F12)…".to_string();
-        }
+    
+    /// S2 (Rust IDE): Solicita información de hover / documentación para el símbolo bajo el cursor
+    
+    /// S2 (Rust IDE): Chequea y procesa respuestas entrantes de Go to Definition, Hover, Code Actions, Inlay Hints y Rename
+    pub fn update_lsp(&mut self) {
+        let is_rust = self.current_language() == crate::syntax::Language::Rust;
+        self.lsp.update_lsp(&mut self.editor_state, &mut self.doc, is_rust);
     }
 
-    /// S2 (Rust IDE): Solicita información de hover / documentación para el símbolo bajo el cursor
+    pub fn goto_definition(&mut self) {
+        let is_rust = self.current_language() == crate::syntax::Language::Rust;
+        self.lsp.goto_definition(&self.editor_state, &mut self.doc, is_rust);
+    }
+
     pub fn request_hover(&mut self) {
-        if self.current_language() != crate::syntax::Language::Rust {
-            return;
-        }
-        if let (Some(ref client), Some(ref path)) = (&self.lsp_client, &self.doc.current_file) {
-            let uri = karkinos_core::path_to_uri(path);
-            client.request_hover(&uri, self.editor_state.cursor_line, self.editor_state.cursor_col);
-        }
+        let is_rust = self.current_language() == crate::syntax::Language::Rust;
+        self.lsp.request_hover(&self.editor_state, &self.doc, is_rust);
+    }
+
+    pub fn request_code_actions(&mut self) {
+        let is_rust = self.current_language() == crate::syntax::Language::Rust;
+        self.lsp.request_code_actions(&self.editor_state, &mut self.doc, is_rust);
+    }
+
+    /// Requests inlay hints for the current buffer.
+    #[allow(dead_code)]
+    pub fn request_inlay_hints(&mut self) {
+        let is_rust = self.current_language() == crate::syntax::Language::Rust;
+        self.lsp.request_inlay_hints(&self.doc, is_rust);
+    }
+
+    pub fn request_rename(&mut self, new_name: &str) {
+        let is_rust = self.current_language() == crate::syntax::Language::Rust;
+        self.lsp.request_rename(&self.editor_state, &mut self.doc, is_rust, new_name);
     }
 
     /// S2 (Rust IDE): Chequea y procesa respuestas entrantes de Go to Definition, Hover, Code Actions, Inlay Hints y Rename
     pub fn poll_lsp_results(&mut self) {
-        let (target, hover, actions, hints, rename) = if let Some(ref client) = self.lsp_client {
+        let (target, hover, actions, hints, rename) = if let Some(ref client) = self.lsp.client {
             (
                 client.take_latest_definition(),
                 client.take_latest_hover(),
@@ -582,9 +556,9 @@ impl EditorApp {
         }
 
         if !actions.is_empty() {
-            self.code_actions = actions;
-            self.code_actions_menu_open = true;
-            self.doc.status = format!("Found {} code actions (Ctrl+.)", self.code_actions.len());
+            self.lsp.code_actions = actions;
+            self.lsp.code_actions_menu_open = true;
+            self.doc.status = format!("Found {} code actions (Ctrl+.)", self.lsp.code_actions.len());
         }
 
         if !hints.is_empty() {
@@ -597,75 +571,26 @@ impl EditorApp {
     }
 
     /// Requests code actions (quick-fixes, auto-imports) for current cursor position and diagnostics.
-    pub fn request_code_actions(&mut self) {
-        if self.current_language() != crate::syntax::Language::Rust {
-            return;
-        }
-        if let (Some(ref client), Some(ref path)) = (&self.lsp_client, &self.doc.current_file) {
-            let uri = karkinos_core::path_to_uri(path);
-            let range = karkinos_core::lsp::LspRange {
-                start: karkinos_core::lsp::LspPosition {
-                    line: self.editor_state.cursor_line,
-                    character: self.editor_state.cursor_col,
-                },
-                end: karkinos_core::lsp::LspPosition {
-                    line: self.editor_state.cursor_line,
-                    character: self.editor_state.cursor_col,
-                },
-            };
-            let diags = self.editor_state.diagnostics.clone();
-            client.request_code_actions(&uri, range, &diags);
-            self.doc.status = "Querying code actions (Ctrl+.)…".to_string();
-        }
-    }
-
+    
     /// Applies the code action at the specified index.
     pub fn apply_code_action(&mut self, action_idx: usize) {
-        if action_idx >= self.code_actions.len() {
+        if action_idx >= self.lsp.code_actions.len() {
             return;
         }
-        let action = self.code_actions[action_idx].clone();
+        let action = self.lsp.code_actions[action_idx].clone();
         if let Some(ref edit) = action.edit {
             self.apply_workspace_edit(edit);
             self.doc.status = format!("Applied: {}", action.title);
         }
-        self.code_actions_menu_open = false;
-        self.code_actions.clear();
+        self.lsp.code_actions_menu_open = false;
+        self.lsp.code_actions.clear();
     }
 
     /// Requests inlay hints for the current buffer.
     #[allow(dead_code)]
-    pub fn request_inlay_hints(&mut self) {
-        if self.current_language() != crate::syntax::Language::Rust {
-            return;
-        }
-        if let (Some(ref client), Some(ref path)) = (&self.lsp_client, &self.doc.current_file) {
-            let uri = karkinos_core::path_to_uri(path);
-            let line_count = self.doc.lines.len();
-            let range = karkinos_core::lsp::LspRange {
-                start: karkinos_core::lsp::LspPosition { line: 0, character: 0 },
-                end: karkinos_core::lsp::LspPosition { line: line_count, character: 0 },
-            };
-            client.request_inlay_hints(&uri, range);
-        }
-    }
-
+    
     /// Requests workspace rename of symbol at cursor.
-    pub fn request_rename(&mut self, new_name: &str) {
-        if self.current_language() != crate::syntax::Language::Rust || new_name.trim().is_empty() {
-            return;
-        }
-        if let (Some(ref client), Some(ref path)) = (&self.lsp_client, &self.doc.current_file) {
-            let uri = karkinos_core::path_to_uri(path);
-            let pos = karkinos_core::lsp::LspPosition {
-                line: self.editor_state.cursor_line,
-                character: self.editor_state.cursor_col,
-            };
-            client.request_rename(&uri, pos, new_name.trim());
-            self.doc.status = format!("Renaming symbol to '{}'...", new_name.trim());
-        }
-    }
-
+    
     /// Applies LSP text edits to the active editor buffer and updates lines and AST.
     pub fn apply_text_edits_to_active(&mut self, edits: &[karkinos_core::lsp::LspTextEdit]) {
         if edits.is_empty() {
@@ -2075,7 +2000,7 @@ mod tests {
             }],
         );
 
-        app.lsp_client = Some(client);
+        app.lsp.client = Some(client);
         app.update_lsp();
 
         assert_eq!(app.editor_state.diagnostics.len(), 1);
@@ -2133,7 +2058,7 @@ mod tests {
                 message: "tab2 error".to_string(),
             }],
         );
-        app.lsp_client = Some(client);
+        app.lsp.client = Some(client);
         app.update_lsp();
         assert_eq!(app.editor_state.diagnostics.len(), 1);
         assert_eq!(app.editor_state.diagnostics[0].message, "tab1 warning");
@@ -2148,7 +2073,7 @@ mod tests {
 
         // Switching back to tab 1 must NOT drop LSP client and must load tab1 diagnostics
         app.switch_tab(0);
-        assert!(app.lsp_client.is_some(), "LSP client singleton must remain alive");
+        assert!(app.lsp.client.is_some(), "LSP client singleton must remain alive");
         assert_eq!(app.editor_state.diagnostics.len(), 1);
         assert_eq!(app.editor_state.diagnostics[0].message, "tab1 warning");
         // S3 (Roadmap v0.2.9): al cambiar de pestaña se re-pide el AST
@@ -2157,7 +2082,7 @@ mod tests {
 
         // Switching to tab 2 must also preserve LSP client and load tab2 diagnostics
         app.switch_tab(1);
-        assert!(app.lsp_client.is_some(), "LSP client singleton must remain alive");
+        assert!(app.lsp.client.is_some(), "LSP client singleton must remain alive");
         assert_eq!(app.editor_state.diagnostics.len(), 1);
         assert_eq!(app.editor_state.diagnostics[0].message, "tab2 error");
         assert!(wait_for_ast(&mut app), "AST del tab activo debe aplicarse tras el switch");
@@ -2207,7 +2132,7 @@ mod tests {
             contents: "fn target() -> ()".to_string(),
             range: None,
         });
-        app.lsp_client = Some(client);
+        app.lsp.client = Some(client);
 
         // Poll LSP results
         app.poll_lsp_results();
@@ -2342,18 +2267,18 @@ mod tests {
             padding_right: None,
         }]);
 
-        app.lsp_client = Some(client);
+        app.lsp.client = Some(client);
         app.poll_lsp_results();
 
-        assert!(app.code_actions_menu_open);
-        assert_eq!(app.code_actions.len(), 1);
-        assert_eq!(app.code_actions[0].title, "Import `HashMap`");
+        assert!(app.lsp.code_actions_menu_open);
+        assert_eq!(app.lsp.code_actions.len(), 1);
+        assert_eq!(app.lsp.code_actions[0].title, "Import `HashMap`");
         assert_eq!(app.editor_state.inlay_hints.len(), 1);
         assert_eq!(app.editor_state.inlay_hints[0].label, ": HashMap<_, _>");
 
         // Apply code action
         app.apply_code_action(0);
-        assert!(!app.code_actions_menu_open);
+        assert!(!app.lsp.code_actions_menu_open);
         let text = app.doc.current_text();
         assert!(text.starts_with("use std::collections::HashMap;\nfn main()"));
         assert!(app.doc.dirty);
@@ -2389,7 +2314,7 @@ mod tests {
             document_changes: None,
         });
 
-        app.lsp_client = Some(client);
+        app.lsp.client = Some(client);
         app.poll_lsp_results();
 
         let text = app.doc.current_text();

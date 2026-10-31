@@ -382,12 +382,12 @@ impl EditorApp {
 
     /// S4 (Rust IDE): Modal popup for Quick Fixes & Code Actions (Ctrl+. / Alt+Enter)
     fn show_code_actions_modal(&mut self, ctx: &egui::Context) {
-        if !self.code_actions_menu_open {
+        if !self.lsp.code_actions_menu_open {
             return;
         }
 
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-            self.code_actions_menu_open = false;
+            self.lsp.code_actions_menu_open = false;
             return;
         }
 
@@ -400,7 +400,7 @@ impl EditorApp {
             .default_width(420.0)
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
             .show(ctx, |ui| {
-                if self.code_actions.is_empty() {
+                if self.lsp.code_actions.is_empty() {
                     ui.label("No quick fixes or assists available at cursor.");
                     ui.add_space(8.0);
                     if ui.button("Close (Esc)").clicked() {
@@ -411,7 +411,7 @@ impl EditorApp {
                     ui.add_space(4.0);
 
                     egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
-                        for (idx, action) in self.code_actions.iter().enumerate() {
+                        for (idx, action) in self.lsp.code_actions.iter().enumerate() {
                             let is_pref = if action.is_preferred == Some(true) { "★ " } else { "" };
                             let kind_badge = action.kind.as_deref().unwrap_or("assist");
                             let text = format!("{}[{}] {}", is_pref, kind_badge, action.title);
@@ -435,18 +435,18 @@ impl EditorApp {
         if let Some(idx) = applied_action {
             self.apply_code_action(idx);
         } else if close_modal {
-            self.code_actions_menu_open = false;
+            self.lsp.code_actions_menu_open = false;
         }
     }
 
     /// S4 (Rust IDE): Modal dialog for symbol renaming (F2)
     fn show_rename_dialog(&mut self, ctx: &egui::Context) {
-        if !self.rename_dialog_open {
+        if !self.lsp.rename_dialog_open {
             return;
         }
 
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-            self.rename_dialog_open = false;
+            self.lsp.rename_dialog_open = false;
             return;
         }
 
@@ -464,7 +464,7 @@ impl EditorApp {
 
                 let field = ui.add_sized(
                     [ui.available_width(), 24.0],
-                    egui::TextEdit::singleline(&mut self.rename_input).hint_text("New symbol name"),
+                    egui::TextEdit::singleline(&mut self.lsp.rename_input).hint_text("New symbol name"),
                 );
                 field.request_focus();
 
@@ -484,10 +484,10 @@ impl EditorApp {
             });
 
         if cancel {
-            self.rename_dialog_open = false;
+            self.lsp.rename_dialog_open = false;
         } else if apply {
-            let name = self.rename_input.clone();
-            self.rename_dialog_open = false;
+            let name = self.lsp.rename_input.clone();
+            self.lsp.rename_dialog_open = false;
             self.request_rename(&name);
         }
     }
@@ -1574,8 +1574,8 @@ impl eframe::App for EditorApp {
             self.request_code_actions();
         }
         if want_rename {
-            self.rename_input.clear();
-            self.rename_dialog_open = true;
+            self.lsp.rename_input.clear();
+            self.lsp.rename_dialog_open = true;
         }
         if want_breakpoint_toggle {
             let line = self.editor_state.cursor_line;
