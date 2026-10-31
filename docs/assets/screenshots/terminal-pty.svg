@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 480" width="800" height="480">
+  <defs>
+    <style>
+      .bg { fill: #0d1117; }
+      .bar { fill: #21262d; }
+      .dock { fill: #161b22; stroke: #30363d; stroke-width: 1; }
+      .segment-active { fill: #161b22; stroke: #de6432; stroke-width: 2; }
+      .txt-main { font-family: monospace; font-size: 13px; fill: #e6edf3; }
+      .txt-muted { font-family: monospace; font-size: 12px; fill: #8b949e; }
+      .txt-green { font-family: monospace; font-size: 13px; fill: #3fb950; }
+      .txt-cyan { font-family: monospace; font-size: 13px; fill: #79c0ff; }
+      .txt-yellow { font-family: monospace; font-size: 13px; fill: #e3b341; }
+      .txt-red { font-family: monospace; font-size: 13px; fill: #f85149; }
+      .cursor { fill: #de6432; }
+    </style>
+  </defs>
+
+  <rect class="bg" width="800" height="480" rx="10"/>
+
+  <!-- Title bar -->
+  <rect class="bar" x="0" y="0" width="800" height="36" rx="10"/>
+  <circle cx="26" cy="18" r="6" fill="#de6432"/>
+  <text class="txt-main" x="42" y="23" font-weight="bold">Karkinos</text>
+  <rect x="270" y="6" width="260" height="24" rx="6" fill="#161b22" stroke="#30363d"/>
+  <text class="txt-muted" x="284" y="22">🔍 Search files... (Ctrl+P)</text>
+  <text class="txt-muted" x="620" y="22">▶ Run</text>
+  <text class="txt-muted" x="680" y="22">🐞 Debug</text>
+  <text class="txt-muted" x="750" y="22">— □ ✕</text>
+
+  <!-- Tab strip -->
+  <rect x="0" y="36" width="800" height="30" fill="#161b22"/>
+  <rect x="0" y="64" width="800" height="1" fill="#30363d"/>
+  <rect x="8" y="38" width="120" height="26" rx="6" fill="#0d1117"/>
+  <text class="txt-main" x="18" y="55" font-weight="bold">main.rs</text>
+  <rect x="8" y="62" width="120" height="2" fill="#de6432"/>
+  <text class="txt-muted" x="150" y="55">terminal.rs</text>
+  <text class="txt-muted" x="640" y="55">karkinos &gt; src &gt; main.rs</text>
+
+  <!-- Editor body -->
+  <rect x="0" y="66" width="40" height="300" fill="#161b22"/>
+  <text class="txt-muted" x="14" y="92">1</text>
+  <text class="txt-muted" x="14" y="112">2</text>
+  <text class="txt-muted" x="14" y="132">3</text>
+  <text class="txt-muted" x="14" y="152">4</text>
+  <text class="txt-cyan" x="52" y="92">fn</text>
+  <text class="txt-main" x="74" y="92">main() {</text>
+  <text class="txt-muted" x="52" y="112">// terminal dock: PTY interactiva</text>
+  <text class="txt-main" x="52" y="132">let</text>
+  <text class="txt-main" x="82" y="132">term =</text>
+  <text class="txt-cyan" x="140" y="132">PtyTerminal::spawn</text>
+  <text class="txt-main" x="300" y="132">(80, 24);</text>
+  <text class="txt-main" x="52" y="152">}</text>
+
+  <!-- Bottom dock -->
+  <rect class="dock" x="0" y="366" width="800" height="88" rx="8"/>
+  <rect class="segment-active" x="10" y="374" width="112" height="22" rx="4"/>
+  <text class="txt-main" x="20" y="390">⚡ Terminal Output</text>
+  <text class="txt-muted" x="136" y="390">🔍 Diagnostics (0)</text>
+  <text class="txt-muted" x="268" y="390">🐞 Debugger</text>
+  <text class="txt-muted" x="700" y="390">🗑 Clear</text>
+
+  <text class="txt-green" x="14" y="416">user@karkinos:~/Projects/demo$</text>
+  <text class="txt-main" x="240" y="416">cargo run --release</text>
+  <text class="txt-muted" x="14" y="436">   Compiling karkinos v0.2.27</text>
+  <text class="txt-yellow" x="14" y="452">   Finished `release` profile [optimized] in 0.12s</text>
+  <rect class="cursor" x="470" y="405" width="8" height="14"/>
+
+  <!-- Status bar -->
+  <rect x="0" y="454" width="800" height="26" fill="#161b22"/>
+  <rect x="0" y="454" width="800" height="1" fill="#30363d"/>
+  <rect x="8" y="459" width="58" height="16" rx="4" fill="#ffffff" fill-opacity="0.06"/>
+  <text class="txt-muted" x="14" y="471">Saved</text>
+  <rect x="74" y="459" width="92" height="16" rx="4" fill="#ffffff" fill-opacity="0.06"/>
+  <text class="txt-muted" x="80" y="471">Ln 3, Col 12</text>
+  <rect x="600" y="459" width="92" height="16" rx="4" fill="#ffffff" fill-opacity="0.06"/>
+  <text class="txt-green" x="606" y="471">● LSP Ready</text>
+  <rect x="700" y="459" width="92" height="16" rx="4" fill="#ffffff" fill-opacity="0.06"/>
+  <text class="txt-muted" x="706" y="471">🦀 Rust 2021</text>
+</svg>

@@ -19,6 +19,10 @@ const screenshots = [
   {
     src: 'assets/screenshots/dap-debugger.svg',
     alt: 'Karkinos DAP Native Debugger with Breakpoints, Call Stack, and Variables inspector'
+  },
+  {
+    src: 'assets/screenshots/terminal-pty.svg',
+    alt: 'Karkinos Interactive PTY Terminal Dock with ANSI colors, shell prompt, and segmented tabs'
   }
 ];
 

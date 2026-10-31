@@ -19,7 +19,7 @@
       <a href="#" class="brand">
         <img src="assets/logo.png" alt="Karkinos Logo" class="brand-logo">
         <span class="brand-name">Karkinos</span>
-        <span class="version-tag">v0.2.25</span>
+        <span class="version-tag">v0.2.27</span>
       </a>
 
       <nav class="nav-links">
@@ -46,7 +46,7 @@
     <div class="container hero-container">
       <div class="badge-pill">
         <span class="badge-dot"></span>
-        <span class="badge-text">Engineered for the Rust Community • Native Release v0.2.25</span>
+        <span class="badge-text">Engineered for the Rust Community • Native Release v0.2.27</span>
       </div>
 
       <h1 class="hero-title">
@@ -59,13 +59,13 @@
       </p>
 
       <div class="hero-actions">
-        <a href="https://github.com/rodrigoSaavedra140/Text-Editor/releases/latest/download/karkinos-windows-x86_64.zip" target="_blank" rel="noopener noreferrer" class="btn btn-primary btn-lg">
+        <a href="https://github.com/rodrigoSaavedra140/Text-Editor/releases/download/v0.2.27/karkinos-windows-x86_64.zip" target="_blank" rel="noopener noreferrer" class="btn btn-primary btn-lg">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
             <path d="M0 3.449L9.75 2.1v9.451H0m10.949-9.602L24 0v11.4H10.949M0 12.6h9.75v9.451L0 20.699M10.949 12.6H24V24l-12.949-1.801"/>
           </svg>
           Download for Windows (10/11)
         </a>
-        <a href="https://github.com/rodrigoSaavedra140/Text-Editor/releases/latest/download/karkinos-linux-x86_64.tar.gz" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-lg">
+        <a href="https://github.com/rodrigoSaavedra140/Text-Editor/releases/download/v0.2.27/karkinos-linux-x86_64.tar.gz" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-lg">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
             <polyline points="7 10 12 15 17 10"/>
@@ -105,6 +105,9 @@
           </button>
           <button class="showcase-tab" onclick="switchScreenshot(3)">
             <span>🐞</span> Native Debugger (DAP)
+          </button>
+          <button class="showcase-tab" onclick="switchScreenshot(4)">
+            <span>💻</span> Interactive Terminal (PTY)
           </button>
         </div>
 
@@ -177,6 +180,24 @@
             Search and download extensions and themes directly from the Open VSX registry. Fully open ecosystem with complete install/uninstall package management.
           </p>
         </div>
+
+        <!-- Feature 7 -->
+        <div class="feature-card">
+          <div class="feature-icon terminal-color">💻</div>
+          <h3 class="feature-title">Interactive PTY Terminal Emulator</h3>
+          <p class="feature-desc">
+            Full-featured cross-platform pseudo-terminal powered by <code>portable-pty</code> and <code>vt100</code>. Native bash, zsh, and PowerShell with ANSI TrueColor rendering, tab completion, and process signals (<code>Ctrl+C</code>, <code>Ctrl+D</code>) inside the bottom dock panel.
+          </p>
+        </div>
+
+        <!-- Feature 8 -->
+        <div class="feature-card">
+          <div class="feature-icon cyan-color">🚀</div>
+          <h3 class="feature-title">Zero-Alloc Architecture &amp; Smooth Easing</h3>
+          <p class="feature-desc">
+            Engineered with sub-millisecond line layout caching, atomic dirty tracking, memoized inlay hints, and exponential smooth scrolling. Delivers 120+ FPS during intense typing and true 0.0% CPU usage in idle repose.
+          </p>
+        </div>
       </div>
     </div>
   </section>
@@ -207,10 +228,46 @@
               <td>~ 8.5 s</td>
             </tr>
             <tr>
-              <td><strong>Idle Memory Usage</strong></td>
-              <td class="highlight-col"><span class="pill-green">~ 45 MB</span></td>
+              <td><strong>Buffer Initialization (10k lines)</strong></td>
+              <td class="highlight-col"><span class="pill-green">2.32 ms</span></td>
+              <td>~ 180 ms</td>
+              <td>~ 650 ms</td>
+            </tr>
+            <tr>
+              <td><strong>Buffer Random Edit Latency</strong></td>
+              <td class="highlight-col"><span class="pill-green">430 ns / edit (2.32M ops/s)</span></td>
+              <td>&gt; 1.2 µs / edit</td>
+              <td>&gt; 3.5 µs / edit</td>
+            </tr>
+            <tr>
+              <td><strong>Undo Snapshot Creation (CoW)</strong></td>
+              <td class="highlight-col"><span class="pill-green">14.01 ns (O(1) B-Tree share)</span></td>
+              <td>Clone full text</td>
+              <td>Clone object tree</td>
+            </tr>
+            <tr>
+              <td><strong>Tree-sitter Rust AST Parse</strong></td>
+              <td class="highlight-col"><span class="pill-green">185,980 lines / sec</span></td>
+              <td>Worker thread</td>
+              <td>Heavy PSI indexing</td>
+            </tr>
+            <tr>
+              <td><strong>Myers Git Diff (10k lines, 20 hunks)</strong></td>
+              <td class="highlight-col"><span class="pill-green">3.20 ms</span></td>
+              <td>~ 45 ms</td>
+              <td>~ 120 ms</td>
+            </tr>
+            <tr>
+              <td><strong>Idle Memory Footprint</strong></td>
+              <td class="highlight-col"><span class="pill-green">~ 42 MB</span></td>
               <td>~ 520 MB</td>
               <td>~ 1,800 MB</td>
+            </tr>
+            <tr>
+              <td><strong>Idle CPU Usage (with Terminal)</strong></td>
+              <td class="highlight-col"><span class="pill-green">0.0% (Event-driven wake)</span></td>
+              <td>0.8% - 2.5%</td>
+              <td>1.5% - 4.0%</td>
             </tr>
             <tr>
               <td><strong>Runtime Architecture</strong></td>
@@ -251,9 +308,9 @@
           <div class="download-icon">🪟</div>
           <h3 class="download-title">Windows x86_64 (.zip)</h3>
           <p class="download-desc">Native portable executable (<code>karkinos.exe</code>) with silent subsystem execution (zero console popups). Extract and run on Windows 10 &amp; 11.</p>
-          <div class="version-meta">Release: v0.2.25 • Direct GitHub Release</div>
-          <a href="https://github.com/rodrigoSaavedra140/Text-Editor/releases/latest/download/karkinos-windows-x86_64.zip" target="_blank" rel="noopener noreferrer" class="btn btn-primary btn-block">
-            Download for Windows (v0.2.25)
+          <div class="version-meta">Release: v0.2.27 • Direct GitHub Release</div>
+          <a href="https://github.com/rodrigoSaavedra140/Text-Editor/releases/download/v0.2.27/karkinos-windows-x86_64.zip" target="_blank" rel="noopener noreferrer" class="btn btn-primary btn-block">
+            Download for Windows (v0.2.27)
           </a>
         </div>
 
@@ -263,9 +320,9 @@
           <div class="download-icon">🐧</div>
           <h3 class="download-title">Linux x86_64 (.tar.gz)</h3>
           <p class="download-desc">Standalone portable binary package. Extract and run instantly on Ubuntu, Debian, Fedora, Arch, and any modern Linux.</p>
-          <div class="version-meta">Release: v0.2.25 • Direct GitHub Release</div>
-          <a href="https://github.com/rodrigoSaavedra140/Text-Editor/releases/latest/download/karkinos-linux-x86_64.tar.gz" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-block">
-            Download for Linux (v0.2.25)
+          <div class="version-meta">Release: v0.2.27 • Direct GitHub Release</div>
+          <a href="https://github.com/rodrigoSaavedra140/Text-Editor/releases/download/v0.2.27/karkinos-linux-x86_64.tar.gz" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-block">
+            Download for Linux (v0.2.27)
           </a>
         </div>
 

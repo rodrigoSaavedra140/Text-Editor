@@ -496,6 +496,8 @@ section {
 .feature-icon.red-color { border-color: rgba(248, 81, 73, 0.4); }
 .feature-icon.purple-color { border-color: rgba(188, 140, 255, 0.4); }
 .feature-icon.green-color { border-color: rgba(63, 185, 80, 0.4); }
+.feature-icon.terminal-color { border-color: rgba(63, 185, 80, 0.4); }
+.feature-icon.cyan-color { border-color: rgba(88, 166, 255, 0.4); }
 
 .feature-title {
   font-size: 1.25rem;
