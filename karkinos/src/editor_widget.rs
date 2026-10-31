@@ -186,6 +186,9 @@ pub struct EditorState {
     pub symbols: Vec<karkinos_core::syntax_ast::DocumentSymbol>,
     // F8 (Roadmap v0.2.35): ghost text del blame para la línea activa.
     pub blame_text: Option<String>,
+    // UI-7 (v0.2.38): minimap apagado por defecto para que el editor use el
+    // ancho completo sin franjas muertas; Ctrl+Shift+M lo alterna.
+    pub show_minimap: bool,
     // S3 & S4 (Etapa 4): Diagnósticos en vivo y autocompletado LSP
     pub diagnostics: Vec<karkinos_core::lsp::LspDiagnostic>,
     pub hover_text: Option<String>,
@@ -243,6 +246,7 @@ impl Default for EditorState {
             sticky_scopes: Vec::new(),
             symbols: Vec::new(),
             blame_text: None,
+            show_minimap: false,
             diagnostics: Vec::new(),
             hover_text: None,
             completions: Vec::new(),
@@ -896,8 +900,10 @@ pub fn show(
     // Reservamos SIEMPRE el ancho de la scrollbar y del gutter para
     // calcular el wrap — así el punto de corte de las líneas no
     // "salta" cuando la banda gana un dígito o aparece la barra.
+    // UI-7 (v0.2.38): sin minimap no se reserva ningún píxel a la derecha.
+    let minimap_w = if state.show_minimap { MINIMAP_W } else { 0.0 };
     let usable_width =
-        (rect.width() - gutter_w - PAD_X - SCROLLBAR_W - MINIMAP_W).max(10.0);
+        (rect.width() - gutter_w - PAD_X - SCROLLBAR_W - minimap_w).max(10.0);
     let wrap_chars = wrap_chars_for(usable_width, char_width);
 
     // Reconstruir la caché de filas por línea SOLO si cambió la
@@ -923,12 +929,12 @@ pub fn show(
     let max_scroll = (total_height - rect.height()).max(0.0);
     let show_scrollbar = max_scroll > 0.0;
     let scrollbar_track = egui::Rect::from_min_max(
-        egui::pos2(rect.right() - SCROLLBAR_W - MINIMAP_W, rect.top()),
-        egui::pos2(rect.right() - MINIMAP_W, rect.bottom()),
+        egui::pos2(rect.right() - SCROLLBAR_W - minimap_w, rect.top()),
+        egui::pos2(rect.right() - minimap_w, rect.bottom()),
     );
-    // F9 (Roadmap v0.2.36): tira del minimap, a la derecha de la barra.
+    // F9/UI-7: tira del minimap, a la derecha de la barra (ancho 0 si está apagado).
     let minimap_rect = egui::Rect::from_min_max(
-        egui::pos2(rect.right() - MINIMAP_W, rect.top()),
+        egui::pos2(rect.right() - minimap_w, rect.top()),
         egui::pos2(rect.right(), rect.bottom()),
     );
 
@@ -2140,9 +2146,9 @@ pub fn show(
         }
     }
 
-    // F9 (Roadmap v0.2.36): minimap lateral. Una barra por línea proporcional
-    // a su largo, viewport translúcido y click/arrastre para scrollear.
-    {
+    // F9 (Roadmap v0.2.36) / UI-7 (v0.2.38): minimap optativo. Una barra por
+    // línea proporcional a su largo, borde divisorio, viewport y arrastre.
+    if state.show_minimap {
         let mm_painter = ui.painter();
         mm_painter.rect_filled(minimap_rect, 0.0, theme.bg);
         let total = lines.len().max(1);
@@ -2188,11 +2194,21 @@ pub fn show(
             egui::Color32::from_rgba_unmultiplied(255, 255, 255, 20),
         );
 
-        let mm_response = ui.interact(
-            minimap_rect,
-            id.with("minimap"),
-            egui::Sense::click_and_drag(),
+        mm_painter.line_segment(
+            [
+                egui::pos2(minimap_rect.left(), minimap_rect.top()),
+                egui::pos2(minimap_rect.left(), minimap_rect.bottom()),
+            ],
+            egui::Stroke::new(1.0_f32, theme.border_subtle),
         );
+
+        let mm_response = ui
+            .interact(
+                minimap_rect,
+                id.with("minimap"),
+                egui::Sense::click_and_drag(),
+            )
+            .on_hover_text("Minimap (drag to scroll)");
         if let Some(pos) = mm_response.interact_pointer_pos() {
             if mm_response.clicked() || mm_response.dragged() {
                 let frac = ((pos.y - minimap_rect.top()) / minimap_rect.height().max(1.0))
@@ -2774,6 +2790,15 @@ mod tests {
     }
 
     // F9 (Roadmap v0.2.36): minimap.
+
+    #[test]
+    fn minimap_esta_apagado_por_defecto() {
+        let state = EditorState::default();
+        assert!(
+            !state.show_minimap,
+            "sin minimap el editor ocupa todo el ancho y no queda ninguna franja"
+        );
+    }
 
     #[test]
     fn minimap_viewport_es_proporcional_y_no_desborda() {

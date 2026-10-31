@@ -590,48 +590,86 @@ impl EditorApp {
     /// extensiones, consola Cargo y debugger. Reemplaza la ausencia de una
     /// barra izquierda que el blueprint de F6 daba por hecha.
     fn show_activity_bar(&mut self, ctx: &egui::Context, theme: &crate::theme::Theme) {
+        // UI-8 (v0.2.38): indicador de herramienta activa con barra de acento.
+        let explorer_active = self.explorer.open;
+        let search_active = self.workspace_search.open;
+        let symbols_active = self.symbol_picker.open;
+        let extensions_active = self.extensions_modal_open;
+        let cargo_active = self.cargo.panel_open && self.cargo.active_tab != 2;
+        let debug_active = self.cargo.panel_open && self.cargo.active_tab == 2;
+
         egui::SidePanel::left("activity_bar")
             .exact_width(44.0)
             .resizable(false)
             .frame(
                 egui::Frame::none()
-                    .fill(theme.surface_bg)
+                    .fill(theme.title_bar_bg)
                     .inner_margin(egui::Margin::symmetric(4.0, 8.0)),
             )
             .show(ctx, |ui| {
                 ui.vertical_centered(|ui| {
-                    let button = |ui: &mut egui::Ui, icon: &str| {
-                        ui.add_sized(
-                            [36.0, 36.0],
-                            egui::Button::new(egui::RichText::new(icon).size(18.0)).frame(false),
-                        )
+                    let tool = |ui: &mut egui::Ui, icon: &str, active: bool| -> egui::Response {
+                        let (rect, response) =
+                            ui.allocate_exact_size(egui::vec2(36.0, 36.0), egui::Sense::click());
+                        if response.hovered() {
+                            ui.painter().rect_filled(
+                                rect,
+                                egui::Rounding::same(6.0),
+                                theme.badge_bg,
+                            );
+                        }
+                        if active {
+                            let bar = egui::Rect::from_min_max(
+                                egui::pos2(rect.left(), rect.top() + 6.0),
+                                egui::pos2(rect.left() + 3.0, rect.bottom() - 6.0),
+                            );
+                            ui.painter().rect_filled(bar, 0.0, theme.accent);
+                        }
+                        ui.painter().text(
+                            rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            icon,
+                            egui::FontId::proportional(18.0),
+                            if active { theme.text } else { theme.text_muted },
+                        );
+                        response
                     };
-                    if button(ui, "📁").on_hover_text("Explorer").clicked() {
+
+                    if tool(ui, "📁", explorer_active)
+                        .on_hover_text("Explorer")
+                        .clicked()
+                    {
                         self.toggle_explorer();
                     }
-                    if button(ui, "🔎")
+                    if tool(ui, "🔎", search_active)
                         .on_hover_text("Search in Workspace (Ctrl+Shift+F)")
                         .clicked()
                     {
                         self.open_workspace_search();
                     }
-                    if button(ui, "ƒ")
+                    if tool(ui, "ƒ", symbols_active)
                         .on_hover_text("Document Symbols (Ctrl+Shift+O)")
                         .clicked()
                     {
                         self.open_symbol_picker();
                     }
-                    if button(ui, "🧩").on_hover_text("Extensions").clicked() {
+                    if tool(ui, "🧩", extensions_active)
+                        .on_hover_text("Extensions")
+                        .clicked()
+                    {
                         self.extensions_modal_open = true;
                         self.extensions_tab = 0;
                     }
-                    if button(ui, "⚡")
+                    if tool(ui, "⚡", cargo_active)
                         .on_hover_text("Cargo Console (Ctrl+`)")
                         .clicked()
                     {
                         self.cargo.panel_open = !self.cargo.panel_open;
                     }
-                    if button(ui, "🐞").on_hover_text("Debugger").clicked() {
+                    if tool(ui, "🐞", debug_active)
+                        .on_hover_text("Debugger")
+                        .clicked()
+                    {
                         self.cargo.panel_open = true;
                         self.cargo.active_tab = 2;
                     }
@@ -639,15 +677,29 @@ impl EditorApp {
             });
     }
 
-    /// Barra lateral: explorador de archivos del proyecto. Lista plana de
-    /// archivos (el recorrido ya excluye target/.git/node_modules) con clic
-    /// para abrir.
+    /// Barra lateral: explorador de archivos en árbol (UI-6, v0.2.38).
+    /// Carpetas colapsables con chevron, iconos por extensión, indentación por
+    /// nivel y el archivo activo resaltado en acento.
     fn show_explorer_panel(&mut self, ctx: &egui::Context, theme: &crate::theme::Theme) {
         if !self.explorer.open {
             return;
         }
+
+        let tree =
+            crate::app::FileTreeNode::build_from_paths(&self.doc.browse_dir, &self.explorer.files);
+        let root_name = self
+            .doc
+            .browse_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("Workspace")
+            .to_string();
+        let active_path = self.doc.current_file.clone();
+
         let mut open_file = None;
+        let mut toggle_dir = None;
         let mut refresh = false;
+        let mut collapse_all = false;
         let mut close = false;
 
         egui::SidePanel::left("explorer_panel")
@@ -661,38 +713,46 @@ impl EditorApp {
             )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("📁 Explorer").color(theme.text).strong());
+                    ui.label(
+                        egui::RichText::new("EXPLORER")
+                            .color(theme.text_muted)
+                            .size(10.0)
+                            .strong(),
+                    );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.button("✕").on_hover_text("Close").clicked() {
                             close = true;
+                        }
+                        if ui.button("⊟").on_hover_text("Collapse All").clicked() {
+                            collapse_all = true;
                         }
                         if ui.button("⟳").on_hover_text("Refresh").clicked() {
                             refresh = true;
                         }
                     });
                 });
+                ui.add_space(2.0);
+                ui.label(
+                    egui::RichText::new(format!("📂 {root_name}"))
+                        .color(theme.text)
+                        .size(12.0)
+                        .strong(),
+                );
                 ui.separator();
+
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        for path in &self.explorer.files {
-                            let relative = path
-                                .strip_prefix(&self.doc.browse_dir)
-                                .unwrap_or(path)
-                                .to_string_lossy()
-                                .replace('\\', "/");
-                            let row = ui.add(
-                                egui::Label::new(
-                                    egui::RichText::new(relative)
-                                        .color(theme.text_muted)
-                                        .size(11.5),
-                                )
-                                .sense(egui::Sense::click()),
-                            );
-                            if row.clicked() {
-                                open_file = Some(path.clone());
-                            }
-                        }
+                        Self::draw_file_tree(
+                            ui,
+                            &tree,
+                            0,
+                            &self.explorer.collapsed_dirs,
+                            active_path.as_deref(),
+                            theme,
+                            &mut toggle_dir,
+                            &mut open_file,
+                        );
                     });
             });
 
@@ -701,10 +761,96 @@ impl EditorApp {
         }
         if refresh {
             self.explorer.loaded_for = None;
+            self.explorer.collapsed_dirs.clear();
             self.refresh_explorer();
+        }
+        if collapse_all {
+            let mut dirs = Vec::new();
+            crate::app::FileTreeNode::collect_directories(&tree, &mut dirs);
+            self.explorer.collapsed_dirs.extend(dirs);
+        }
+        if let Some(dir) = toggle_dir {
+            if !self.explorer.collapsed_dirs.remove(&dir) {
+                self.explorer.collapsed_dirs.insert(dir);
+            }
         }
         if let Some(path) = open_file {
             self.open_path(path);
+        }
+    }
+
+    /// Filas recursivas del árbol del explorador (UI-6).
+    fn draw_file_tree(
+        ui: &mut egui::Ui,
+        nodes: &[crate::app::FileTreeNode],
+        depth: usize,
+        collapsed: &std::collections::HashSet<std::path::PathBuf>,
+        active: Option<&std::path::Path>,
+        theme: &crate::theme::Theme,
+        toggle_dir: &mut Option<std::path::PathBuf>,
+        open_file: &mut Option<std::path::PathBuf>,
+    ) {
+        for node in nodes {
+            match node {
+                crate::app::FileTreeNode::Directory { name, path, children } => {
+                    let is_collapsed = collapsed.contains(path);
+                    let indent = depth as f32 * 14.0 + 4.0;
+                    ui.horizontal(|ui| {
+                        ui.add_space(indent);
+                        let text = format!(
+                            "{} {} {name}",
+                            if is_collapsed { "▸" } else { "▾" },
+                            if is_collapsed { "📁" } else { "📂" }
+                        );
+                        let row = ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(text).color(theme.text).size(11.5),
+                            )
+                            .sense(egui::Sense::click()),
+                        );
+                        if row.clicked() {
+                            *toggle_dir = Some(path.clone());
+                        }
+                    });
+                    if !is_collapsed {
+                        Self::draw_file_tree(
+                            ui, children, depth + 1, collapsed, active, theme, toggle_dir,
+                            open_file,
+                        );
+                    }
+                }
+                crate::app::FileTreeNode::File {
+                    name,
+                    path,
+                    extension,
+                } => {
+                    let indent = (depth as f32 + 1.0) * 14.0 + 4.0;
+                    let is_active = active == Some(path.as_path());
+                    ui.horizontal(|ui| {
+                        ui.add_space(indent);
+                        let color = if is_active {
+                            theme.accent
+                        } else {
+                            theme.text_muted
+                        };
+                        let mut text = egui::RichText::new(format!(
+                            "{} {name}",
+                            explorer_file_icon(extension)
+                        ))
+                        .color(color)
+                        .size(11.5);
+                        if is_active {
+                            text = text.strong();
+                        }
+                        if ui
+                            .add(egui::Label::new(text).sense(egui::Sense::click()))
+                            .clicked()
+                        {
+                            *open_file = Some(path.clone());
+                        }
+                    });
+                }
+            }
         }
     }
 
@@ -2576,6 +2722,10 @@ impl eframe::App for EditorApp {
         if ctx.input(|i| i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(egui::Key::O)) {
             self.open_symbol_picker();
         }
+        // UI-7 (v0.2.38): Ctrl+Shift+M alterna el minimap.
+        if ctx.input(|i| i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(egui::Key::M)) {
+            self.toggle_minimap();
+        }
         if want_goto_def {
             self.goto_definition();
         }
@@ -2714,6 +2864,14 @@ impl eframe::App for EditorApp {
                         .clicked()
                     {
                         self.open_workspace_search();
+                    }
+                    // UI-7 (v0.2.38): toggle del minimap.
+                    if ui
+                        .button("🗺")
+                        .on_hover_text("Toggle Minimap (Ctrl+Shift+M)")
+                        .clicked()
+                    {
+                        self.toggle_minimap();
                     }
                     ui.add_space(8.0);
 
@@ -3022,6 +3180,26 @@ impl eframe::App for EditorApp {
                         );
                     }
 
+                    // UI-8 (v0.2.38): chip cliqueable del minimap.
+                    let map_color = if self.editor_state.show_minimap {
+                        theme.accent
+                    } else {
+                        theme.text_muted
+                    };
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                egui::RichText::new("MAP").color(map_color).size(10.5),
+                            )
+                            .fill(theme.badge_bg)
+                            .rounding(egui::Rounding::same(4.0)),
+                        )
+                        .on_hover_text("Toggle Minimap (Ctrl+Shift+M)")
+                        .clicked()
+                    {
+                        self.toggle_minimap();
+                    }
+
                     let path_str = self
                         .doc
                         .current_file
@@ -3289,5 +3467,17 @@ mod tests {
 
         // Esquina superior izquierda en RGBA (4 bytes): debe tener alpha = 0
         assert_eq!(icon.rgba[3], 0, "alpha de la esquina superior izquierda debe ser 0");
+    }
+}
+
+/// UI-6: icono contextual del explorador según la extensión.
+fn explorer_file_icon(extension: &str) -> &'static str {
+    match extension {
+        "rs" => "🦀",
+        "toml" => "⚙",
+        "md" => "📄",
+        "json" => "📦",
+        "html" | "css" | "js" | "ts" => "🌐",
+        _ => "📄",
     }
 }

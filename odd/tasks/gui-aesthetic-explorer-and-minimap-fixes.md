@@ -222,3 +222,13 @@ let minimap_rect = egui::Rect::from_min_max(
 4. **Commits y Versión**:
    - Versionado incrementado a `v0.2.38`.
    - Commits convencionales limpios sin Co-Authored-By ni atribuciones de IA.
+
+---
+
+## Log de Ejecución
+
+- **UI-6 (v0.2.38) — completada**: `ExplorerState.collapsed_dirs` + `FileTreeNode::{build_from_paths, name, collect_directories}` en `app.rs`. El explorador ahora renderiza un árbol recursivo con chevron `▸/▾`, iconos por extensión (`🦀`, `⚙`, `📄`, `📦`, `🌐`), indentación por nivel, archivo activo en acento y botón `⊟` para colapsar todo. Tests: 2 (orden carpetas-antes-que-archivos con anidamiento y extensiones; recolección de directorios para Collapse All).
+- **UI-7 (v0.2.38) — completada**: `EditorState.show_minimap` (por defecto `false`). `minimap_w` es 0 cuando está apagado, así la barra de scroll se pega al borde derecho y no queda ninguna franja gris; al activarlo se dibuja el minimap con divisor de 1 px (`border_subtle`) y tooltip. Atajo global `Ctrl+Shift+M`, botón 🗺 en la barra superior y chip `MAP` en la barra de estado; el panel secundario del split acompaña el toggle. Tests: 2 (default apagado; toggle sincroniza primario y split).
+- **UI-8 (v0.2.38) — completada**: barra de actividad con fondo `title_bar_bg`, indicador vertical de acento de 3 px en la herramienta activa e iconos muted/inactivos vs texto/activos. Las pestañas ya cumplían el criterio (línea inferior de acento de 2 px, punto naranja de dirty, inactivas en `text_muted`). La barra de estado suma el chip cliqueable `MAP`.
+  - Evidencia: `cargo check --workspace` 0 warnings; `cargo test --workspace` karkinos 140, karkinos-core 86 (226 en total).
+  - Nota: las tres tareas se entregaron en un único commit atómico con la versión destino `0.2.38`, porque comparten los mismos archivos (`ui.rs`, `app.rs`, `editor_widget.rs`).

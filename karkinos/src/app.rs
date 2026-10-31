@@ -198,6 +198,94 @@ pub struct ExplorerState {
     pub files: Vec<std::path::PathBuf>,
     /// Raíz para la que se cargó la lista; si cambia, se refresca.
     pub loaded_for: Option<std::path::PathBuf>,
+    /// Carpetas plegadas en el árbol (UI-6).
+    pub collapsed_dirs: std::collections::HashSet<std::path::PathBuf>,
+}
+
+/// UI-6 (v0.2.38): nodo del árbol de archivos del explorador.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileTreeNode {
+    Directory {
+        name: String,
+        path: std::path::PathBuf,
+        children: Vec<FileTreeNode>,
+    },
+    File {
+        name: String,
+        path: std::path::PathBuf,
+        extension: String,
+    },
+}
+
+impl FileTreeNode {
+    /// Construye el árbol jerárquico a partir de la lista plana de archivos.
+    /// Primero las carpetas (alfabéticas), después los archivos.
+    pub fn build_from_paths(
+        root: &std::path::Path,
+        paths: &[std::path::PathBuf],
+    ) -> Vec<FileTreeNode> {
+        use std::collections::BTreeMap;
+        let mut dirs: BTreeMap<String, Vec<std::path::PathBuf>> = BTreeMap::new();
+        let mut files: Vec<FileTreeNode> = Vec::new();
+
+        for path in paths {
+            let Ok(relative) = path.strip_prefix(root) else {
+                continue;
+            };
+            let mut parts: Vec<&str> = relative
+                .components()
+                .filter_map(|c| c.as_os_str().to_str())
+                .collect();
+            let Some(file_name) = parts.pop() else { continue };
+            if parts.is_empty() {
+                let extension = path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("")
+                    .to_string();
+                files.push(FileTreeNode::File {
+                    name: file_name.to_string(),
+                    path: path.clone(),
+                    extension,
+                });
+            } else {
+                dirs.entry(parts[0].to_string())
+                    .or_default()
+                    .push(path.clone());
+            }
+        }
+
+        let mut out = Vec::new();
+        for (name, children_paths) in dirs {
+            let dir_path = root.join(&name);
+            let children = FileTreeNode::build_from_paths(&dir_path, &children_paths);
+            out.push(FileTreeNode::Directory {
+                name,
+                path: dir_path,
+                children,
+            });
+        }
+        files.sort_by(|a, b| a.name().cmp(b.name()));
+        out.extend(files);
+        out
+    }
+
+    pub fn name(&self) -> &str {
+        match self {
+            FileTreeNode::Directory { name, .. } => name,
+            FileTreeNode::File { name, .. } => name,
+        }
+    }
+
+    /// Todas las rutas de carpeta del árbol (para "Collapse All").
+    pub fn collect_directories(nodes: &[FileTreeNode], out: &mut Vec<std::path::PathBuf>) {
+        for node in nodes {
+            if let FileTreeNode::Directory { path, children, .. } = node {
+                out.push(path.clone());
+                FileTreeNode::collect_directories(children, out);
+            }
+        }
+    }
 }
 
 /// F7 (Roadmap v0.2.34): estado del selector de símbolos del documento.
@@ -669,6 +757,16 @@ impl EditorApp {
         self.editor_state.sel_anchor = Some((line, symbol.character));
         self.editor_state.request_autoscroll();
         self.symbol_picker.open = false;
+    }
+
+    /// UI-7 (v0.2.38): alterna el minimap en el editor primario y en el
+    /// panel secundario del split, para que ambos mantengan el mismo layout.
+    pub fn toggle_minimap(&mut self) {
+        let visible = !self.editor_state.show_minimap;
+        self.editor_state.show_minimap = visible;
+        if let Some(split) = self.split.as_mut() {
+            split.secondary.show_minimap = visible;
+        }
     }
 
     /// F6 (Roadmap v0.2.32): abre el panel de búsqueda global y pide foco.
@@ -2975,5 +3073,77 @@ mod tests {
         assert!(text.contains("feat: x"), "{text}");
 
         std::fs::remove_file(path).ok();
+    }
+
+    // UI-6 (v0.2.38): árbol del explorador.
+
+    #[test]
+    fn file_tree_groups_directories_first_and_sorted() {
+        let root = std::path::Path::new("/proj");
+        let paths = vec![
+            std::path::PathBuf::from("/proj/src/main.rs"),
+            std::path::PathBuf::from("/proj/src/app.rs"),
+            std::path::PathBuf::from("/proj/Cargo.toml"),
+            std::path::PathBuf::from("/proj/crates/core/lib.rs"),
+        ];
+        let tree = FileTreeNode::build_from_paths(root, &paths);
+        assert_eq!(tree.len(), 3);
+        assert!(matches!(&tree[0], FileTreeNode::Directory { name, .. } if name == "crates"));
+        assert!(matches!(&tree[1], FileTreeNode::Directory { name, .. } if name == "src"));
+        assert!(matches!(&tree[2], FileTreeNode::File { name, .. } if name == "Cargo.toml"));
+
+        match &tree[1] {
+            FileTreeNode::Directory { children, .. } => {
+                assert_eq!(children.len(), 2);
+                assert!(
+                    matches!(&children[0], FileTreeNode::File { name, .. } if name == "app.rs")
+                );
+                assert!(
+                    matches!(&children[1], FileTreeNode::File { name, .. } if name == "main.rs")
+                );
+            }
+            _ => panic!("src tiene que ser una carpeta"),
+        }
+        if let FileTreeNode::File { extension, .. } = &tree[2] {
+            assert_eq!(extension, "toml");
+        }
+    }
+
+    #[test]
+    fn file_tree_collects_all_directories_for_collapse_all() {
+        let root = std::path::Path::new("/p");
+        let paths = vec![
+            std::path::PathBuf::from("/p/a/b/c.rs"),
+            std::path::PathBuf::from("/p/d/e.rs"),
+        ];
+        let tree = FileTreeNode::build_from_paths(root, &paths);
+        let mut dirs = Vec::new();
+        FileTreeNode::collect_directories(&tree, &mut dirs);
+        assert!(dirs.contains(&std::path::PathBuf::from("/p/a")));
+        assert!(dirs.contains(&std::path::PathBuf::from("/p/a/b")));
+        assert!(dirs.contains(&std::path::PathBuf::from("/p/d")));
+        assert_eq!(dirs.len(), 3);
+    }
+
+    // UI-7 (v0.2.38): minimap toggleable.
+
+    #[test]
+    fn toggle_minimap_flips_primary_and_split() {
+        let mut app = EditorApp::default();
+        assert!(!app.editor_state.show_minimap, "arranca apagado");
+
+        app.toggle_split(SplitDirection::Vertical);
+        assert!(!app.split.as_ref().unwrap().secondary.show_minimap);
+
+        app.toggle_minimap();
+        assert!(app.editor_state.show_minimap);
+        assert!(
+            app.split.as_ref().unwrap().secondary.show_minimap,
+            "el panel secundario acompaña"
+        );
+
+        app.toggle_minimap();
+        assert!(!app.editor_state.show_minimap);
+        assert!(!app.split.as_ref().unwrap().secondary.show_minimap);
     }
 }
