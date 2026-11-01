@@ -1231,6 +1231,107 @@ impl EditorApp {
         }
     }
 
+    /// v0.2.44: ventana del visor de diff. Toma el estado con `take` para
+    /// poder cerrarlo desde adentro sin pelear con el borrow del modal.
+    fn show_git_diff_modal(&mut self, ctx: &egui::Context, theme: &crate::theme::Theme) {
+        let Some(diff_state) = self.git_diff_modal.take() else {
+            return;
+        };
+
+        let mut close = false;
+        egui::Window::new(format!("Git Diff — {}", diff_state.rel_name))
+            .id(egui::Id::new("git_diff_modal"))
+            .resizable(true)
+            .default_width(650.0)
+            .default_height(450.0)
+            .frame(
+                egui::Frame::none()
+                    .fill(theme.elevated_bg)
+                    .stroke(egui::Stroke::new(1.0_f32, theme.border_subtle))
+                    .inner_margin(egui::Margin::symmetric(8.0, 6.0)),
+            )
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(&diff_state.rel_name)
+                            .color(theme.text)
+                            .size(12.5)
+                            .strong(),
+                    )
+                    .on_hover_text(diff_state.file_path.display().to_string());
+                    if diff_state.is_staged {
+                        ui.label(
+                            egui::RichText::new("staged")
+                                .color(theme.accent)
+                                .size(9.5)
+                                .strong(),
+                        );
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.small_button("✕").on_hover_text("Close diff").clicked() {
+                            close = true;
+                        }
+                    });
+                });
+                ui.separator();
+
+                if diff_state.diff_text.trim().is_empty() || diff_state.parsed_lines.is_empty() {
+                    ui.label(
+                        egui::RichText::new("No changes detected in this file")
+                            .color(theme.text_muted)
+                            .size(11.5),
+                    );
+                    return;
+                }
+
+                egui::ScrollArea::both()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        for line in &diff_state.parsed_lines {
+                            let (color, background) = match line.kind {
+                                karkinos_core::git_status::DiffLineKind::Added => (
+                                    egui::Color32::from_rgb(120, 220, 130),
+                                    egui::Color32::from_rgba_unmultiplied(40, 160, 60, 45),
+                                ),
+                                karkinos_core::git_status::DiffLineKind::Deleted => (
+                                    egui::Color32::from_rgb(240, 130, 130),
+                                    egui::Color32::from_rgba_unmultiplied(200, 40, 40, 45),
+                                ),
+                                karkinos_core::git_status::DiffLineKind::HunkHeader => (
+                                    egui::Color32::from_rgb(100, 200, 255),
+                                    egui::Color32::TRANSPARENT,
+                                ),
+                                karkinos_core::git_status::DiffLineKind::Header => {
+                                    (theme.text_muted, egui::Color32::TRANSPARENT)
+                                }
+                                karkinos_core::git_status::DiffLineKind::Context => {
+                                    (theme.text, egui::Color32::TRANSPARENT)
+                                }
+                            };
+
+                            egui::Frame::none()
+                                .fill(background)
+                                .inner_margin(egui::Margin::symmetric(4.0, 1.0))
+                                .show(ui, |ui| {
+                                    ui.label(
+                                        egui::RichText::new(&line.text)
+                                            .monospace()
+                                            .size(11.5)
+                                            .color(color),
+                                    );
+                                });
+                        }
+                    });
+            });
+
+        if close {
+            self.close_git_diff();
+        } else {
+            self.git_diff_modal = Some(diff_state);
+        }
+    }
+
     /// v0.2.40: modal del Command Palette (`Ctrl+Shift+P` / `F1`). Filtra el
     /// catálogo en vivo, navega con ↑/↓ y ejecuta con Enter o click.
     fn show_command_palette(&mut self, ctx: &egui::Context, theme: &crate::theme::Theme) {
@@ -1689,6 +1790,7 @@ impl EditorApp {
         } else {
             let mut open_path: Option<std::path::PathBuf> = None;
             let mut stage_path: Option<std::path::PathBuf> = None;
+            let mut diff_request: Option<(std::path::PathBuf, bool)> = None;
 
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
@@ -1727,6 +1829,13 @@ impl EditorApp {
                                     {
                                         stage_path = Some(entry.path.clone());
                                     }
+                                    if ui
+                                        .small_button("↔")
+                                        .on_hover_text("View Diff")
+                                        .clicked()
+                                    {
+                                        diff_request = Some((entry.path.clone(), entry.staged));
+                                    }
                                     if entry.staged {
                                         ui.label(
                                             egui::RichText::new("staged")
@@ -1745,6 +1854,9 @@ impl EditorApp {
             }
             if let Some(path) = stage_path {
                 let _ = self.git_stage_path(&path);
+            }
+            if let Some((path, staged)) = diff_request {
+                self.open_git_diff(&path, staged);
             }
         }
 
@@ -3291,6 +3403,9 @@ impl eframe::App for EditorApp {
         // S1: comprobación externa de disco (limitada a 1 stat/seg
         // dentro del método; aquí solo es invocarla por frame).
         self.doc.check_external_changes();
+        // v0.2.44: watcher periódico (1.5 s) de Git y de archivos abiertos
+        // modificados por fuera del editor.
+        self.poll_external_changes();
         // S2 (Rust IDE): Procesar respuestas pendientes del LSP (definición, hover)
         self.poll_lsp_results();
         // S3 (Roadmap v0.2.9): resultados del worker de Tree-sitter en
@@ -3546,6 +3661,10 @@ impl eframe::App for EditorApp {
         // S2: Esc cierra la barra de búsqueda cuando está abierta.
         if self.find_open && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.find_open = false;
+        }
+        // v0.2.44: Esc también cierra el visor de diff.
+        if self.git_diff_modal.is_some() && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.close_git_diff();
         }
 
         // S10: Ctrl+= (y Ctrl+Plus) agranda, Ctrl+- achica la fuente.
@@ -4190,6 +4309,8 @@ impl eframe::App for EditorApp {
         self.show_rename_dialog(ctx);
         // F7 (Roadmap v0.2.34): selector de símbolos del documento.
         self.show_symbol_picker(ctx, &theme);
+        // v0.2.44: visor de diff del Source Control.
+        self.show_git_diff_modal(ctx, &theme);
         // v0.2.40: Command Palette por encima del resto de los modales.
         self.show_command_palette(ctx, &theme);
     }

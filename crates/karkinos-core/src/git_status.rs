@@ -228,6 +228,99 @@ pub fn execute_git_stage_path(repo_root: &Path, path: &Path) -> Result<(), Strin
     Ok(())
 }
 
+/// v0.2.44: tipo de cada línea de un diff unificado.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffLineKind {
+    /// Metadatos: `diff --git`, `index`, `---`, `+++`, renombres.
+    Header,
+    /// Cabecera de hunk (`@@ -a,b +c,d @@`).
+    HunkHeader,
+    /// Línea agregada (`+`).
+    Added,
+    /// Línea eliminada (`-`).
+    Deleted,
+    /// Línea sin cambios, o espacio en blanco.
+    Context,
+}
+
+/// v0.2.44: una línea de diff junto a su clasificación.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedDiffLine {
+    pub kind: DiffLineKind,
+    pub text: String,
+}
+
+/// v0.2.44: clasifica la salida de `git diff` línea por línea.
+///
+/// El orden de las comprobaciones importa: `+++ `/`--- ` también empiezan con
+/// `+`/`-`, así que los encabezados se resuelven antes que agregados y
+/// borrados.
+pub fn parse_unified_diff(diff: &str) -> Vec<ParsedDiffLine> {
+    diff.lines()
+        .map(|line| {
+            let kind = if is_diff_header(line) {
+                DiffLineKind::Header
+            } else if line.starts_with("@@") {
+                DiffLineKind::HunkHeader
+            } else if line.starts_with('+') {
+                DiffLineKind::Added
+            } else if line.starts_with('-') {
+                DiffLineKind::Deleted
+            } else {
+                DiffLineKind::Context
+            };
+
+            ParsedDiffLine {
+                kind,
+                text: line.to_string(),
+            }
+        })
+        .collect()
+}
+
+fn is_diff_header(line: &str) -> bool {
+    const PREFIXES: [&str; 7] = [
+        "diff --git",
+        "index ",
+        "--- ",
+        "+++ ",
+        "similarity index",
+        "rename from",
+        "rename to",
+    ];
+    PREFIXES.iter().any(|prefix| line.starts_with(prefix))
+}
+
+/// v0.2.44: consulta `git -C <repo_root> diff [--cached] [-- <rel_path>]`.
+///
+/// Devuelve el stdout tal cual; un diff vacío produce `Ok(String::new())` para
+/// que el visor pueda mostrar que no hay cambios.
+pub fn query_git_diff(
+    repo_root: &Path,
+    rel_path: Option<&Path>,
+    staged: bool,
+) -> Result<String, String> {
+    let mut command = Command::new("git");
+    command.arg("-C").arg(repo_root).arg("diff");
+
+    if staged {
+        command.arg("--cached");
+    }
+    if let Some(rel_path) = rel_path {
+        command.arg("--").arg(rel_path);
+    }
+
+    let output = command
+        .output()
+        .map_err(|error| format!("Failed to run git diff: {error}"))?;
+
+    if !output.status.success() {
+        return Err(git_error("git diff", &output));
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
 fn git_error(action: &str, output: &std::process::Output) -> String {
     let stderr = String::from_utf8_lossy(&output.stderr);
     let detail = stderr.trim();
@@ -489,5 +582,165 @@ mod tests {
     fn execute_git_commit_rejects_a_blank_message_before_spawning_git() {
         let error = execute_git_commit(Path::new("."), "   ").unwrap_err();
         assert_eq!(error, "Commit message cannot be empty");
+    }
+
+    // v0.2.44: motor del visor de diff.
+
+    #[test]
+    fn test_parse_unified_diff() {
+        let diff = "\
+diff --git a/src/main.rs b/src/main.rs
+index 1234567..89abcde 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1,3 +1,4 @@
+ fn main() {
+-    println!(\"hola\");
++    println!(\"mundo\");
++    let extra = 1;
+ }
+";
+        let parsed = parse_unified_diff(diff);
+        let kinds: Vec<DiffLineKind> = parsed.iter().map(|line| line.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                DiffLineKind::Header,
+                DiffLineKind::Header,
+                DiffLineKind::Header,
+                DiffLineKind::Header,
+                DiffLineKind::HunkHeader,
+                DiffLineKind::Context,
+                DiffLineKind::Deleted,
+                DiffLineKind::Added,
+                DiffLineKind::Added,
+                DiffLineKind::Context,
+            ]
+        );
+
+        assert_eq!(parsed[0].text, "diff --git a/src/main.rs b/src/main.rs");
+        assert_eq!(parsed[5].text, " fn main() {");
+        assert_eq!(parsed[6].text, "-    println!(\"hola\");");
+        assert_eq!(parsed[7].text, "+    println!(\"mundo\");");
+        assert!(parse_unified_diff("").is_empty());
+    }
+
+    #[test]
+    fn test_parse_unified_diff_classifies_rename_headers() {
+        let diff = "\
+diff --git a/viejo.rs b/nuevo.rs
+similarity index 95%
+rename from viejo.rs
+rename to nuevo.rs
+@@ -1 +1 @@
+-let a = 1;
++let a = 2;
+";
+        let kinds: Vec<DiffLineKind> = parse_unified_diff(diff)
+            .iter()
+            .map(|line| line.kind)
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                DiffLineKind::Header,
+                DiffLineKind::Header,
+                DiffLineKind::Header,
+                DiffLineKind::Header,
+                DiffLineKind::HunkHeader,
+                DiffLineKind::Deleted,
+                DiffLineKind::Added,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_query_git_diff_in_temp_repo() {
+        let dir = temp_repo_dir("query");
+        run_git(&dir, &["init", "-q"]);
+        std::fs::write(dir.join("nota.txt"), "hola\n").unwrap();
+        run_git(&dir, &["add", "nota.txt"]);
+        run_git(&dir, &["commit", "-q", "-m", "initial"]);
+
+        let rel_path = Path::new("nota.txt");
+        assert_eq!(
+            query_git_diff(&dir, Some(rel_path), false).unwrap(),
+            "",
+            "un repo limpio no produce diff"
+        );
+
+        std::fs::write(dir.join("nota.txt"), "mundo\n").unwrap();
+
+        let unstaged = query_git_diff(&dir, Some(rel_path), false).expect("diff del worktree");
+        assert!(unstaged.contains("-hola\n"), "{unstaged}");
+        assert!(unstaged.contains("+mundo\n"), "{unstaged}");
+        assert!(unstaged.contains("--- "), "{unstaged}");
+        assert!(unstaged.contains("+++ "), "{unstaged}");
+
+        let parsed = parse_unified_diff(&unstaged);
+        assert!(parsed
+            .iter()
+            .any(|line| line.kind == DiffLineKind::Deleted && line.text == "-hola"));
+        assert!(parsed
+            .iter()
+            .any(|line| line.kind == DiffLineKind::Added && line.text == "+mundo"));
+        assert!(parsed
+            .iter()
+            .any(|line| line.kind == DiffLineKind::HunkHeader));
+
+        run_git(&dir, &["add", "nota.txt"]);
+        assert_eq!(
+            query_git_diff(&dir, Some(rel_path), false).unwrap(),
+            "",
+            "el cambio ya está en el índice"
+        );
+
+        let staged = query_git_diff(&dir, Some(rel_path), true).expect("diff del índice");
+        assert!(staged.contains("+mundo\n"), "{staged}");
+
+        let whole_repo = query_git_diff(&dir, None, true).expect("diff sin filtro de ruta");
+        assert!(whole_repo.contains("nota.txt"), "{whole_repo}");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn temp_repo_dir(label: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "karkinos_diff_{label}_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Git aislado de la configuración global que pueda romper el test
+    /// (firma de commits, nombre de rama, hooks).
+    fn run_git(dir: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args([
+                "-c",
+                "user.name=Karkinos Test",
+                "-c",
+                "user.email=test@karkinos.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "init.defaultBranch=main",
+            ])
+            .args(args)
+            .output()
+            .expect("no se pudo lanzar git");
+
+        assert!(
+            output.status.success(),
+            "git {args:?} falló: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }

@@ -164,7 +164,22 @@ pub struct EditorApp {
     pub git_status: GitStatusState,
     // v0.2.42: pestaña Source Control (cambios, mensaje y feedback).
     pub git_ui: GitUiState,
+    // v0.2.44: visor de diff abierto sobre un archivo del Source Control.
+    pub git_diff_modal: Option<GitDiffViewState>,
+    // v0.2.44: watcher periódico de disco (pestañas + metadatos de Git).
+    pub last_disk_poll: Option<std::time::Instant>,
+    pub last_git_mtime: Option<std::time::SystemTime>,
     pub blame_worker: crate::git_status_worker::BlameWorker,
+}
+
+/// v0.2.44: contenido del visor de diff de un archivo del Source Control.
+#[derive(Debug, Clone, Default)]
+pub struct GitDiffViewState {
+    pub file_path: std::path::PathBuf,
+    pub rel_name: String,
+    pub diff_text: String,
+    pub parsed_lines: Vec<karkinos_core::git_status::ParsedDiffLine>,
+    pub is_staged: bool,
 }
 
 /// F5 (Roadmap v0.2.31): eje por el que se parte el área central.
@@ -610,6 +625,18 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
         category: "Git",
         shortcut: None,
     },
+    PaletteCommand {
+        id: "git:view_diff",
+        title: "Git: View Diff of Active File",
+        category: "Git",
+        shortcut: None,
+    },
+    PaletteCommand {
+        id: "git:close_diff",
+        title: "Git: Close Diff Viewer",
+        category: "Git",
+        shortcut: None,
+    },
 ];
 
 /// v0.2.42: estado de la pestaña Source Control.
@@ -684,6 +711,9 @@ impl Default for EditorApp {
             command_palette: CommandPaletteState::default(),
             git_status: GitStatusState::default(),
             git_ui: GitUiState::default(),
+            git_diff_modal: None,
+            last_disk_poll: None,
+            last_git_mtime: None,
             blame_worker: crate::git_status_worker::BlameWorker::spawn(),
         }
     }
@@ -1137,6 +1167,140 @@ impl EditorApp {
         self.git_status.branch = karkinos_core::read_branch(&root);
     }
 
+    /// v0.2.44: abre el visor de diff de `path` (working tree o staged).
+    /// La ruta relativa se calcula contra `doc.browse_dir`, que es la raíz
+    /// contra la que también consulta el Source Control.
+    pub fn open_git_diff(&mut self, path: &std::path::Path, staged: bool) {
+        let root = self.doc.browse_dir.clone();
+        let rel_path = path
+            .strip_prefix(&root)
+            .map(|relative| relative.to_path_buf())
+            .unwrap_or_else(|_| path.to_path_buf());
+        let diff_text =
+            match karkinos_core::git_status::query_git_diff(&root, Some(&rel_path), staged) {
+                Ok(diff) => diff,
+                Err(error) => {
+                    self.doc.status = format!("Git diff failed: {error}");
+                    return;
+                }
+            };
+
+        let rel_name = rel_path.to_string_lossy().replace('\\', "/");
+        let parsed_lines = karkinos_core::git_status::parse_unified_diff(&diff_text);
+        self.git_diff_modal = Some(GitDiffViewState {
+            file_path: path.to_path_buf(),
+            rel_name,
+            diff_text,
+            parsed_lines,
+            is_staged: staged,
+        });
+    }
+
+    /// v0.2.44: cierra el visor de diff.
+    pub fn close_git_diff(&mut self) {
+        self.git_diff_modal = None;
+    }
+
+    /// v0.2.44: watcher periódico (cadencia 1.5 s) de estado de Git y de
+    /// archivos abiertos modificados por fuera del editor.
+    pub fn poll_external_changes(&mut self) {
+        let now = std::time::Instant::now();
+        if let Some(last) = self.last_disk_poll {
+            if now.duration_since(last) < std::time::Duration::from_millis(1500) {
+                return;
+            }
+        }
+        self.last_disk_poll = Some(now);
+
+        self.poll_git_metadata_changes();
+        self.poll_open_tab_disk_changes();
+    }
+
+    /// v0.2.44: refresca `git status` y la rama cuando cambia `.git/HEAD`
+    /// o `.git/index`. La primera lectura solo memoriza el mtime.
+    fn poll_git_metadata_changes(&mut self) {
+        let git_dir = self.git_repo_root().join(".git");
+        let mut git_mtime: Option<std::time::SystemTime> = None;
+        for entry in ["HEAD", "index"] {
+            let Ok(metadata) = std::fs::metadata(git_dir.join(entry)) else {
+                continue;
+            };
+            let Ok(modified) = metadata.modified() else {
+                continue;
+            };
+            git_mtime = Some(match git_mtime {
+                Some(current) => current.max(modified),
+                None => modified,
+            });
+        }
+
+        let changed = match (git_mtime, self.last_git_mtime) {
+            (Some(current), Some(previous)) => current != previous,
+            _ => false,
+        };
+        self.last_git_mtime = git_mtime;
+
+        if changed {
+            self.refresh_git_status();
+        }
+    }
+
+    /// v0.2.44: recarga las pestañas limpias cuyo archivo cambió en disco y
+    /// solo notifica en la barra de estado cuando hay ediciones sin guardar.
+    fn poll_open_tab_disk_changes(&mut self) {
+        // La pestaña activa guarda su `dirty` y su mtime en `doc`; sin esta
+        // sincronización el watcher compararía metadatos viejos.
+        self.sync_active_metadata_to_tab();
+
+        let active = self.doc.active_tab;
+        for idx in 0..self.doc.tabs.len() {
+            let Some(path) = self.doc.tabs[idx].current_file.clone() else {
+                continue;
+            };
+            let disk = std::fs::metadata(&path)
+                .ok()
+                .and_then(|m| m.modified().ok());
+            if !crate::document_service::mtime_is_stale(disk, self.doc.tabs[idx].last_disk_mtime) {
+                continue;
+            }
+
+            let name = path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.display().to_string());
+
+            if self.doc.tabs[idx].dirty {
+                // Nunca pisar ediciones locales: solo avisar.
+                self.doc.status = format!("File modified on disk: {name}");
+                continue;
+            }
+
+            let Ok((content, line_ending, mtime)) = DocumentService::read_file(&path) else {
+                continue;
+            };
+            let view_bytes = content.len();
+            let tab = &mut self.doc.tabs[idx];
+            tab.lines = if content.is_empty() {
+                vec![String::new()]
+            } else {
+                content.split('\n').map(|line| line.to_string()).collect()
+            };
+            tab.buffer = karkinos_core::TextBuffer::from_str(&content);
+            tab.last_snapshot = Rope::from_str(&content);
+            tab.undo_stack = UndoStack::new();
+            tab.dirty = false;
+            tab.line_ending = line_ending;
+            tab.last_disk_mtime = mtime;
+            tab.external_changed = false;
+            tab.last_mtime_check = None;
+            tab.view_bytes = view_bytes;
+
+            if idx == active {
+                self.load_tab(idx);
+            }
+        }
+    }
+
     /// v0.2.42: crea un commit con el mensaje de la caja de Source Control.
     pub fn git_commit(&mut self) -> Result<String, String> {
         let root = self.git_repo_root();
@@ -1395,6 +1559,12 @@ impl EditorApp {
             "git:stage_all" => {
                 let _ = self.git_stage_all();
             }
+            "git:view_diff" => {
+                if let Some(path) = self.doc.current_file.clone() {
+                    self.open_git_diff(&path, false);
+                }
+            }
+            "git:close_diff" => self.close_git_diff(),
             "terminal:toggle" => {
                 if self.cargo.panel_open && self.cargo.active_tab == 0 {
                     self.cargo.panel_open = false;
@@ -4486,7 +4656,7 @@ mod tests {
         ids.sort_unstable();
         ids.dedup();
         assert_eq!(ids.len(), total, "cada id del catálogo es único");
-        assert_eq!(total, 28, "el catálogo de v0.2.43 tiene 28 comandos");
+        assert_eq!(total, 30, "el catálogo de v0.2.44 tiene 30 comandos");
 
         for expected in [
             "layout:split_vertical",
@@ -4517,6 +4687,8 @@ mod tests {
             "git:source_control",
             "git:refresh",
             "git:stage_all",
+            "git:view_diff",
+            "git:close_diff",
         ] {
             assert!(
                 PALETTE_COMMANDS.iter().any(|command| command.id == expected),
@@ -4803,6 +4975,159 @@ mod tests {
         app.execute_palette_command("git:refresh");
         assert_eq!(app.sidebar_tab, SidebarTab::SourceControl, "refresh no cierra");
         assert!(app.git_ui.entries[0].staged);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// v0.2.44: watcher de disco, pestaña limpia.
+    #[test]
+    fn poll_external_changes_reloads_clean_tab_from_disk() {
+        let root = std::env::temp_dir().join(format!(
+            "karkinos_watch_clean_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&root).expect("carpeta temporal");
+        let path = root.join("watched.txt");
+        std::fs::write(&path, "primera\n").expect("archivo");
+
+        let mut app = EditorApp::default();
+        app.doc.browse_dir = root.clone();
+        app.open_path(path.clone());
+        assert_eq!(app.doc.lines, ["primera", ""]);
+        assert!(!app.doc.dirty);
+
+        std::fs::write(&path, "segunda linea\n").expect("reescritura");
+        app.doc.tabs[app.doc.active_tab].last_disk_mtime = Some(std::time::SystemTime::UNIX_EPOCH);
+        app.last_disk_poll = None;
+        app.poll_external_changes();
+
+        assert_eq!(app.doc.lines, ["segunda linea", ""]);
+        assert_eq!(app.doc.buffer.to_string(), "segunda linea\n");
+        assert!(!app.doc.dirty, "una recarga limpia no marca dirty");
+        assert!(app.doc.tabs[app.doc.active_tab].last_disk_mtime.is_some());
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// v0.2.44: watcher de disco, pestaña con ediciones sin guardar.
+    #[test]
+    fn poll_external_changes_preserves_dirty_tab() {
+        let root = std::env::temp_dir().join(format!(
+            "karkinos_watch_dirty_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&root).expect("carpeta temporal");
+        let path = root.join("edited.txt");
+        std::fs::write(&path, "en disco\n").expect("archivo");
+
+        let mut app = EditorApp::default();
+        app.doc.browse_dir = root.clone();
+        app.open_path(path.clone());
+        app.set_text("edicion local\n");
+        app.doc.dirty = true;
+
+        std::fs::write(&path, "cambio externo\n").expect("reescritura");
+        app.doc.tabs[app.doc.active_tab].last_disk_mtime = Some(std::time::SystemTime::UNIX_EPOCH);
+        app.last_disk_poll = None;
+        app.poll_external_changes();
+
+        assert_eq!(app.doc.lines, ["edicion local", ""], "no pisa ediciones");
+        assert!(app.doc.dirty, "sigue dirty");
+        assert!(
+            app.doc.status.contains("File modified on disk: edited.txt"),
+            "status = {}",
+            app.doc.status
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// v0.2.44: apertura y cierre del visor de diff.
+    #[test]
+    fn open_and_close_git_diff_modal() {
+        use karkinos_core::git_status::DiffLineKind;
+
+        let root = git_temp_repo("diff_view");
+        let path = root.join("view.txt");
+        std::fs::write(&path, "uno\n").expect("archivo inicial");
+        for args in [vec!["add", "view.txt"], vec!["commit", "-m", "inicial"]] {
+            let output = std::process::Command::new("git")
+                .args(&args)
+                .current_dir(&root)
+                .output()
+                .expect("ejecutar git");
+            assert!(
+                output.status.success(),
+                "git {args:?} falló: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        std::fs::write(&path, "uno\ndos\n").expect("archivo modificado");
+
+        let mut app = EditorApp::default();
+        app.doc.browse_dir = root.clone();
+
+        app.open_git_diff(&path, false);
+        let view = app.git_diff_modal.as_ref().expect("modal abierto");
+        assert_eq!(view.rel_name, "view.txt");
+        assert!(!view.is_staged);
+        assert!(view.diff_text.contains("+dos"));
+        assert!(view
+            .parsed_lines
+            .iter()
+            .any(|line| line.kind == DiffLineKind::Added && line.text == "+dos"));
+
+        app.close_git_diff();
+        assert!(app.git_diff_modal.is_none(), "close limpia el modal");
+
+        let stage = std::process::Command::new("git")
+            .args(["add", "view.txt"])
+            .current_dir(&root)
+            .output()
+            .expect("ejecutar git");
+        assert!(stage.status.success());
+
+        app.open_git_diff(&path, true);
+        let view = app.git_diff_modal.as_ref().expect("modal staged");
+        assert!(view.is_staged);
+        assert!(view.diff_text.contains("+dos"));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// v0.2.44: comandos del visor en el catálogo del Command Palette.
+    #[test]
+    fn palette_git_diff_commands_open_and_close_modal() {
+        let root = git_temp_repo("palette_diff");
+        let path = root.join("active.txt");
+        std::fs::write(&path, "linea\n").expect("archivo");
+        for args in [vec!["add", "active.txt"], vec!["commit", "-m", "inicial"]] {
+            let output = std::process::Command::new("git")
+                .args(&args)
+                .current_dir(&root)
+                .output()
+                .expect("ejecutar git");
+            assert!(output.status.success(), "git falló");
+        }
+        std::fs::write(&path, "linea\nnueva\n").expect("modificado");
+
+        let mut app = EditorApp::default();
+        app.doc.browse_dir = root.clone();
+        app.open_path(path);
+
+        app.execute_palette_command("git:view_diff");
+        assert!(app.git_diff_modal.is_some(), "view_diff abre el modal");
+
+        app.execute_palette_command("git:close_diff");
+        assert!(app.git_diff_modal.is_none(), "close_diff lo cierra");
 
         std::fs::remove_dir_all(&root).ok();
     }
