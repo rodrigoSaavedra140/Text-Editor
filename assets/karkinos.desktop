@@ -1,0 +1,14 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Karkinos
+GenericName=Text Editor and IDE
+Comment=Lightweight, ultra-fast native Rust IDE
+Exec=karkinos %F
+Icon=karkinos
+Terminal=false
+Categories=Development;IDE;TextEditor;
+MimeType=text/plain;text/x-rust;text/x-c;text/x-c++;text/javascript;application/json;
+StartupNotify=true
+StartupWMClass=karkinos
+Keywords=text;editor;rust;ide;code;

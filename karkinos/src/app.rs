@@ -1259,10 +1259,13 @@ impl EditorApp {
         if trimmed.is_empty() {
             return;
         }
-        let path = std::path::Path::new(trimmed);
+        // La tilde (`~`) no la expande `Path` por su cuenta: la resolvemos
+        // contra el home (y, si sigue relativa, contra la raíz actual)
+        // antes de comprobar si el destino es un directorio.
+        let path = crate::util::expand_user_path(trimmed, &self.doc.browse_dir);
         if path.is_dir() {
             self.open_folder_modal = None;
-            self.open_workspace_folder(path);
+            self.open_workspace_folder(&path);
         } else {
             self.doc.status = format!("Not a folder: {}", trimmed);
         }
@@ -2755,12 +2758,10 @@ impl EditorApp {
     /// - archivo → su carpeta contenedora es la nueva raíz y el archivo se abre;
     /// - archivo nuevo → igual, dejando el buffer listo para guardar.
     pub fn init_from_cli_path(&mut self, path: &std::path::Path) {
-        // Ruta absoluta: si viene relativa, se resuelve contra la raíz actual.
-        let resolved = if path.is_absolute() {
-            path.to_path_buf()
-        } else {
-            self.doc.browse_dir.join(path)
-        };
+        // La tilde (`~`) no la expande `Path`: la resolvemos contra el home
+        // y, si el resultado sigue siendo relativo, contra la raíz actual.
+        let resolved =
+            crate::util::expand_user_path(&path.to_string_lossy(), &self.doc.browse_dir);
 
         if resolved.is_dir() {
             self.doc.browse_dir = resolved.clone();
@@ -5425,6 +5426,37 @@ mod tests {
         assert!(app.doc.status.contains("Not a folder"), "avisa en el status");
 
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn confirm_open_folder_expande_tilde_al_home() {
+        let Ok(home) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) else {
+            return; // sin home en este entorno no hay nada que expandir
+        };
+        let home = std::path::PathBuf::from(home);
+        let dir_name = format!(
+            "karkinos_tilde_test_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        );
+        let target = home.join(&dir_name);
+        std::fs::create_dir_all(&target).expect("crear carpeta temporal en el home");
+
+        let mut app = EditorApp::default();
+        app.open_folder_modal = Some(format!("~/{}", dir_name));
+
+        app.confirm_open_folder();
+
+        assert_eq!(
+            app.doc.browse_dir, target,
+            "browse_dir apunta a la carpeta expandida"
+        );
+        assert!(app.open_folder_modal.is_none(), "el modal se cerró");
+
+        std::fs::remove_dir_all(&target).ok();
     }
 
     #[test]

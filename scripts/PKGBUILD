@@ -1,0 +1,22 @@
+# Maintainer: Rodrigo Saavedra <hugorodrigo.saavedradiaz@gmail.com>
+
+pkgname=karkinos
+pkgver=0.2.46
+pkgrel=1
+pkgdesc="Lightweight, ultra-fast native Rust IDE"
+url="https://github.com/rodrigoSaavedra140/Text-Editor"
+arch=('x86_64')
+license=('BSL-1.1')
+depends=('gcc-libs')
+makedepends=('cargo')
+
+build() {
+  cargo build --release --locked -p karkinos
+}
+
+package() {
+  install -Dm755 "target/release/karkinos" "$pkgdir/usr/bin/karkinos"
+  install -Dm644 "assets/karkinos.desktop" "$pkgdir/usr/share/applications/karkinos.desktop"
+  install -Dm644 "assets/karkinos.png" "$pkgdir/usr/share/icons/hicolor/256x256/apps/karkinos.png"
+  install -Dm644 "LICENSE" "$pkgdir/usr/share/licenses/${pkgname}/LICENSE"
+}

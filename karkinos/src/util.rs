@@ -33,6 +33,37 @@ mod tests {
         assert_eq!(parse_goto_line("-4", 10), None);
         assert_eq!(parse_goto_line("", 10), None);
     }
+
+    #[test]
+    fn expand_user_path_expande_tilde_al_home() {
+        let Ok(home) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) else {
+            return; // sin home en este entorno no hay nada que expandir
+        };
+        let home = std::path::PathBuf::from(home);
+        let base = std::path::Path::new("/tmp/karkinos_base");
+
+        assert_eq!(expand_user_path("~/test", base), home.join("test"));
+        // `~` solo también apunta al home.
+        assert_eq!(expand_user_path("~", base), home);
+    }
+
+    #[test]
+    fn expand_user_path_mantiene_rutas_absolutas() {
+        let base = std::path::Path::new("/tmp/karkinos_base");
+        assert_eq!(
+            expand_user_path("/etc/hosts", base),
+            std::path::PathBuf::from("/etc/hosts")
+        );
+    }
+
+    #[test]
+    fn expand_user_path_resuelve_relativas_contra_base() {
+        let base = std::path::Path::new("/tmp/karkinos_base");
+        assert_eq!(
+            expand_user_path("src/main.rs", base),
+            base.join("src/main.rs")
+        );
+    }
 }
 
 /// Tamaño legible del texto actual en el buffer (bytes UTF-8) — es el
@@ -89,4 +120,44 @@ pub fn is_wsl() -> bool {
 #[cfg(not(target_os = "linux"))]
 pub fn is_wsl() -> bool {
     false
+}
+
+/// Directorio home del usuario actual: `$HOME`, o `USERPROFILE` en
+/// Windows. `None` si ninguna de las dos variables está definida.
+fn home_dir() -> Option<std::path::PathBuf> {
+    std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .ok()
+        .map(std::path::PathBuf::from)
+}
+
+/// Expande una ruta de usuario que empieza con `~` (`~`, `~/...` o
+/// `~\...` en Windows) usando el home del usuario. `std::path::Path`
+/// no expande la tilde por su cuenta, por eso el modal "Open Folder" y
+/// la invocación por CLI fallaban con "Not a folder".
+///
+/// - Si `raw` empieza con `~`, se resuelve contra el home concatenando
+///   el resto de la ruta.
+/// - Si el resultado sigue siendo relativo, se concatena contra `base`.
+/// - Si es absoluto, se devuelve tal cual.
+pub fn expand_user_path(raw: &str, base: &std::path::Path) -> std::path::PathBuf {
+    let raw = raw.trim();
+
+    let mut path = if let Some(rest) = raw.strip_prefix('~') {
+        // `~`, `~/...` y `~\...`: descartamos el separador que sigue a la
+        // tilde para que `join` no trate el resto como absoluto (en
+        // `home.join("/resto")` el home se descartaría).
+        let rest = rest.trim_start_matches(['/', '\\']);
+        match home_dir() {
+            Some(home) => home.join(rest),
+            None => std::path::PathBuf::from(raw),
+        }
+    } else {
+        std::path::PathBuf::from(raw)
+    };
+
+    if !path.is_absolute() {
+        path = base.join(path);
+    }
+    path
 }
