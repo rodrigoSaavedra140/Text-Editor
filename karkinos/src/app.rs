@@ -166,6 +166,8 @@ pub struct EditorApp {
     pub git_ui: GitUiState,
     // v0.2.44: visor de diff abierto sobre un archivo del Source Control.
     pub git_diff_modal: Option<GitDiffViewState>,
+    // v0.2.45 (Tarea C): input de ruta del modal "Open Folder" (None = cerrado).
+    pub open_folder_modal: Option<String>,
     // v0.2.44: watcher periódico de disco (pestañas + metadatos de Git).
     pub last_disk_poll: Option<std::time::Instant>,
     pub last_git_mtime: Option<std::time::SystemTime>,
@@ -608,6 +610,12 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
         shortcut: Some("Ctrl+N"),
     },
     PaletteCommand {
+        id: "file:open_folder",
+        title: "File: Open Folder (Change Workspace)",
+        category: "File",
+        shortcut: Some("Ctrl+K Ctrl+O"),
+    },
+    PaletteCommand {
         id: "git:source_control",
         title: "Git: Open Source Control",
         category: "Git",
@@ -712,6 +720,7 @@ impl Default for EditorApp {
             git_status: GitStatusState::default(),
             git_ui: GitUiState::default(),
             git_diff_modal: None,
+            open_folder_modal: None,
             last_disk_poll: None,
             last_git_mtime: None,
             blame_worker: crate::git_status_worker::BlameWorker::spawn(),
@@ -1201,6 +1210,64 @@ impl EditorApp {
         self.git_diff_modal = None;
     }
 
+    /// Roadmap v0.2.45 (Tarea C): cambia la carpeta raíz del workspace.
+    /// Refresca explorador y Git, descarta el estado de búsqueda global
+    /// y el visor de diff (ambos quedan inválidos para la carpeta nueva)
+    /// y notifica el resultado en la barra de estado.
+    pub fn open_workspace_folder(&mut self, folder: &std::path::Path) {
+        self.doc.browse_dir = folder.to_path_buf();
+        self.refresh_explorer();
+        self.refresh_git_status();
+        self.refresh_git_branch();
+
+        // La búsqueda global apuntaba al workspace anterior: sus resultados
+        // ya no corresponden. Subir la generación descarta los eventos
+        // pendientes del worker.
+        self.workspace_search.generation = self.workspace_search.generation.wrapping_add(1);
+        self.workspace_search.results.clear();
+        self.workspace_search.total_matches = 0;
+        self.workspace_search.files_scanned = 0;
+        self.workspace_search.replace_summary = None;
+        self.workspace_search.error = None;
+        self.workspace_search.searching = false;
+
+        // El diff del workspace anterior tampoco aplica.
+        self.git_diff_modal = None;
+
+        self.doc.status = format!("Opened folder: {}", folder.display());
+    }
+
+    /// Roadmap v0.2.45 (Tarea C): abre el modal "Open Folder" con la ruta
+    /// actual prellenada. Cierra el selector de carpetas y el Command
+    /// Palette, para que solo un modal tenga el foco.
+    pub fn prompt_open_folder(&mut self) {
+        self.picker_open = false;
+        self.picker_button_rect = None;
+        self.command_palette.open = false;
+        self.command_palette.query.clear();
+        self.open_folder_modal = Some(self.doc.browse_dir.display().to_string());
+    }
+
+    /// Roadmap v0.2.45 (Tarea C): confirma la ruta del modal. Si es un
+    /// directorio existente, cambia el workspace y cierra el modal; si no,
+    /// avisa en la barra de estado y deja el modal abierto para corregir.
+    pub fn confirm_open_folder(&mut self) {
+        let Some(raw) = self.open_folder_modal.clone() else {
+            return;
+        };
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        let path = std::path::Path::new(trimmed);
+        if path.is_dir() {
+            self.open_folder_modal = None;
+            self.open_workspace_folder(path);
+        } else {
+            self.doc.status = format!("Not a folder: {}", trimmed);
+        }
+    }
+
     /// v0.2.44: watcher periódico (cadencia 1.5 s) de estado de Git y de
     /// archivos abiertos modificados por fuera del editor.
     pub fn poll_external_changes(&mut self) {
@@ -1606,6 +1673,7 @@ impl EditorApp {
                 let _ = self.doc.try_save();
             }
             "file:new" => self.try_new_document(),
+            "file:open_folder" => self.prompt_open_folder(),
             _ => {}
         }
     }
@@ -2678,6 +2746,49 @@ impl EditorApp {
         self.doc.snapshot_if_changed();
         self.find_update_matches();
         self.doc.status = format!("Replaced {} occurrences", count);
+    }
+
+    /// Roadmap v0.2.45 (Tarea B): abre la carpeta o el archivo pasado
+    /// por línea de comandos en la pestaña inicial. Según lo que exista
+    /// en disco:
+    /// - directorio → pasa a ser la raíz del explorador;
+    /// - archivo → su carpeta contenedora es la nueva raíz y el archivo se abre;
+    /// - archivo nuevo → igual, dejando el buffer listo para guardar.
+    pub fn init_from_cli_path(&mut self, path: &std::path::Path) {
+        // Ruta absoluta: si viene relativa, se resuelve contra la raíz actual.
+        let resolved = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            self.doc.browse_dir.join(path)
+        };
+
+        if resolved.is_dir() {
+            self.doc.browse_dir = resolved.clone();
+            self.refresh_explorer();
+            self.refresh_git_status();
+            self.refresh_git_branch();
+        } else if resolved.is_file() {
+            if let Some(parent) = resolved.parent() {
+                self.doc.browse_dir = parent.to_path_buf();
+                self.refresh_explorer();
+                self.refresh_git_status();
+                self.refresh_git_branch();
+            }
+            self.open_path(resolved);
+        } else {
+            // Creación de archivo nuevo: su carpeta contenedora (si ya
+            // existe) pasa a ser la raíz del explorador y se abre/prepara
+            // la pestaña con esa ruta y buffer vacío, lista para guardar.
+            if let Some(parent) = resolved.parent() {
+                if parent.exists() {
+                    self.doc.browse_dir = parent.to_path_buf();
+                    self.refresh_explorer();
+                    self.refresh_git_status();
+                    self.refresh_git_branch();
+                }
+            }
+            self.open_path(resolved);
+        }
     }
 
     /// Abre `path` directamente (usado por el explorador de
@@ -4656,7 +4767,7 @@ mod tests {
         ids.sort_unstable();
         ids.dedup();
         assert_eq!(ids.len(), total, "cada id del catálogo es único");
-        assert_eq!(total, 30, "el catálogo de v0.2.44 tiene 30 comandos");
+        assert_eq!(total, 31, "el catálogo de v0.2.45 tiene 31 comandos");
 
         for expected in [
             "layout:split_vertical",
@@ -4684,6 +4795,7 @@ mod tests {
             "editor:format",
             "file:save",
             "file:new",
+            "file:open_folder",
             "git:source_control",
             "git:refresh",
             "git:stage_all",
@@ -4724,7 +4836,11 @@ mod tests {
             .iter()
             .map(|command| command.id)
             .collect();
-        assert_eq!(files, ["file:save", "file:new"], "el trim también aplica");
+        assert_eq!(
+            files,
+            ["file:save", "file:new", "file:open_folder"],
+            "el trim también aplica"
+        );
 
         app.command_palette.query = "sin-coincidencias".to_string();
         assert!(app.filtered_palette_commands().is_empty());
@@ -5130,5 +5246,195 @@ mod tests {
         assert!(app.git_diff_modal.is_none(), "close_diff lo cierra");
 
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    // ---- Roadmap v0.2.45 (Tarea B): init_from_cli_path ----
+
+    fn cli_temp_dir(tag: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "karkinos_cli_{}_{}_{}",
+            tag,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&root).expect("crear carpeta temporal");
+        root
+    }
+
+    #[test]
+    fn init_from_cli_path_con_directorio_existente() {
+        let root = cli_temp_dir("dir");
+        let mut app = EditorApp::default();
+        app.init_from_cli_path(&root);
+
+        assert_eq!(
+            app.doc.browse_dir, root,
+            "browse_dir apunta a la carpeta pasada"
+        );
+        assert_eq!(
+            app.explorer.loaded_for.as_deref(),
+            Some(root.as_path()),
+            "el explorador se refrescó"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn init_from_cli_path_con_archivo_existente() {
+        let root = cli_temp_dir("file");
+        let file = root.join("hola.txt");
+        std::fs::write(&file, "contenido").expect("crear archivo");
+
+        let mut app = EditorApp::default();
+        app.init_from_cli_path(&file);
+
+        assert_eq!(app.doc.browse_dir, root, "browse_dir apunta al padre");
+        assert_eq!(
+            app.explorer.loaded_for.as_deref(),
+            Some(root.as_path()),
+            "el explorador se refrescó"
+        );
+        assert_eq!(
+            app.doc.current_file.as_deref(),
+            Some(file.as_path()),
+            "el archivo quedó abierto en la pestaña activa"
+        );
+        assert_eq!(app.doc.lines, vec!["contenido".to_string()]);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn init_from_cli_path_con_archivo_nuevo() {
+        let root = cli_temp_dir("new");
+        let file = root.join("nuevo.rs");
+
+        let mut app = EditorApp::default();
+        app.init_from_cli_path(&file);
+
+        assert_eq!(
+            app.doc.browse_dir, root,
+            "browse_dir apunta al padre existente"
+        );
+        assert_eq!(
+            app.explorer.loaded_for.as_deref(),
+            Some(root.as_path()),
+            "el explorador se refrescó"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    // ---- Roadmap v0.2.45 (Tarea C): Open Folder ----
+
+    #[test]
+    fn open_workspace_folder_cambia_browse_dir_y_notifica_status() {
+        let root = cli_temp_dir("open_folder");
+        let other = cli_temp_dir("open_folder_target");
+
+        let mut app = EditorApp::default();
+        app.doc.browse_dir = root.clone();
+        app.refresh_explorer();
+
+        // Dejar estado previo que debe quedar limpio tras el cambio.
+        app.workspace_search.results = vec![karkinos_core::FileMatches {
+            path: std::path::PathBuf::from("stale.rs"),
+            relative_display: "stale.rs".to_string(),
+            matches: Vec::new(),
+        }];
+        app.git_diff_modal = Some(GitDiffViewState {
+            file_path: std::path::PathBuf::from("stale.rs"),
+            rel_name: "stale.rs".to_string(),
+            diff_text: "old diff".to_string(),
+            parsed_lines: Vec::new(),
+            is_staged: false,
+        });
+
+        app.open_workspace_folder(&other);
+
+        assert_eq!(app.doc.browse_dir, other, "browse_dir apunta a la nueva carpeta");
+        assert_eq!(
+            app.explorer.loaded_for.as_deref(),
+            Some(other.as_path()),
+            "el explorador se refrescó"
+        );
+        assert!(app.workspace_search.results.is_empty(), "la búsqueda global quedó limpia");
+        assert!(app.git_diff_modal.is_none(), "el visor de diff se cerró");
+        assert_eq!(
+            app.doc.status,
+            format!("Opened folder: {}", other.display()),
+            "el status notifica el cambio"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&other).ok();
+    }
+
+    #[test]
+    fn prompt_open_folder_abre_modal_y_cierra_otros_modales() {
+        let mut app = EditorApp::default();
+        app.picker_open = true;
+        app.command_palette.open = true;
+        app.command_palette.query = "file".to_string();
+
+        app.prompt_open_folder();
+
+        assert!(app.open_folder_modal.is_some(), "el modal queda abierto");
+        assert!(!app.picker_open, "el selector de carpetas se cierra");
+        assert!(!app.command_palette.open, "el palette se cierra");
+        assert!(app.command_palette.query.is_empty(), "el query del palette se limpia");
+    }
+
+    #[test]
+    fn confirm_open_folder_con_directorio_existente_cambia_y_cierra() {
+        let root = cli_temp_dir("confirm_dir");
+        let target = cli_temp_dir("confirm_dir_target");
+
+        let mut app = EditorApp::default();
+        app.doc.browse_dir = root.clone();
+        app.refresh_explorer();
+        app.open_folder_modal = Some(target.display().to_string());
+
+        app.confirm_open_folder();
+
+        assert_eq!(app.doc.browse_dir, target, "browse_dir cambió");
+        assert!(app.open_folder_modal.is_none(), "el modal se cerró");
+
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&target).ok();
+    }
+
+    #[test]
+    fn confirm_open_folder_con_ruta_invalida_mantiene_modal_y_avisa() {
+        let root = cli_temp_dir("confirm_invalid");
+        let missing = root.join("no_existe");
+
+        let mut app = EditorApp::default();
+        app.doc.browse_dir = root.clone();
+        app.refresh_explorer();
+        app.open_folder_modal = Some(missing.display().to_string());
+
+        app.confirm_open_folder();
+
+        assert_eq!(app.doc.browse_dir, root, "browse_dir no cambió");
+        assert!(app.open_folder_modal.is_some(), "el modal sigue abierto para corregir");
+        assert!(app.doc.status.contains("Not a folder"), "avisa en el status");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn execute_palette_command_abre_el_modal_de_open_folder() {
+        let mut app = EditorApp::default();
+        assert!(app.open_folder_modal.is_none());
+
+        app.execute_palette_command("file:open_folder");
+
+        assert!(app.open_folder_modal.is_some(), "el comando abre el modal");
+        assert!(!app.command_palette.open, "el palette se cierra al ejecutar");
     }
 }

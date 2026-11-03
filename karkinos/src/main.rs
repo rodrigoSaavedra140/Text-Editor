@@ -32,6 +32,35 @@ use util::is_wsl;
 pub const LOGO_BYTES: &[u8] = include_bytes!("../assets/logo.png");
 
 fn main() -> eframe::Result<()> {
+    // Roadmap v0.2.45 (Tarea A): restaura la consola si un panic la deja
+    // corrupta (modo raw, cursor oculto o alternate screen buffer). Las
+    // secuencias ANSI revierten atributos, muestran el cursor y salen del
+    // buffer alternativo antes de volcar el error por stderr.
+    std::panic::set_hook(Box::new(|info| {
+        eprint!("\x1b[0m\x1b[?25h\x1b[?1049l");
+        eprintln!("{info}");
+    }));
+
+    // Roadmap v0.2.45 (Tarea A): argumentos de línea de comandos.
+    // `--version`/`-v` y `--help`/`-h` imprimen y salen con código 0; un
+    // path posicional se guarda para abrirlo en la pestaña inicial.
+    let mut target_path: Option<std::path::PathBuf> = None;
+    for arg in std::env::args().skip(1) {
+        match arg.as_str() {
+            "-v" | "--version" => {
+                println!("karkinos {}", env!("CARGO_PKG_VERSION"));
+                return Ok(());
+            }
+            "-h" | "--help" => {
+                print_usage();
+                return Ok(());
+            }
+            _ => {
+                target_path = Some(std::path::PathBuf::from(arg));
+            }
+        }
+    }
+
     // WSLg usa una GPU virtual cuyo contexto OpenGL a veces falla en
     // silencio (la ventana nunca llega a abrirse, sin ningún error).
     // Forzamos renderizado por software SOLO si detectamos WSL — en
@@ -54,11 +83,17 @@ fn main() -> eframe::Result<()> {
     }
 
     let options = eframe::NativeOptions { viewport, ..Default::default() };
-    eframe::run_native("Karkinos", options, Box::new(|cc| {
+    eframe::run_native("Karkinos", options, Box::new(move |cc| {
         // S10: el zoom elegido la sesión anterior vuela al arrancar
         // desde el Storage de la app (app-storage.json). Sin Storage
         // (o valor corrupto) queda el default de 14 px.
         let mut app = EditorApp::default();
+        // Roadmap v0.2.45 (Tarea A): pasar el path posicional del CLI al
+        // setup de EditorApp. La apertura completa (archivo nuevo, Git,
+        // etc.) la resuelve `init_from_cli_path` (Tarea B).
+        if let Some(path) = target_path {
+            app.init_from_cli_path(&path);
+        }
         if let Some(storage) = &cc.storage {
             if let Some(size) = storage.get_string("editor_font_size") {
                 if let Some(parsed) = crate::app::font_size_from_string(&size) {
@@ -92,4 +127,16 @@ fn main() -> eframe::Result<()> {
         cc.egui_ctx.set_style(style);
         Box::new(app)
     }))
+}
+
+/// Imprime el uso básico y las opciones; el llamador sale con código 0.
+fn print_usage() {
+    println!("karkinos [PATH]");
+    println!();
+    println!("Usage: karkinos [PATH]");
+    println!("Opens PATH (a file or folder) on startup, or the current directory if omitted.");
+    println!();
+    println!("Options:");
+    println!("  -h, --help     Print this help message and exit");
+    println!("  -v, --version  Print version information and exit");
 }

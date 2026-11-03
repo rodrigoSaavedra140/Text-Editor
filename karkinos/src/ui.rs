@@ -774,6 +774,7 @@ impl EditorApp {
         let mut collapse_all = false;
         let mut start_new_file = false;
         let mut start_new_folder = false;
+        let mut start_open_folder = false;
 
         ui.horizontal(|ui| {
             ui.label(
@@ -799,6 +800,10 @@ impl EditorApp {
                 if ui.button("+📁").on_hover_text("New Folder").clicked() {
                     start_new_folder = true;
                 }
+                // v0.2.45 (Tarea C): cambiar de carpeta de trabajo.
+                if ui.button("📂").on_hover_text("Open Folder (Change Workspace)").clicked() {
+                    start_open_folder = true;
+                }
             });
         });
         ui.add_space(2.0);
@@ -821,6 +826,9 @@ impl EditorApp {
                 crate::app::ExplorerNewItemKind::Folder,
                 Some(self.doc.browse_dir.clone()),
             );
+        }
+        if start_open_folder {
+            self.prompt_open_folder();
         }
 
         if let Some(kind) = self.explorer.creating_item {
@@ -1482,6 +1490,64 @@ impl EditorApp {
         }
         if let Some(id) = execute {
             self.execute_palette_command(id);
+        }
+    }
+
+    /// v0.2.45 (Tarea C): modal "Open Folder / Change Workspace".
+    /// `Enter` confirma, `Escape` o la X cancelan; "Open" valida la ruta
+    /// con `confirm_open_folder` y "Cancel" cierra sin cambios.
+    fn show_open_folder_modal(&mut self, ctx: &egui::Context, theme: &crate::theme::Theme) {
+        let Some(mut path) = self.open_folder_modal.clone() else {
+            return;
+        };
+
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.open_folder_modal = None;
+            return;
+        }
+
+        let mut open = true;
+        let mut confirm = false;
+        let mut cancel = false;
+
+        egui::Window::new("📂 Open Folder / Change Workspace")
+            .id(egui::Id::new("open_folder_modal"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .min_width(420.0)
+            .frame(crate::theme::modal_card_frame(theme))
+            .show(ctx, |ui| {
+                let field = ui.add_sized(
+                    [ui.available_width(), 26.0],
+                    egui::TextEdit::singleline(&mut path)
+                        .id_source("open_folder_input")
+                        .hint_text("/path/to/folder"),
+                );
+                field.request_focus();
+
+                // Enter con el campo enfocado confirma, como el botón "Open".
+                let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Open").clicked() || enter {
+                        confirm = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+
+        if !open || cancel {
+            self.open_folder_modal = None;
+            return;
+        }
+        self.open_folder_modal = Some(path);
+        if confirm {
+            self.confirm_open_folder();
         }
     }
 
@@ -4294,6 +4360,7 @@ impl eframe::App for EditorApp {
             || self.lsp.code_actions_menu_open
             || self.lsp.rename_dialog_open
             || self.command_palette.open
+            || self.open_folder_modal.is_some()
         {
             Self::paint_modal_backdrop(ctx);
         }
@@ -4313,6 +4380,8 @@ impl eframe::App for EditorApp {
         self.show_git_diff_modal(ctx, &theme);
         // v0.2.40: Command Palette por encima del resto de los modales.
         self.show_command_palette(ctx, &theme);
+        // v0.2.45 (Tarea C): "Open Folder / Change Workspace", por encima de todo.
+        self.show_open_folder_modal(ctx, &theme);
     }
 }
 
