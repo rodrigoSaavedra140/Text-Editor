@@ -6,22 +6,47 @@ Engineered to start in under 50 ms with minimal system resource consumption, nat
 ## 📦 Project Structure
 
 ```text
-karkinos/
-├── Cargo.toml           # Package configuration + [profile.release] (LTO thin, strip)
+karkinos/                  # GUI crate (eframe/egui)
+├── Cargo.toml
 ├── assets/
-│   └── logo.png         # Embedded logo with adaptive transparency cutout
+│   └── logo.png           # Embedded logo with adaptive transparency cutout
 └── src/
-    ├── main.rs          # Entry point: custom frameless window and decoration setup
-    ├── app.rs           # EditorApp: buffers, tabs, async save, font zoom, dialogs
-    ├── buffer.rs        # Balanced B-Tree Rope text buffer engine with O(1) COW snapshots
-    ├── editor_widget.rs # Band-rendered wrap editor widget, keyboard input, gutter, autoscroll
-    ├── ui.rs            # egui layout: custom title bar, tabs, toolbar, modal dialogs
-    ├── title_bar.rs     # Frameless title bar with vector icons and window controls
-    ├── syntax.rs        # Syntax tokenizers and LayoutJob colorizer (10+ languages)
-    ├── quick_open.rs    # Quick Open file search dialog (Ctrl+P) with fuzzy matching
-    ├── theme.rs         # Theme palettes (Dark, Monokai, Dracula)
-    ├── util.rs          # Byte formatters, goto calculations, and WSL environment detection
-    └── undo.rs          # UndoStack with idle chunking and O(1) Copy-On-Write Rope snapshots
+    ├── main.rs            # Entry point, native window setup, persisted storage
+    ├── app.rs             # EditorApp: state, tabs, commands, palette, watchers
+    ├── ui.rs              # Layout: title bar, sidebar, editor, dock, modals
+    ├── editor_widget.rs   # Editor rendering, input, gutter, folding, minimap
+    ├── title_bar.rs       # Frameless title bar with vector icons
+    ├── syntax.rs          # Tokenizers, layout cache, colorizer (10+ languages)
+    ├── theme.rs           # Theme palettes (Dark, Monokai, Dracula) and tokens
+    ├── quick_open.rs      # Async fuzzy file finder (Ctrl+P)
+    ├── document_service.rs# Tabs, buffers, save/close orchestration
+    ├── lsp_service.rs     # LSP bridge: hover, code actions, rename, diagnostics
+    ├── cargo_service.rs   # Cargo pipeline panel
+    ├── dap_service.rs     # Debug Adapter Protocol panel
+    ├── terminal_service.rs# Multi-tab PTY dock
+    ├── ast_worker.rs      # Background tree-sitter parser
+    ├── git_status_worker.rs
+    ├── git_diff_worker.rs
+    └── util.rs            # Byte formatters, goto calculations, WSL detection
+
+crates/karkinos-core/      # UI-agnostic engine
+└── src/
+    ├── buffer.rs          # Rope text buffer with O(1) COW snapshots
+    ├── undo.rs            # Chunked undo stack
+    ├── document.rs        # Document model
+    ├── text_ops.rs        # Editing primitives
+    ├── ending.rs          # Line-ending detection and serialization
+    ├── syntax_ast.rs      # Tree-sitter highlighting, scopes, symbols
+    ├── workspace_search.rs# Workspace search, filters, and multi-file replace
+    ├── git_status.rs      # Git status, commit/stage, unified diffs
+    ├── git_diff.rs        # Myers line diff for gutter marks
+    ├── lsp.rs             # LSP JSON-RPC types and client
+    ├── dap.rs             # DAP client
+    ├── cargo.rs           # Cargo runner
+    ├── terminal.rs        # PTY terminal emulator
+    ├── plugin.rs          # Plugin trait and manager
+    ├── open_vsx.rs        # Open VSX registry client
+    └── platform.rs        # Platform helpers
 ```
 
 ## ⚙️ Requirements
@@ -54,7 +79,10 @@ The resulting executable will be located at `target/release/karkinos`.
 - `Ctrl+W` — Close active tab
 - `Ctrl+Tab` / `Ctrl+Shift+Tab` — Cycle through open tabs
 - `Ctrl+P` — Quick Open project file finder
+- `Ctrl+Shift+P` / `F1` — Command Palette (fuzzy search over every registered action)
 - `Ctrl+Shift+F` — Search across every file in the workspace (case sensitive, whole word, regex)
+- `Ctrl+Shift+H` — Workspace search with the multi-file replace field expanded
+- `Ctrl+Shift+G` — Git Source Control tab (status, stage all, commit, per-file diff)
 - `Ctrl+Shift+O` — Jump to a symbol of the current document (functions, structs, enums, traits, methods, constants)
 - `Ctrl+Shift+M` — Toggle the right-side minimap (off by default so the editor uses the full width)
 - `Ctrl+S` — Save active document
@@ -74,15 +102,15 @@ The resulting executable will be located at `target/release/karkinos`.
 - `Ctrl+=` / `Ctrl+-` or `Ctrl+Wheel` — Editor font size zoom
 - **Gutter click (line numbers)** — Selects the entire clicked line
 
-## 📄 License
-
-This project is distributed under the terms of the [Business Source License 1.1 (BSL 1.1)](LICENSE).
-It grants free use, copying, modification, and compilation for personal, educational, development, and non-commercial evaluation purposes. For any commercial production use or distribution, a commercial license issued by the copyright holder is required.
-
-### Split Panes
+### Layout and Panels
 - `Ctrl+\` — Split the editor vertically (side by side); press again to close
 - `Ctrl+Shift+\` — Split the editor horizontally (top / bottom)
 - Drag the 6px divider to change the ratio
 - Each pane keeps its own cursor and scroll over the same buffer
 - `Ctrl+\`` — Toggle the Cargo console (moved from `Ctrl+\`)
 - Terminal dock tabs: `＋` opens a new PTY, `✕` closes the active one; each tab keeps its own shell
+
+## 📄 License
+
+This project is distributed under the terms of the [Business Source License 1.1 (BSL 1.1)](LICENSE).
+It grants free use, copying, modification, and compilation for personal, educational, development, and non-commercial evaluation purposes. For any commercial production use or distribution, a commercial license issued by the copyright holder is required.

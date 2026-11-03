@@ -137,3 +137,10 @@
      - Líneas `HunkHeader`: texto cyan (`Color32::from_rgb(100, 200, 255)`).
      - Líneas `Header` y `Context`: texto tenue o normal.
    - Cerrar modal con tecla `Escape` o clic en `✕`.
+
+---
+
+## Log
+
+- **2026-10-31 — Tarea A completada**: `DiffLineKind`, `ParsedDiffLine`, `parse_unified_diff` y `query_git_diff(repo_root, rel_path, staged)` en `crates/karkinos-core/src/git_status.rs`; el diff se ejecuta fuera del hilo de UI (`git diff HEAD [--cached] -- <path>`). Tests: clasificación de `+`/`-`/`@@`/cabeceras y diff real contra un repo temporal.
+- **2026-10-31 — Tareas B y C completadas**: `GitDiffViewState`, `open_git_diff`/`close_git_diff` y `poll_external_changes` (debounce 1.5 s: refresca Git y explorador, recarga pestañas limpias y avisa en pestañas dirty) en `EditorApp`; comandos `git:view_diff`/`git:close_diff`; modal de diff con colores por tipo de línea, botón `↔` por archivo en Source Control y cierre con `✕`/Escape. `poll_external_changes` sincroniza la metadata de la pestaña activa antes de comparar mtimes. Evidencia: 281 tests (167 de `karkinos` + 114 de `karkinos-core`) verdes, 0 warnings (v0.2.44).

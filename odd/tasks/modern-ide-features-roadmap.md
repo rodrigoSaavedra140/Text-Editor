@@ -15,7 +15,7 @@
 | **F2** | **Sticky Scroll (AST Breadcrumbs)** | `karkinos-core::syntax_ast`, `editor_widget.rs` | Media | Muy Alto | ✅ Hecho (`v0.2.28`) |
 | **F3** | **Multi-Cursor / Multi-Caret (`Ctrl+D`)** | `editor_widget.rs::EditorState` | Media-Alta | Muy Alto | ✅ Hecho (`v0.2.29`) |
 | **F4** | **Code Folding (Plegado por AST)** | `ast_worker.rs`, `editor_widget.rs` | Media | Alto | ✅ Hecho (`v0.2.30`) |
-| **F5** | **Split Panes (Editor Side-by-Side)** | `ui.rs`, `app.rs`, `editor_widget.rs` | Alta | Máximo | ⏳ Próximo |
+| **F5** | **Split Panes (Editor Side-by-Side)** | `ui.rs`, `app.rs`, `editor_widget.rs` | Alta | Máximo | ✅ Hecho (`v0.2.31`) |
 
 ---
 

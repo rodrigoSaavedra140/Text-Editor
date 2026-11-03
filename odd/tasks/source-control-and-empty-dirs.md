@@ -139,3 +139,10 @@
    - `git:source_control` -> "Git: Open Source Control"
    - `git:refresh` -> "Git: Refresh Status"
    - `git:stage_all` -> "Git: Stage All Changes"
+
+---
+
+## Log
+
+- **2026-10-31 — Tarea A completada**: `walk_entries(root) -> (Vec<PathBuf>, Vec<PathBuf>)` en `crates/karkinos-core/src/workspace_search.rs` recorre archivos y directorios excluyendo `DEFAULT_EXCLUDED_DIRS`; `walk_files` queda como delegado de `.0`. `FileTreeNode::build_from_paths_and_dirs` representa carpetas sin archivos hijos, `ExplorerState.directories` guarda los directorios y `refresh_explorer` usa `walk_entries`. La UI dibuja la carpeta vacía con `📁` y una fila tenue `(empty)`. Test: `walk_entries_reports_files_and_empty_directories`.
+- **2026-10-31 — Tareas B y C completadas**: `crates/karkinos-core/src/git_status.rs` con `GitStatusKind`, `GitStatusEntry`, `parse_porcelain_status`, `query_git_status`, `execute_git_commit` y `execute_git_stage_all` (porcelain v1 `XY<space>path`, `??` para untracked y renombres `old -> new`). En la app: `SidebarTab::SourceControl`, `GitUiState`, `refresh_git_status`/`git_commit`/`git_stage_all`, atajo `Ctrl+Shift+G` (excluyendo el `Ctrl+G` de goto-line) y comandos `git:source_control`/`git:refresh`/`git:stage_all`. UI: botón 🌿 con badge de cambios, cabecera con rama y refresco, caja de commit, Commit/+ Stage All, badges de color por estado y clic para abrir el archivo. Evidencia: `cargo check --workspace` 0 warnings; 159 tests de `karkinos` + 96 de `karkinos-core` verdes (v0.2.42).

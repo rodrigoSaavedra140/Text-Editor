@@ -117,3 +117,10 @@
    - Botón `Replace All` con icono `🔄` o `Replace All` (con tooltip explicativo).
    - Campo colapsable o secundario `Files to include` (e.g. `*.rs, *.toml`).
    - Notificación de resultado en caso de éxito o error.
+
+---
+
+## Log
+
+- **2026-10-31 — Tarea A completada**: `SearchQuery` ganó `file_pattern`; `matches_file_pattern` acepta listas separadas por comas, prefijos de ruta y comodines (`*.rs`); se agregaron `ReplaceSummary`, `replace_in_string`, `replace_in_file` y `replace_in_workspace` en `crates/karkinos-core/src/workspace_search.rs`. `replace_in_file` conserva permisos y CRLF, evita reescrituras sin cambios y devuelve `Ok(0)` para archivos no-UTF-8 (se saltan en el lote en vez de abortar tras escrituras parciales). Tests: patrones, prefijos, captura de grupos, mayúsculas, palabra completa, no-UTF-8 y filtro por patrón.
+- **2026-10-31 — Tareas B y C completadas**: `WorkspaceSearchState` ganó `show_replace`, `replace_input`, `file_filter`, `replace_summary` y `replace_focus_requested`; `execute_workspace_replace` y `open_workspace_replace` sincronizan las pestañas abiertas comparando el contenido en disco previo al lote (no el buffer, para no pisar ediciones sin guardar). UI: toggle ▶/▼, campo Replace con Enter, `Replace All`, campo `Files to include` y resumen/errores en la barra de estado. Atajo `Ctrl+Shift+H` y comandos `search:replace_in_workspace` / `search:toggle_replace` (v0.2.43).
