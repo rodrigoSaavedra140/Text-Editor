@@ -1282,6 +1282,7 @@ impl EditorApp {
         }
         self.last_disk_poll = Some(now);
 
+        self.refresh_git_branch();
         self.poll_git_metadata_changes();
         self.poll_open_tab_disk_changes();
     }
@@ -1355,7 +1356,7 @@ impl EditorApp {
             } else {
                 content.split('\n').map(|line| line.to_string()).collect()
             };
-            tab.buffer = karkinos_core::TextBuffer::from_str(&content);
+            tab.buffer = karkinos_core::TextBuffer::from_text(&content);
             tab.last_snapshot = Rope::from_str(&content);
             tab.undo_stack = UndoStack::new();
             tab.dirty = false;
@@ -1479,6 +1480,20 @@ impl EditorApp {
             .get(&path)
             .and_then(|lines| lines.get(&line_number))
             .map(|blame| karkinos_core::git_status::format_blame_line(blame, now_unix));
+    }
+
+    /// F8: tiempo restante hasta cumplir el dwell de 300 ms del blame inline.
+    /// Devuelve `Some` solo si el cursor se movió hace menos de 300 ms (todavía
+    /// hay que despertar para consultar el blame); `None` significa reposo: sin
+    /// repaint adicional. Así un archivo sin commit no fuerza un loop continuo.
+    pub fn blame_repaint_remaining(&self) -> Option<std::time::Duration> {
+        let at = self.git_status.cursor_settled_at?;
+        let elapsed = at.elapsed();
+        if elapsed < std::time::Duration::from_millis(300) {
+            Some(std::time::Duration::from_millis(300) - elapsed)
+        } else {
+            None
+        }
     }
 
     /// F7 (Roadmap v0.2.34 / v0.2.39): abre el selector de símbolos en la barra lateral unificada.
@@ -1891,7 +1906,7 @@ impl EditorApp {
             } else {
                 content.split('\n').map(|line| line.to_string()).collect()
             };
-            tab.buffer = karkinos_core::TextBuffer::from_str(&content);
+            tab.buffer = karkinos_core::TextBuffer::from_text(&content);
             tab.last_snapshot = Rope::from_str(&content);
             tab.undo_stack = UndoStack::new();
             tab.dirty = false;
@@ -1992,8 +2007,6 @@ impl EditorApp {
         applied
     }
 
-    /// S4 (Etapa 4): Actualiza diagnósticos y estado del cliente LSP.
-    
     /// S4 (Etapa 5): Ejecuta un comando registrado por plugins sobre el documento activo.
     pub fn execute_plugin_command(&mut self, cmd_id: &str) -> bool {
         let mut doc = karkinos_core::Document::new(self.doc.active_tab);
@@ -2049,26 +2062,25 @@ impl EditorApp {
         }
     }
 
-    /// S2 (Rust IDE): Solicita saltar a la definición del símbolo bajo el cursor (F12)
-    
-    /// S2 (Rust IDE): Solicita información de hover / documentación para el símbolo bajo el cursor
-    
     /// S2 (Rust IDE): Chequea y procesa respuestas entrantes de Go to Definition, Hover, Code Actions, Inlay Hints y Rename
     pub fn update_lsp(&mut self) {
         let is_rust = self.current_language() == crate::syntax::Language::Rust;
         self.lsp.update_lsp(&mut self.editor_state, &mut self.doc, is_rust);
     }
 
+    /// S2 (Rust IDE): Solicita saltar a la definición del símbolo bajo el cursor (F12)
     pub fn goto_definition(&mut self) {
         let is_rust = self.current_language() == crate::syntax::Language::Rust;
         self.lsp.goto_definition(&self.editor_state, &mut self.doc, is_rust);
     }
 
+    /// S2 (Rust IDE): Solicita información de hover / documentación para el símbolo bajo el cursor
     pub fn request_hover(&mut self) {
         let is_rust = self.current_language() == crate::syntax::Language::Rust;
         self.lsp.request_hover(&self.editor_state, &self.doc, is_rust);
     }
 
+    /// Requests code actions (quick-fixes, auto-imports) for current cursor position and diagnostics.
     pub fn request_code_actions(&mut self) {
         let is_rust = self.current_language() == crate::syntax::Language::Rust;
         self.lsp.request_code_actions(&self.editor_state, &mut self.doc, is_rust);
@@ -2081,6 +2093,7 @@ impl EditorApp {
         self.lsp.request_inlay_hints(&self.doc, is_rust);
     }
 
+    /// Requests workspace rename of symbol at cursor.
     pub fn request_rename(&mut self, new_name: &str) {
         let is_rust = self.current_language() == crate::syntax::Language::Rust;
         self.lsp.request_rename(&self.editor_state, &mut self.doc, is_rust, new_name);
@@ -2130,8 +2143,6 @@ impl EditorApp {
         }
     }
 
-    /// Requests code actions (quick-fixes, auto-imports) for current cursor position and diagnostics.
-    
     /// Applies the code action at the specified index.
     pub fn apply_code_action(&mut self, action_idx: usize) {
         if action_idx >= self.lsp.code_actions.len() {
@@ -2146,11 +2157,6 @@ impl EditorApp {
         self.lsp.code_actions.clear();
     }
 
-    /// Requests inlay hints for the current buffer.
-    #[allow(dead_code)]
-    
-    /// Requests workspace rename of symbol at cursor.
-    
     /// Applies LSP text edits to the active editor buffer and updates lines and AST.
     pub fn apply_text_edits_to_active(&mut self, edits: &[karkinos_core::lsp::LspTextEdit]) {
         if edits.is_empty() {
@@ -2360,7 +2366,7 @@ impl EditorApp {
         let mut grouped: std::collections::HashMap<PathBuf, Vec<usize>> =
             std::collections::HashMap::new();
         for (path, line) in &self.dap.breakpoints {
-            grouped.entry(path.clone()).or_insert_with(Vec::new).push(*line);
+            grouped.entry(path.clone()).or_default().push(*line);
         }
         for (path, lines) in grouped {
             client.set_breakpoints(&path, &lines);
@@ -4530,6 +4536,26 @@ mod tests {
         std::fs::remove_file(path).ok();
     }
 
+    #[test]
+    fn blame_dwell_no_repinta_tras_superar_300ms() {
+        let mut app = EditorApp::default();
+
+        // Sin cursor asentado no hay repaint pendiente (reposo total).
+        assert!(app.blame_repaint_remaining().is_none());
+
+        // Recién movido el cursor: falta cumplir el dwell, pide un repaint.
+        app.git_status.cursor_settled_at = Some(std::time::Instant::now());
+        assert!(app.blame_repaint_remaining().is_some());
+
+        // Cumplido el dwell (más de 300 ms): no pide ningún repaint adicional.
+        app.git_status.cursor_settled_at =
+            Some(std::time::Instant::now() - std::time::Duration::from_millis(400));
+        assert!(
+            app.blame_repaint_remaining().is_none(),
+            "tras el dwell el editor debe entrar en reposo"
+        );
+    }
+
     // UI-6 (v0.2.38): árbol del explorador.
 
     #[test]
@@ -5377,8 +5403,10 @@ mod tests {
 
     #[test]
     fn prompt_open_folder_abre_modal_y_cierra_otros_modales() {
-        let mut app = EditorApp::default();
-        app.picker_open = true;
+        let mut app = EditorApp {
+            picker_open: true,
+            ..Default::default()
+        };
         app.command_palette.open = true;
         app.command_palette.query = "file".to_string();
 
@@ -5445,8 +5473,10 @@ mod tests {
         let target = home.join(&dir_name);
         std::fs::create_dir_all(&target).expect("crear carpeta temporal en el home");
 
-        let mut app = EditorApp::default();
-        app.open_folder_modal = Some(format!("~/{}", dir_name));
+        let mut app = EditorApp {
+            open_folder_modal: Some(format!("~/{}", dir_name)),
+            ..Default::default()
+        };
 
         app.confirm_open_folder();
 

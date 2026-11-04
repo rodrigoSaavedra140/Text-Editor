@@ -19,9 +19,9 @@ use std::sync::mpsc;
 
 /// Pedido pendiente: revisión monótonica medida desde la app (`ast_request_rev`)
 /// + snapshot del texto del buffer. El snapshot es una copia del String
-/// (dado que el `Rope` de ropey no se puede alimentar a tree-sitter
-/// directamente): es una copia O(n) por edición GRATUITA tragarlo; el
-/// worker coalescea, así que tipear rápido NO acumula parseos.
+///   (dado que el `Rope` de ropey no se puede alimentar a tree-sitter
+///   directamente): es una copia O(n) por edición GRATUITA tragarlo; el
+///   worker coalescea, así que tipear rápido NO acumula parseos.
 pub struct AstRequest {
     pub revision: u64,
     pub text: String,
@@ -89,7 +89,7 @@ impl AstWorker {
         };
         let mut best: Option<AstResult> = result_rx.try_recv().ok();
         while let Ok(next) = result_rx.try_recv() {
-            let keep = best.as_ref().map_or(true, |b| next.revision > b.revision);
+            let keep = best.as_ref().is_none_or(|b| next.revision > b.revision);
             if keep {
                 best = Some(next);
             }

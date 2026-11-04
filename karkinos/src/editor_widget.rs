@@ -1,5 +1,10 @@
 use eframe::egui;
 
+/// Posición en el documento (línea 0-based, columna 0-based).
+pub type TextPos = (usize, usize);
+/// Rango de texto delimitado por dos posiciones (inicio, fin).
+pub type TextRange = (TextPos, TextPos);
+
 /// S10: límites y tamaño por defecto de la fuente del editor.
 pub const MIN_FONT_SIZE: f32 = 8.0;
 pub const MAX_FONT_SIZE: f32 = 32.0;
@@ -97,7 +102,7 @@ pub fn insert_text_multi(
 /// posición donde queda su cursor (el inicio del rango borrado).
 pub fn delete_ranges_multi(
     lines: &mut Vec<String>,
-    ranges: &[((usize, usize), (usize, usize))],
+    ranges: &[TextRange],
 ) -> Vec<(usize, usize)> {
     let mut order: Vec<usize> = (0..ranges.len()).collect();
     order.sort_by(|&a, &b| ranges[b].0.cmp(&ranges[a].0));
@@ -360,6 +365,24 @@ pub fn minimap_viewport(scroll_frac: f32, visible_frac: f32, height: f32) -> (f3
     (top, h)
 }
 
+/// F9: mapea cada píxel vertical del minimap a la línea fuente que muestrea.
+/// Un documento corto (que entra entero en la altura) devuelve una entrada por
+/// línea; uno largo devuelve una entrada por píxel, cubriendo el 0%..100% del
+/// archivo sin el truncado del antiguo `step.max(1.0)` + `break`.
+fn minimap_line_mapping(total_lines: usize, mm_height: usize) -> Vec<usize> {
+    if total_lines == 0 {
+        return Vec::new();
+    }
+    let mm_height = mm_height.max(1);
+    if total_lines <= mm_height {
+        (0..total_lines).collect()
+    } else {
+        (0..mm_height)
+            .map(|py| py * total_lines / mm_height)
+            .collect()
+    }
+}
+
 // S2 (Roadmap v0.2.9): período del parpadeo del caret, en segundos.
 // El pesto SOLIDO durante CARET_BLINK_PERIOD_S tras cada interacción y
 // alterna ON/OFF cada medio período después: 1 Hz visible clásico de editor.
@@ -373,7 +396,7 @@ fn caret_blink_visible(now: f64, last_activity: f64) -> bool {
     if idle < CARET_BLINK_PERIOD_S {
         return true;
     }
-    ((idle / CARET_BLINK_PERIOD_S).floor() as u64) % 2 == 0
+    ((idle / CARET_BLINK_PERIOD_S).floor() as u64).is_multiple_of(2)
 }
 
 /// S2 (Roadmap v0.2.9): segundos hasta el próximo cruce de fase (para
@@ -473,7 +496,7 @@ fn indent_line(line: &mut String) {
 
 /// S6: Comenta o descomenta el rango de líneas [start_line..=end_line] usando el prefijo indicado.
 pub fn toggle_comment_range(
-    lines: &mut Vec<String>,
+    lines: &mut [String],
     start_line: usize,
     end_line: usize,
     prefix: &str,
@@ -489,8 +512,7 @@ pub fn toggle_comment_range(
         trimmed.is_empty() || trimmed.starts_with(prefix)
     });
 
-    for l in start_l..=end_l {
-        let line = &lines[l];
+    for line in lines.iter_mut().take(end_l + 1).skip(start_l) {
         if line.trim().is_empty() {
             continue;
         }
@@ -498,19 +520,19 @@ pub fn toggle_comment_range(
             let indent_len = line.chars().take_while(|c| c.is_whitespace()).count();
             let indent_bytes = char_to_byte(line, indent_len);
             let rest = &line[indent_bytes..];
-            if rest.starts_with(prefix) {
-                let strip_len = if rest[prefix.len()..].starts_with(' ') {
+            if let Some(stripped) = rest.strip_prefix(prefix) {
+                let strip_len = if stripped.starts_with(' ') {
                     prefix.len() + 1
                 } else {
                     prefix.len()
                 };
-                lines[l].replace_range(indent_bytes..indent_bytes + strip_len, "");
+                line.replace_range(indent_bytes..indent_bytes + strip_len, "");
             }
         } else {
             let indent_len = line.chars().take_while(|c| c.is_whitespace()).count();
             let indent_bytes = char_to_byte(line, indent_len);
             let insert = format!("{} ", prefix);
-            lines[l].insert_str(indent_bytes, &insert);
+            line.insert_str(indent_bytes, &insert);
         }
     }
 }
@@ -718,8 +740,8 @@ pub fn find_matching_bracket(
         let mut depth = 1usize;
         let mut start_c = origin_col + 1;
         let end_line = (cursor_line + max_lines).min(lines.len());
-        for l in cursor_line..end_line {
-            for (c_idx, c) in lines[l].chars().enumerate().skip(start_c) {
+        for (l, line) in lines.iter().enumerate().take(end_line).skip(cursor_line) {
+            for (c_idx, c) in line.chars().enumerate().skip(start_c) {
                 if c == ch {
                     depth += 1;
                 } else if c == partner_ch {
@@ -779,7 +801,7 @@ fn row_count_for(line: &str, wrap_chars: usize) -> usize {
     if len == 0 {
         1
     } else {
-        (len + wrap_chars - 1) / wrap_chars
+        len.div_ceil(wrap_chars)
     }
 }
 
@@ -1021,9 +1043,7 @@ pub fn show(
                         state.cursor_line = clicked_line;
                         state.cursor_col = we;
                     } else {
-                        if response.clicked() && !response.dragged() {
-                            state.sel_anchor = Some((clicked_line, clicked_col));
-                        } else if response.drag_started() {
+                        if (response.clicked() && !response.dragged()) || response.drag_started() {
                             state.sel_anchor = Some((clicked_line, clicked_col));
                         }
                         state.cursor_line = clicked_line;
@@ -1166,8 +1186,8 @@ pub fn show(
                                 // S4 (Etapa 2): Shift+Tab desindenta bloque multilínea
                                 let mut removed_first = 0;
                                 let mut removed_last = 0;
-                                for l in from_l..=to_l {
-                                    let rem = dedent_line(&mut lines[l]);
+                                for (l, line) in lines.iter_mut().enumerate().take(to_l + 1).skip(from_l) {
+                                    let rem = dedent_line(line);
                                     if l == s.0 {
                                         removed_first = rem;
                                     }
@@ -1186,8 +1206,8 @@ pub fn show(
                                 }
                             } else {
                                 // S4 (Etapa 2): Tab indenta bloque multilínea
-                                for l in from_l..=to_l {
-                                    indent_line(&mut lines[l]);
+                                for line in lines.iter_mut().take(to_l + 1).skip(from_l) {
+                                    indent_line(line);
                                 }
                                 let new_s_col = s.1 + 1;
                                 let new_e_col = if e.1 > 0 || e.0 == to_l { e.1 + 1 } else { e.1 };
@@ -1349,13 +1369,7 @@ pub fn show(
                             }
                         }
 
-                        let new_pos_after = |line: usize, col: usize| {
-                            if col < line_char_count(&lines[line]) || line + 1 >= lines.len() {
-                                (line, col)
-                            } else {
-                                (line, col)
-                            }
-                        };
+                        let new_pos_after = |line: usize, col: usize| (line, col);
                         let primary_new = match primary_range {
                             Some(r) => r.0,
                             None => new_pos_after(state.cursor_line, state.cursor_col),
@@ -1511,7 +1525,7 @@ pub fn show(
                             if s.0 == e.0 && e.1 > s.1 {
                                 let needle: String =
                                     lines[s.0].chars().skip(s.1).take(e.1 - s.1).collect();
-                                if let Some((ns, ne)) = find_next_occurrence(&lines, &needle, e) {
+                                if let Some((ns, ne)) = find_next_occurrence(lines, &needle, e) {
                                     state.extra_carets.push(Caret {
                                         line: ne.0,
                                         col: ne.1,
@@ -1684,8 +1698,7 @@ pub fn show(
     // regeneró el árbol, acá se vacía la cache de una sola vez.
     state.layout_cache.sync_ast(state.ast_rev);
     let mut visual_row = state.cum_rows[start_line];
-    for i in start_line..lines.len() {
-        let line = &lines[i];
+    for (i, line) in lines.iter().enumerate().skip(start_line) {
         let rows_here = state.row_counts.get(i).copied().unwrap_or(1);
         if rows_here == 0 {
             continue;
@@ -2009,7 +2022,7 @@ pub fn show(
                     pos.0 == i && pos.1 >= start && pos.1 < end
                 };
                 let is_origin = check_pos(bm.origin);
-                let is_partner = bm.partner.map_or(false, check_pos);
+                let is_partner = bm.partner.is_some_and(check_pos);
 
                 if is_origin || is_partner {
                     let col = if is_origin { bm.origin.1 } else { bm.partner.unwrap().1 };
@@ -2152,29 +2165,57 @@ pub fn show(
         let mm_painter = ui.painter();
         mm_painter.rect_filled(minimap_rect, 0.0, theme.bg);
         let total = lines.len().max(1);
-        let step = (minimap_rect.height() / total as f32).max(1.0);
-        for (i, line) in lines.iter().enumerate() {
-            let y = minimap_rect.top() + i as f32 * step;
-            if y > minimap_rect.bottom() {
-                break;
+        let mm_height = minimap_rect.height();
+        let mm_height_usize = (mm_height as usize).max(1);
+
+        if total <= mm_height_usize {
+            // El documento entra entero: una barra por línea en su posición
+            // proporcional, sin forzar un paso mínimo.
+            let step = mm_height / total as f32;
+            for (i, line) in lines.iter().enumerate() {
+                let y = minimap_rect.top() + i as f32 * step;
+                let len = state
+                    .char_lens
+                    .get(i)
+                    .copied()
+                    .unwrap_or_else(|| line.chars().count());
+                if len == 0 {
+                    continue;
+                }
+                let width = ((len as f32 / 120.0).min(1.0)) * (MINIMAP_W - 8.0);
+                mm_painter.rect_filled(
+                    egui::Rect::from_min_size(
+                        egui::pos2(minimap_rect.left() + 4.0, y),
+                        egui::vec2(width.max(1.0), step),
+                    ),
+                    0.0,
+                    theme.text_muted.gamma_multiply(0.35),
+                );
             }
-            let len = state
-                .char_lens
-                .get(i)
-                .copied()
-                .unwrap_or_else(|| line.chars().count());
-            if len == 0 {
-                continue;
+        } else {
+            // Documento más alto que el minimap: muestrear una línea por píxel
+            // vertical, mapeando el píxel a la línea proporcional. Así se
+            // cubre el 0%..100% del archivo sin truncar las líneas inferiores.
+            let mapping = minimap_line_mapping(lines.len(), mm_height_usize);
+            for (py, &line_idx) in mapping.iter().enumerate() {
+                let len = state
+                    .char_lens
+                    .get(line_idx)
+                    .copied()
+                    .unwrap_or_else(|| lines[line_idx].chars().count());
+                if len == 0 {
+                    continue;
+                }
+                let width = ((len as f32 / 120.0).min(1.0)) * (MINIMAP_W - 8.0);
+                mm_painter.rect_filled(
+                    egui::Rect::from_min_size(
+                        egui::pos2(minimap_rect.left() + 4.0, minimap_rect.top() + py as f32),
+                        egui::vec2(width.max(1.0), 1.0),
+                    ),
+                    0.0,
+                    theme.text_muted.gamma_multiply(0.35),
+                );
             }
-            let width = ((len as f32 / 120.0).min(1.0)) * (MINIMAP_W - 8.0);
-            mm_painter.rect_filled(
-                egui::Rect::from_min_size(
-                    egui::pos2(minimap_rect.left() + 4.0, y),
-                    egui::vec2(width.max(1.0), step.max(1.0)),
-                ),
-                0.0,
-                theme.text_muted.gamma_multiply(0.35),
-            );
         }
 
         let visible_frac = rect.height() / total_height.max(1.0);
@@ -2816,6 +2857,46 @@ mod tests {
         assert_eq!(top2, 0.0);
     }
 
+    #[test]
+    fn minimap_mapea_cada_linea_si_entra_entero() {
+        // Documento corto: una entrada por línea, en orden.
+        let mapping = minimap_line_mapping(10, 600);
+        assert_eq!(mapping, (0..10).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn minimap_documento_largo_no_trunca_las_lineas_inferiores() {
+        // 2,000 líneas en un minimap de 600 px: antes el `step.max(1.0)` +
+        // `break` cortaba en la línea 599 y ocultaba el resto.
+        let total = 2000usize;
+        let height = 600usize;
+        let mapping = minimap_line_mapping(total, height);
+
+        assert_eq!(mapping.len(), height, "una muestra por píxel vertical");
+        assert_eq!(mapping[0], 0, "cubre la primera línea");
+
+        // Monótono no decreciente: el mapeo respeta el orden del archivo.
+        for w in mapping.windows(2) {
+            assert!(w[0] <= w[1], "el mapeo no puede retroceder");
+        }
+
+        let last = mapping[height - 1];
+        assert!(
+            last > height,
+            "el fondo debe mapear más allá del viejo techo de {height} líneas (fue {last})"
+        );
+        // El hueco hasta el final es como máximo un paso de muestreo: no trunca.
+        assert!(
+            total - last <= total / height + 1,
+            "las líneas inferiores no deben quedar fuera (última muestreada: {last} de {total})"
+        );
+    }
+
+    #[test]
+    fn minimap_documento_vacio_no_produce_entradas() {
+        assert!(minimap_line_mapping(0, 600).is_empty());
+    }
+
     // F3 (Roadmap v0.2.29): multi-cursor.
 
     #[test]
@@ -2859,14 +2940,16 @@ mod tests {
 
     #[test]
     fn dedup_extra_carets_drops_duplicates_and_primary() {
-        let mut state = EditorState::default();
-        state.cursor_line = 0;
-        state.cursor_col = 0;
-        state.extra_carets = vec![
-            Caret { line: 0, col: 0, anchor: None },
-            Caret { line: 0, col: 5, anchor: None },
-            Caret { line: 0, col: 5, anchor: Some((0, 3)) },
-        ];
+        let mut state = EditorState {
+            cursor_line: 0,
+            cursor_col: 0,
+            extra_carets: vec![
+                Caret { line: 0, col: 0, anchor: None },
+                Caret { line: 0, col: 5, anchor: None },
+                Caret { line: 0, col: 5, anchor: Some((0, 3)) },
+            ],
+            ..Default::default()
+        };
         dedup_extra_carets(&mut state);
         assert_eq!(state.extra_carets.len(), 1, "solo queda el cursor distinto del primario");
         assert_eq!((state.extra_carets[0].line, state.extra_carets[0].col), (0, 5));
@@ -2874,12 +2957,14 @@ mod tests {
 
     #[test]
     fn test_code_folding_toggle_and_row_counts() {
-        let mut state = EditorState::default();
-        state.folding_ranges = vec![karkinos_core::syntax_ast::FoldingRange {
-            start_line: 1,
-            end_line: 3,
-            kind: karkinos_core::syntax_ast::FoldingKind::Function,
-        }];
+        let mut state = EditorState {
+            folding_ranges: vec![karkinos_core::syntax_ast::FoldingRange {
+                start_line: 1,
+                end_line: 3,
+                kind: karkinos_core::syntax_ast::FoldingKind::Function,
+            }],
+            ..Default::default()
+        };
 
         let lines = vec![
             "fn before() {}".to_string(),

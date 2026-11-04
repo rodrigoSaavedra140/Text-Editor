@@ -9,9 +9,12 @@ use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc};
 use std::thread;
 
+/// Resultado de blame de un archivo: (ruta, mapa línea -> blame).
+type BlameResult = (PathBuf, Arc<HashMap<usize, BlameLine>>);
+
 pub struct BlameWorker {
     request_tx: Option<mpsc::Sender<PathBuf>>,
-    result_rx: Option<mpsc::Receiver<(PathBuf, Arc<HashMap<usize, BlameLine>>)>>,
+    result_rx: Option<mpsc::Receiver<BlameResult>>,
     _handle: Option<thread::JoinHandle<()>>,
 }
 

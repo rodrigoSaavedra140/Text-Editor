@@ -128,7 +128,7 @@ pub fn indent_line(line: &mut String) {
 
 /// Toggles line or block comments using the specified prefix.
 pub fn toggle_comment_range(
-    lines: &mut Vec<String>,
+    lines: &mut [String],
     start_line: usize,
     end_line: usize,
     prefix: &str,
@@ -144,8 +144,7 @@ pub fn toggle_comment_range(
         trimmed.is_empty() || trimmed.starts_with(prefix)
     });
 
-    for l in start_l..=end_l {
-        let line = &lines[l];
+    for line in lines.iter_mut().take(end_l + 1).skip(start_l) {
         if line.trim().is_empty() {
             continue;
         }
@@ -153,19 +152,19 @@ pub fn toggle_comment_range(
             let indent_len = line.chars().take_while(|c| c.is_whitespace()).count();
             let indent_bytes = char_to_byte(line, indent_len);
             let rest = &line[indent_bytes..];
-            if rest.starts_with(prefix) {
-                let strip_len = if rest[prefix.len()..].starts_with(' ') {
+            if let Some(stripped) = rest.strip_prefix(prefix) {
+                let strip_len = if stripped.starts_with(' ') {
                     prefix.len() + 1
                 } else {
                     prefix.len()
                 };
-                lines[l].replace_range(indent_bytes..indent_bytes + strip_len, "");
+                line.replace_range(indent_bytes..indent_bytes + strip_len, "");
             }
         } else {
             let indent_len = line.chars().take_while(|c| c.is_whitespace()).count();
             let indent_bytes = char_to_byte(line, indent_len);
             let insert = format!("{} ", prefix);
-            lines[l].insert_str(indent_bytes, &insert);
+            line.insert_str(indent_bytes, &insert);
         }
     }
 }
@@ -222,8 +221,8 @@ pub fn find_matching_bracket(
         let mut depth = 1usize;
         let mut start_c = origin_col + 1;
         let end_line = (cursor_line + max_lines).min(lines.len());
-        for l in cursor_line..end_line {
-            for (c_idx, c) in lines[l].chars().enumerate().skip(start_c) {
+        for (l, line) in lines.iter().enumerate().take(end_line).skip(cursor_line) {
+            for (c_idx, c) in line.chars().enumerate().skip(start_c) {
                 if c == ch {
                     depth += 1;
                 } else if c == partner_ch {

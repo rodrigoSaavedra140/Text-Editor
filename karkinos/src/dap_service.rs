@@ -5,9 +5,10 @@
 //! se detuvo la ejecución. Los orquestadores (toggle/start/step/stop/
 //! poll) quedan en `app.rs` porque sincronizan presentación del widget
 //! (`EditorState`), abren el archivo del frame activo (`open_path`) y
-/// escriben el `status` del documento — es el puente debugger↔editor.
+//! escriben el `status` del documento — es el puente debugger↔editor.
 
 /// S4 (Rust IDE): servicio del debugger DAP nativo.
+#[derive(Default)]
 pub struct DapService {
     pub client: Option<karkinos_core::DapClient>,
     /// Breakpoint set por (ruta, línea) — el estado fuente de verdad,
@@ -16,15 +17,4 @@ pub struct DapService {
     pub panel_open: bool,
     /// Última línea donde el debugger se detuvo: (archivo, línea).
     pub stopped_line: Option<(std::path::PathBuf, usize)>,
-}
-
-impl Default for DapService {
-    fn default() -> Self {
-        DapService {
-            client: None,
-            breakpoints: std::collections::HashSet::new(),
-            panel_open: false,
-            stopped_line: None,
-        }
-    }
 }

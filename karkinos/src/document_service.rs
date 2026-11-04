@@ -25,6 +25,9 @@ use crate::undo::{ChunkTracker, Edit, UndoStack};
 // una copia duplicada que la T5a elimina.
 use karkinos_core::{LineEnding, default_new_file_path, detect_line_ending, serialize_line_ending};
 
+/// Cache de un listado de carpeta: (ruta, mtime, subcarpetas, archivos).
+type DirCacheEntry = (PathBuf, Option<SystemTime>, Vec<String>, Vec<String>);
+
 /// Estado compartido entre el hilo que escribe el archivo y la UI,
 /// que solo lee esto para dibujar la barra de progreso.
 pub struct SaveProgress {
@@ -178,7 +181,7 @@ pub struct DocumentService {
     // era I/O de disco EN CADA FRAME con el desplegable abierto.
     // Se invalida al navegar a otra carpeta o cuando cambia el
     // mtime de la carpeta (archivos creados/borrados dentro).
-    dir_cache: Option<(PathBuf, Option<SystemTime>, Vec<String>, Vec<String>)>,
+    dir_cache: Option<DirCacheEntry>,
 }
 
 impl Default for DocumentService {

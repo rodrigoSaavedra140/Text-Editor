@@ -964,6 +964,7 @@ impl EditorApp {
     /// Filas recursivas del árbol del explorador (UI-6 / v0.2.39).
     /// Tanto carpetas como archivos son interactivos en todo el ancho del renglón para que
     /// hacer clic en cualquier punto de la fila amplíe o esconda la carpeta o abra el archivo.
+    #[allow(clippy::too_many_arguments)]
     fn draw_file_tree(
         ui: &mut egui::Ui,
         nodes: &[crate::app::FileTreeNode],
@@ -1084,7 +1085,7 @@ impl EditorApp {
                     );
                     let over_trash = ui
                         .input(|i| i.pointer.interact_pos())
-                        .map_or(false, |p| trash_rect.contains(p));
+                        .is_some_and(|p| trash_rect.contains(p));
 
                     if response.clicked() && !over_trash {
                         *open_file = Some(path.clone());
@@ -2470,10 +2471,10 @@ impl EditorApp {
                                 let cwd = self.current_working_dir();
                                 self.terminal.restart(&cwd);
                             }
-                        } else if self.cargo.runner.is_running() {
-                            if ui.small_button("⏹ Stop").clicked() {
-                                self.cargo.runner.kill();
-                            }
+                        } else if self.cargo.runner.is_running()
+                            && ui.small_button("⏹ Stop").clicked()
+                        {
+                            self.cargo.runner.kill();
                         }
                     });
                 });
@@ -3358,10 +3359,10 @@ impl EditorApp {
                                                     .color(egui::Color32::from_rgb(80, 200, 120))
                                                     .strong(),
                                             );
-                                        } else if !ext.download_url.is_empty() {
-                                            if ui.small_button("📥 Download .vsix").clicked() {
-                                                download_target = Some(ext.clone());
-                                            }
+                                        } else if !ext.download_url.is_empty()
+                                            && ui.small_button("📥 Download .vsix").clicked()
+                                        {
+                                            download_target = Some(ext.clone());
                                         }
                                     });
                                 });
@@ -3440,7 +3441,7 @@ pub fn load_window_icon() -> Option<egui::IconData> {
     let img = image::load_from_memory(LOGO_BYTES).ok()?.to_rgba8();
     let (width, height) = (img.width(), img.height());
     let mut raw = img.into_raw();
-    for chunk in raw.chunks_exact_mut(4) {
+    for chunk in raw.as_chunks_mut::<4>().0 {
         let max_c = chunk[0].max(chunk[1]).max(chunk[2]);
         if max_c <= 5 {
             chunk[0] = 0;
@@ -3486,15 +3487,17 @@ impl eframe::App for EditorApp {
         if self.poll_git_diff_results() {
             ctx.request_repaint_after(std::time::Duration::from_millis(16));
         }
-        // F8 (Roadmap v0.2.35): rama + blame inline (consulta perezosa).
-        self.refresh_git_branch();
+        // F8 (Roadmap v0.2.35): blame inline (consulta perezosa). La rama se
+        // refresca solo en el watcher periódico (poll_external_changes, 1.5 s)
+        // y al abrir/cambiar de carpeta — nunca por frame.
         if self.poll_blame_results() {
             ctx.request_repaint_after(std::time::Duration::from_millis(16));
         }
         self.update_inline_blame();
-        if self.editor_state.blame_text.is_none() && self.doc.current_file.is_some() {
-            // Despertar para cumplir el dwell de 300 ms del blame.
-            ctx.request_repaint_after(std::time::Duration::from_millis(300));
+        // Solo despertar para cumplir el dwell de 300 ms del blame si el
+        // cursor se movió hace menos de 300 ms; una vez cumplido, reposo.
+        if let Some(remaining) = self.blame_repaint_remaining() {
+            ctx.request_repaint_after(remaining);
         }
         // F6 (Roadmap v0.2.32): debounce de 250 ms + streaming del worker.
         if self.workspace_search.open {
@@ -4385,6 +4388,34 @@ impl eframe::App for EditorApp {
     }
 }
 
+/// UI-6: icono contextual del explorador según la extensión.
+fn explorer_file_icon(extension: &str) -> &'static str {
+    match extension {
+        "rs" => "🦀",
+        "toml" => "⚙",
+        "md" => "📄",
+        "json" => "📦",
+        "html" | "css" | "js" | "ts" => "🌐",
+        _ => "📄",
+    }
+}
+
+/// v0.2.42: badge y color de la lista de Source Control.
+fn git_status_badge(
+    kind: &karkinos_core::git_status::GitStatusKind,
+) -> (&'static str, egui::Color32) {
+    use karkinos_core::git_status::GitStatusKind;
+
+    match kind {
+        GitStatusKind::Modified => ("M", egui::Color32::from_rgb(220, 180, 80)),
+        GitStatusKind::Added => ("A", egui::Color32::from_rgb(120, 220, 160)),
+        GitStatusKind::Deleted => ("D", egui::Color32::from_rgb(220, 120, 120)),
+        GitStatusKind::Untracked => ("U", egui::Color32::from_rgb(200, 120, 220)),
+        GitStatusKind::Renamed => ("R", egui::Color32::from_rgb(80, 180, 220)),
+        GitStatusKind::Other(_) => ("?", egui::Color32::from_rgb(150, 150, 150)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4433,33 +4464,5 @@ mod tests {
 
         // Esquina superior izquierda en RGBA (4 bytes): debe tener alpha = 0
         assert_eq!(icon.rgba[3], 0, "alpha de la esquina superior izquierda debe ser 0");
-    }
-}
-
-/// UI-6: icono contextual del explorador según la extensión.
-fn explorer_file_icon(extension: &str) -> &'static str {
-    match extension {
-        "rs" => "🦀",
-        "toml" => "⚙",
-        "md" => "📄",
-        "json" => "📦",
-        "html" | "css" | "js" | "ts" => "🌐",
-        _ => "📄",
-    }
-}
-
-/// v0.2.42: badge y color de la lista de Source Control.
-fn git_status_badge(
-    kind: &karkinos_core::git_status::GitStatusKind,
-) -> (&'static str, egui::Color32) {
-    use karkinos_core::git_status::GitStatusKind;
-
-    match kind {
-        GitStatusKind::Modified => ("M", egui::Color32::from_rgb(220, 180, 80)),
-        GitStatusKind::Added => ("A", egui::Color32::from_rgb(120, 220, 160)),
-        GitStatusKind::Deleted => ("D", egui::Color32::from_rgb(220, 120, 120)),
-        GitStatusKind::Untracked => ("U", egui::Color32::from_rgb(200, 120, 220)),
-        GitStatusKind::Renamed => ("R", egui::Color32::from_rgb(80, 180, 220)),
-        GitStatusKind::Other(_) => ("?", egui::Color32::from_rgb(150, 150, 150)),
     }
 }

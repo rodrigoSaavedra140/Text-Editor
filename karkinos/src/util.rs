@@ -13,59 +13,6 @@ pub fn parse_goto_line(input: &str, total_lines: usize) -> Option<usize> {
     Some((n - 1).min(total_lines.max(1) - 1))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_goto_line_numera_desde_1_y_clampea() {
-        assert_eq!(parse_goto_line("3", 10), Some(2));
-        assert_eq!(parse_goto_line("  7  ", 10), Some(6));
-        assert_eq!(parse_goto_line("1", 10), Some(0));
-        // 0 = primera línea también (más simple que rechazar).
-        assert_eq!(parse_goto_line("0", 10), Some(0));
-        // Fuera de rango: se acota a la última línea.
-        assert_eq!(parse_goto_line("999", 10), Some(9));
-        // Documento con una sola línea: todo cae adentro.
-        assert_eq!(parse_goto_line("5", 1), Some(0));
-        // Basura: sin movimiento.
-        assert_eq!(parse_goto_line("abc", 10), None);
-        assert_eq!(parse_goto_line("-4", 10), None);
-        assert_eq!(parse_goto_line("", 10), None);
-    }
-
-    #[test]
-    fn expand_user_path_expande_tilde_al_home() {
-        let Ok(home) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) else {
-            return; // sin home en este entorno no hay nada que expandir
-        };
-        let home = std::path::PathBuf::from(home);
-        let base = std::path::Path::new("/tmp/karkinos_base");
-
-        assert_eq!(expand_user_path("~/test", base), home.join("test"));
-        // `~` solo también apunta al home.
-        assert_eq!(expand_user_path("~", base), home);
-    }
-
-    #[test]
-    fn expand_user_path_mantiene_rutas_absolutas() {
-        let base = std::path::Path::new("/tmp/karkinos_base");
-        assert_eq!(
-            expand_user_path("/etc/hosts", base),
-            std::path::PathBuf::from("/etc/hosts")
-        );
-    }
-
-    #[test]
-    fn expand_user_path_resuelve_relativas_contra_base() {
-        let base = std::path::Path::new("/tmp/karkinos_base");
-        assert_eq!(
-            expand_user_path("src/main.rs", base),
-            base.join("src/main.rs")
-        );
-    }
-}
-
 /// Tamaño legible del texto actual en el buffer (bytes UTF-8) — es el
 /// tamaño "en vivo", incluye cambios sin guardar todavía, no el
 /// tamaño del archivo en disco.
@@ -160,4 +107,57 @@ pub fn expand_user_path(raw: &str, base: &std::path::Path) -> std::path::PathBuf
         path = base.join(path);
     }
     path
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_goto_line_numera_desde_1_y_clampea() {
+        assert_eq!(parse_goto_line("3", 10), Some(2));
+        assert_eq!(parse_goto_line("  7  ", 10), Some(6));
+        assert_eq!(parse_goto_line("1", 10), Some(0));
+        // 0 = primera línea también (más simple que rechazar).
+        assert_eq!(parse_goto_line("0", 10), Some(0));
+        // Fuera de rango: se acota a la última línea.
+        assert_eq!(parse_goto_line("999", 10), Some(9));
+        // Documento con una sola línea: todo cae adentro.
+        assert_eq!(parse_goto_line("5", 1), Some(0));
+        // Basura: sin movimiento.
+        assert_eq!(parse_goto_line("abc", 10), None);
+        assert_eq!(parse_goto_line("-4", 10), None);
+        assert_eq!(parse_goto_line("", 10), None);
+    }
+
+    #[test]
+    fn expand_user_path_expande_tilde_al_home() {
+        let Ok(home) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) else {
+            return; // sin home en este entorno no hay nada que expandir
+        };
+        let home = std::path::PathBuf::from(home);
+        let base = std::path::Path::new("/tmp/karkinos_base");
+
+        assert_eq!(expand_user_path("~/test", base), home.join("test"));
+        // `~` solo también apunta al home.
+        assert_eq!(expand_user_path("~", base), home);
+    }
+
+    #[test]
+    fn expand_user_path_mantiene_rutas_absolutas() {
+        let base = std::path::Path::new("/tmp/karkinos_base");
+        assert_eq!(
+            expand_user_path("/etc/hosts", base),
+            std::path::PathBuf::from("/etc/hosts")
+        );
+    }
+
+    #[test]
+    fn expand_user_path_resuelve_relativas_contra_base() {
+        let base = std::path::Path::new("/tmp/karkinos_base");
+        assert_eq!(
+            expand_user_path("src/main.rs", base),
+            base.join("src/main.rs")
+        );
+    }
 }

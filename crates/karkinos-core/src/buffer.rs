@@ -23,7 +23,7 @@ impl TextBuffer {
     }
 
     /// Initializes buffer from a string slice.
-    pub fn from_str(text: &str) -> Self {
+    pub fn from_text(text: &str) -> Self {
         Self {
             rope: Rope::from_str(text),
         }
@@ -169,11 +169,6 @@ impl TextBuffer {
         self.rope = snapshot;
     }
 
-    /// Exports the full buffer contents to a standard `String`.
-    pub fn to_string(&self) -> String {
-        self.rope.to_string()
-    }
-
     /// Replaces the entire buffer contents.
     pub fn set_text(&mut self, text: &str) {
         self.rope = Rope::from_str(text);
@@ -193,6 +188,12 @@ impl TextBuffer {
     }
 }
 
+impl std::fmt::Display for TextBuffer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.rope)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -204,7 +205,7 @@ mod tests {
         assert_eq!(buf.len_chars(), 0);
         assert_eq!(buf.line_without_newline(0), "");
 
-        let buf2 = TextBuffer::from_str("hello\nworld\n");
+        let buf2 = TextBuffer::from_text("hello\nworld\n");
         assert_eq!(buf2.len_lines(), 3);
         assert_eq!(buf2.line_without_newline(0), "hello");
         assert_eq!(buf2.line_without_newline(1), "world");
@@ -213,7 +214,7 @@ mod tests {
 
     #[test]
     fn test_line_col_conversions() {
-        let buf = TextBuffer::from_str("first\nsecond line\nthird");
+        let buf = TextBuffer::from_text("first\nsecond line\nthird");
         assert_eq!(buf.line_col_to_char(0, 0), 0);
         assert_eq!(buf.line_col_to_char(0, 5), 5);
         assert_eq!(buf.line_col_to_char(1, 0), 6);
@@ -223,7 +224,7 @@ mod tests {
 
     #[test]
     fn test_insertion_and_deletion() {
-        let mut buf = TextBuffer::from_str("hello world");
+        let mut buf = TextBuffer::from_text("hello world");
         buf.insert(5, " beautiful");
         assert_eq!(buf.to_string(), "hello beautiful world");
 
@@ -240,7 +241,7 @@ mod tests {
 
     #[test]
     fn test_snapshot_o1_copy_on_write() {
-        let mut buf = TextBuffer::from_str("version 1");
+        let mut buf = TextBuffer::from_text("version 1");
         let snap1 = buf.snapshot();
 
         buf.insert(9, " modified");
@@ -256,7 +257,7 @@ mod tests {
         let initial_lines: Vec<String> = (0..50_000).map(|i| format!("Line content number {i}")).collect();
         let big_text = initial_lines.join("\n");
 
-        let mut buf = TextBuffer::from_str(&big_text);
+        let mut buf = TextBuffer::from_text(&big_text);
         assert_eq!(buf.len_lines(), 50_000);
 
         let snap = buf.snapshot();

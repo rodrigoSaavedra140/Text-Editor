@@ -168,7 +168,7 @@ mod tests {
         }
         assert_eq!(undone.len(), MAX_UNDO_EDITS);
         assert_eq!(&undone[0], &format!("before-{}", MAX_UNDO_EDITS + 9));
-        assert_eq!(undone.last().map(|s| s.as_str()), Some(format!("before-10").as_str()));
+        assert_eq!(undone.last().map(|s| s.as_str()), Some("before-10"));
     }
 
     #[test]

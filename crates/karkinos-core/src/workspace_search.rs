@@ -293,7 +293,7 @@ fn is_whole_word(line: &str, start: usize, end: usize) -> bool {
     let before = line[..start].chars().next_back();
     let after = line[end..].chars().next();
     let is_word = |c: char| c.is_alphanumeric() || c == '_';
-    !before.map_or(false, is_word) && !after.map_or(false, is_word)
+    !before.is_some_and(is_word) && !after.is_some_and(is_word)
 }
 
 fn search_file_matches(path: &Path, query: &SearchQuery) -> Option<Vec<SearchMatch>> {

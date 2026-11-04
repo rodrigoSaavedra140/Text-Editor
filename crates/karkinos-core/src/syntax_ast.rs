@@ -392,10 +392,10 @@ fn classify_node(node: tree_sitter::Node<'_>) -> Option<SemanticTokenType> {
                             return Some(SemanticTokenType::FunctionCall);
                         }
                     }
-                    "struct_item" | "enum_item" | "trait_item" => {
-                        if parent.child_by_field_name("name") == Some(node) {
-                            return Some(SemanticTokenType::TypeDef);
-                        }
+                    "struct_item" | "enum_item" | "trait_item"
+                        if parent.child_by_field_name("name") == Some(node) =>
+                    {
+                        return Some(SemanticTokenType::TypeDef);
                     }
                     _ => {}
                 }

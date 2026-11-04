@@ -433,11 +433,11 @@ impl DapClient {
                 }
                 "setBreakpoints" => {
                     if let Some(bps_val) = val.get("body").and_then(|b| b.get("breakpoints")).and_then(|b| b.as_array()) {
-                        let verified: Vec<DapBreakpoint> = bps_val.iter().filter_map(|b| {
+                        let verified: Vec<DapBreakpoint> = bps_val.iter().map(|b| {
                             let id = b.get("id").and_then(|i| i.as_u64());
                             let verified = b.get("verified").and_then(|v| v.as_bool()).unwrap_or(false);
                             let line = b.get("line").and_then(|l| l.as_u64()).map(|l| (l as usize).saturating_sub(1)).unwrap_or(0);
-                            Some(DapBreakpoint { id, verified, line, source_path: None })
+                            DapBreakpoint { id, verified, line, source_path: None }
                         }).collect();
 
                         if let Ok(mut s) = state_lock.write() {

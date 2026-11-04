@@ -24,7 +24,7 @@ impl ThemeMode {
         }
     }
 
-    pub fn to_storage_str(&self) -> &'static str {
+    pub fn to_storage_str(self) -> &'static str {
         match self {
             ThemeMode::Dark => "dark",
             ThemeMode::Monokai => "monokai",

@@ -174,7 +174,7 @@ impl TerminalService {
 
     /// Returns true if the active child shell is running.
     pub fn is_alive(&self) -> bool {
-        self.active_instance().map_or(false, |i| i.pty.is_alive())
+        self.active_instance().is_some_and(|i| i.pty.is_alive())
     }
 
     /// Returns the name of the active shell.

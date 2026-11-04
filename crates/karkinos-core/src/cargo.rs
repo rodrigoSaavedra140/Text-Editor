@@ -524,7 +524,7 @@ mod tests {
     #[test]
     fn test_cargo_runner_spawn_command_execution() {
         let mut runner = CargoRunner::new();
-        let cmd = if cfg!(windows) { "echo karkinos_test" } else { "echo karkinos_test" };
+        let cmd = "echo karkinos_test";
         let res = runner.spawn_command(cmd, Path::new("."));
         assert!(res.is_ok());
         // Wait a brief moment for worker thread to finish

@@ -307,7 +307,7 @@ impl Default for QuickOpenServices {
                             fuzzy_match(&job.query, &s).map(|score| (p.clone(), score))
                         })
                         .collect();
-                    matches.sort_by(|a, b| b.1.cmp(&a.1));
+                    matches.sort_by_key(|a| std::cmp::Reverse(a.1));
                     matches.truncate(SCORED_CAP);
                     QuickOpenResult::Scored {
                         generation: job.generation,
@@ -443,7 +443,7 @@ impl QuickOpenState {
                     fuzzy_match(&self.query, &s).map(|score| (p.clone(), score))
                 })
                 .collect();
-            matches.sort_by(|a, b| b.1.cmp(&a.1));
+            matches.sort_by_key(|a| std::cmp::Reverse(a.1));
             self.filtered = matches;
         } else {
             // Scoring en fondo: query congelada + lista congelada (Arc).
@@ -623,14 +623,15 @@ mod tests {
     fn quick_open_scoring_grande_va_al_worker_chico_queda_inline() {
         let dir = temp_workspace("score");
         let mut services = QuickOpenServices::default();
-        let mut state = QuickOpenState::default();
-
+        let mut state = QuickOpenState {
+            scanned_files: vec![
+                PathBuf::from("src/app.rs"),
+                PathBuf::from("src/main.rs"),
+                PathBuf::from("src/ui.rs"),
+            ],
+            ..Default::default()
+        };
         // Lista chica: scoring INLINE (sincrónico, como siempre).
-        state.scanned_files = vec![
-            PathBuf::from("src/app.rs"),
-            PathBuf::from("src/main.rs"),
-            PathBuf::from("src/ui.rs"),
-        ];
         state.set_query("main".to_string(), &mut services);
         assert!(!state.scoring, "listas chicas se puntuaban inline");
         assert_eq!(state.filtered.len(), 1);
@@ -660,8 +661,10 @@ mod tests {
     #[test]
     fn quick_open_resultado_viejo_no_pisa_query_nueva() {
         let mut services = QuickOpenServices::noop();
-        let mut state = QuickOpenState::default();
-        state.scanned_files = vec![PathBuf::from("a/main.rs"), PathBuf::from("b/other.rs")];
+        let mut state = QuickOpenState {
+            scanned_files: vec![PathBuf::from("a/main.rs"), PathBuf::from("b/other.rs")],
+            ..Default::default()
+        };
         state.set_query("main".to_string(), &mut services);
         assert_eq!(state.selected_path(), Some(PathBuf::from("a/main.rs")));
 

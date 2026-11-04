@@ -12,6 +12,7 @@ use crate::document_service::DocumentService;
 use crate::editor_widget::EditorState;
 
 /// S4 (Etapa 4): servicio del Language Server Protocol.
+#[derive(Default)]
 pub struct LspService {
     pub client: Option<karkinos_core::lsp::LspClient>,
     // S4 (Rust IDE): Code Actions & Rename
@@ -19,18 +20,6 @@ pub struct LspService {
     pub code_actions_menu_open: bool,
     pub rename_dialog_open: bool,
     pub rename_input: String,
-}
-
-impl Default for LspService {
-    fn default() -> Self {
-        LspService {
-            client: None,
-            code_actions: Vec::new(),
-            code_actions_menu_open: false,
-            rename_dialog_open: false,
-            rename_input: String::new(),
-        }
-    }
 }
 
 impl LspService {

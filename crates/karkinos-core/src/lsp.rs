@@ -224,7 +224,7 @@ pub fn read_lsp_message<R: Read>(reader: &mut BufReader<R>) -> std::io::Result<O
             return Ok(None);
         }
 
-        let trimmed = header.trim_end_matches(|c| c == '\r' || c == '\n');
+        let trimmed = header.trim_end_matches(['\r', '\n']);
         if trimmed.is_empty() {
             // End of headers, body follows
             break;
@@ -828,14 +828,13 @@ fn parse_inlay_hints_result(arr: &[Value]) -> Vec<LspInlayHint> {
             let position = serde_json::from_value::<LspPosition>(pos_val.clone()).ok()?;
             let label = if let Some(s) = item.get("label").and_then(|l| l.as_str()) {
                 s.to_string()
-            } else if let Some(parts) = item.get("label").and_then(|l| l.as_array()) {
+            } else {
+                let parts = item.get("label").and_then(|l| l.as_array())?;
                 parts
                     .iter()
                     .filter_map(|p| p.get("value").and_then(|v| v.as_str()))
                     .collect::<Vec<_>>()
                     .join("")
-            } else {
-                return None;
             };
             let kind = item.get("kind").and_then(|k| k.as_u64()).map(|k| match k {
                 1 => InlayHintKind::Type,
