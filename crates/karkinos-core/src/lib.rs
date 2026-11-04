@@ -14,6 +14,7 @@ pub mod document;
 pub mod ending;
 pub mod git_diff;
 pub mod git_status;
+pub mod ipc;
 pub mod lsp;
 pub mod open_vsx;
 pub mod platform;
