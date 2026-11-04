@@ -105,7 +105,7 @@ fn main() -> eframe::Result<()> {
         // S10: el zoom elegido la sesión anterior vuela al arrancar
         // desde el Storage de la app (app-storage.json). Sin Storage
         // (o valor corrupto) queda el default de 14 px.
-        let mut app = EditorApp::default();
+        let mut app = EditorApp::new();
         // v0.2.48 (Tarea B): la instancia primaria recibe el servidor IPC
         // (o `None` si el bind falló o este proceso era secundario).
         app.ipc_server = ipc_server;

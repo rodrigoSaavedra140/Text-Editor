@@ -139,6 +139,7 @@ impl EditorApp {
             // cancela el "cerrar tras guardar" para no matar la
             // ventana encima de un error.
             self.doc.note_save_done();
+            let had_error = error.is_some();
             match error {
                 Some(e) => self.doc.status = format!("Save error: {}", e),
                 None => {
@@ -147,6 +148,11 @@ impl EditorApp {
                 }
             }
             self.doc.save_progress = None;
+            // v0.2.51: al guardar, el journal de esa pestaña deja de
+            // ser necesario. Se borra apenas termina la escritura.
+            if !had_error {
+                self.cleanup_recovery_for_active_tab();
+            }
         } else {
             ctx.request_repaint();
         }
@@ -240,6 +246,9 @@ impl EditorApp {
                             self.new_document();
                         } else {
                             self.doc.confirm_close_discard();
+                            // v0.2.51: un descarte explícito invalida el
+                            // journal; no debe reaparecer al reabrir.
+                            self.cleanup_recovery_for_dirty_tabs();
                             self.doc.dirty = false;
                             if let Some(tab) = self.doc.tabs.get_mut(self.doc.active_tab) {
                                 tab.dirty = false;
@@ -1675,6 +1684,87 @@ impl EditorApp {
         self.open_folder_modal = Some(path);
         if confirm {
             self.confirm_open_folder();
+        }
+    }
+
+    /// v0.2.51: modal de Crash Recovery mostrado al abrir la app cuando
+    /// `recovery_pending` tiene journals de una sesión anterior. No se
+    /// puede cerrar con X ni Escape: hay que restaurar o descartar.
+    fn show_recovery_modal(&mut self, ctx: &egui::Context, theme: &crate::theme::Theme) {
+        if !self.show_recovery_modal {
+            return;
+        }
+
+        let mut restore = false;
+        let mut discard = false;
+
+        egui::Window::new("⚠️ Sesión previa recuperada (Crash Recovery)")
+            .id(egui::Id::new("recovery_modal"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .min_width(520.0)
+            .frame(crate::theme::modal_card_frame(theme))
+            .show(ctx, |ui| {
+                ui.label("Se encontraron archivos modificados sin guardar de una sesión anterior:");
+                ui.add_space(8.0);
+
+                egui::ScrollArea::vertical()
+                    .max_height(320.0)
+                    .show(ui, |ui| {
+                        for (journal_path, entry) in &self.recovery_pending {
+                            let name = entry
+                                .original_path
+                                .as_ref()
+                                .and_then(|path| path.file_name())
+                                .and_then(|name| name.to_str())
+                                .map(|name| name.to_string())
+                                .unwrap_or_else(|| entry.title.clone());
+                            let lines = entry.content.lines().count().max(1);
+
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new(name).strong());
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "{} · {} líneas",
+                                        crate::app::format_recovery_age(entry.timestamp_secs),
+                                        lines
+                                    ))
+                                    .color(theme.text_muted)
+                                    .small(),
+                                );
+                            });
+                            let detail = entry
+                                .original_path
+                                .as_ref()
+                                .map(|path| path.display().to_string())
+                                .unwrap_or_else(|| {
+                                    format!("Sin archivo en disco ({})", journal_path.display())
+                                });
+                            ui.label(
+                                egui::RichText::new(detail)
+                                    .color(theme.text_muted)
+                                    .small(),
+                            );
+                            ui.add_space(6.0);
+                        }
+                    });
+
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui.button("Restaurar todo").clicked() {
+                        restore = true;
+                    }
+                    if ui.button("Descartar").clicked() {
+                        discard = true;
+                    }
+                });
+            });
+
+        if restore {
+            self.restore_all_recovery();
+        } else if discard {
+            self.discard_all_recovery();
         }
     }
 
@@ -3602,6 +3692,8 @@ impl eframe::App for EditorApp {
         // v0.2.44: watcher periódico (1.5 s) de Git y de archivos abiertos
         // modificados por fuera del editor.
         self.poll_external_changes();
+        // v0.2.51: journaling de buffers dirty con debounce de 1.5 s.
+        self.poll_recovery_autosave();
         // S2 (Rust IDE): Procesar respuestas pendientes del LSP (definición, hover)
         self.poll_lsp_results();
         // S3 (Roadmap v0.2.9): resultados del worker de Tree-sitter en
@@ -4498,6 +4590,7 @@ impl eframe::App for EditorApp {
             || self.lsp.rename_dialog_open
             || self.command_palette.open
             || self.open_folder_modal.is_some()
+            || self.show_recovery_modal
         {
             Self::paint_modal_backdrop(ctx);
         }
@@ -4519,6 +4612,8 @@ impl eframe::App for EditorApp {
         self.show_command_palette(ctx, &theme);
         // v0.2.45 (Tarea C): "Open Folder / Change Workspace", por encima de todo.
         self.show_open_folder_modal(ctx, &theme);
+        // v0.2.51: Crash Recovery, por encima de todo al arrancar.
+        self.show_recovery_modal(ctx, &theme);
     }
 }
 

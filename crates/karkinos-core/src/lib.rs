@@ -19,6 +19,7 @@ pub mod lsp;
 pub mod open_vsx;
 pub mod platform;
 pub mod plugin;
+pub mod recovery;
 pub mod syntax_ast;
 pub mod terminal;
 pub mod workspace_search;
@@ -39,6 +40,7 @@ pub use lsp::{
 pub use open_vsx::{OpenVsxClient, OpenVsxExtension, OpenVsxSearchResult};
 pub use platform::{configure_background_command, path_to_uri, uri_to_path};
 pub use plugin::{Plugin, PluginCommand, PluginContext, PluginManager};
+pub use recovery::RecoveryEntry;
 pub use syntax_ast::{
     AstEngine, AstHighlightSpan, AstLanguage, AstNodeInfo, DocumentSymbol, FoldingKind,
     FoldingRange, ScopeHeader, SemanticTokenType, SymbolKind,

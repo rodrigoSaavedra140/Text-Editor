@@ -1,9 +1,14 @@
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use eframe::egui;
 
 use crate::editor_widget::EditorState;
 use crate::document_service::{DocumentService, TabDocument};
+use karkinos_core::recovery::{
+    clear_recovery_dir, journal_filename, remove_recovery_file, save_recovery_file,
+    scan_recovery_dir, RecoveryEntry,
+};
 use karkinos_core::LineEnding;
 use ropey::Rope;
 use crate::undo::UndoStack;
@@ -50,6 +55,31 @@ pub fn font_size_to_string(size: f32) -> String {
 /// devuelve None y el llamador titula el default.
 pub fn font_size_from_string(s: &str) -> Option<f32> {
     s.parse::<f32>().ok().map(|v| v.clamp(ZOOM_MIN, ZOOM_MAX))
+}
+
+/// v0.2.51: segundos UNIX actuales (0 si el reloj está antes de 1970).
+pub fn unix_now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(0)
+}
+
+/// v0.2.51: edad legible de una entrada de recovery, con reloj inyectable
+/// para tests. La UI del modal la usa con el reloj real.
+pub fn format_recovery_age_at(timestamp_secs: u64, now_secs: u64) -> String {
+    let age = now_secs.saturating_sub(timestamp_secs);
+    match age {
+        0..=59 => "hace unos segundos".to_string(),
+        60..=3599 => format!("hace {} min", age / 60),
+        3600..=86_399 => format!("hace {} h", age / 3600),
+        _ => format!("hace {} días", age / 86_400),
+    }
+}
+
+/// v0.2.51: edad legible usando el reloj del sistema.
+pub fn format_recovery_age(timestamp_secs: u64) -> String {
+    format_recovery_age_at(timestamp_secs, unix_now_secs())
 }
 
 /// v0.2.41: un nombre válido para el diálogo del explorador es un único
@@ -176,6 +206,19 @@ pub struct EditorApp {
     // proceso arrancó como secundario (no aplica) o el bind falló; en la
     // instancia primaria canaliza los `karkinos <path>` entrantes.
     pub ipc_server: Option<karkinos_core::ipc::IpcServer>,
+    // v0.2.51: journaling & crash recovery. `recovery_pending` holds the
+    // journals found at startup until the user restores or discards them.
+    pub recovery_pending: Vec<(PathBuf, RecoveryEntry)>,
+    pub show_recovery_modal: bool,
+    pub recovery_dir: PathBuf,
+    // Contenido observado en el último tick por pestaña (para detectar
+    // ediciones sin comparar contra el último journal emitido).
+    recovery_seen: std::collections::HashMap<usize, String>,
+    // Último contenido efectivamente escrito al journal.
+    recovery_journaled: std::collections::HashMap<usize, String>,
+    // Momento del último cambio de contenido observado por pestaña.
+    recovery_changed_at: std::collections::HashMap<usize, Instant>,
+    recovery_last_scan: Option<Instant>,
 }
 
 /// v0.2.44: contenido del visor de diff de un archivo del Source Control.
@@ -747,11 +790,255 @@ impl Default for EditorApp {
             last_git_mtime: None,
             blame_worker: crate::git_status_worker::BlameWorker::spawn(),
             ipc_server: None,
+            recovery_pending: Vec::new(),
+            show_recovery_modal: false,
+            recovery_dir: karkinos_core::recovery::recovery_dir(),
+            recovery_seen: std::collections::HashMap::new(),
+            recovery_journaled: std::collections::HashMap::new(),
+            recovery_changed_at: std::collections::HashMap::new(),
+            recovery_last_scan: None,
         }
     }
 }
 
 impl EditorApp {
+    /// v0.2.51: construye la app y detecta journals dejados por una
+    /// sesión anterior. `Default` queda libre de I/O para tests; el
+    /// arranque real pasa por acá.
+    pub fn new() -> Self {
+        let mut app = Self::default();
+        app.init_recovery_from_dir(karkinos_core::recovery::recovery_dir());
+        app
+    }
+
+    /// v0.2.51: escanea `dir` y arma el estado del modal de recuperación.
+    /// Separado de `new()` para poder testear con un directorio temporal.
+    pub fn init_recovery_from_dir(&mut self, dir: PathBuf) {
+        self.recovery_dir = dir;
+        self.recovery_pending = scan_recovery_dir(&self.recovery_dir);
+        self.show_recovery_modal = !self.recovery_pending.is_empty();
+    }
+
+    /// v0.2.51: escribe journals de las pestañas dirty con debounce de
+    /// 1.5 s desde la última modificación. Se llama una vez por frame;
+    /// el escaneo pesado se limita a ~4 Hz.
+    pub fn poll_recovery_autosave(&mut self) {
+        self.poll_recovery_autosave_at(Instant::now());
+    }
+
+    /// Variante con reloj inyectable para tests deterministas.
+    pub fn poll_recovery_autosave_at(&mut self, now: Instant) {
+        if self.show_recovery_modal {
+            return;
+        }
+        if let Some(last) = self.recovery_last_scan {
+            if now.saturating_duration_since(last) < Duration::from_millis(250) {
+                return;
+            }
+        }
+        self.recovery_last_scan = Some(now);
+
+        let dir = self.recovery_dir.clone();
+        let now_secs = unix_now_secs();
+        for idx in 0..self.doc.tabs.len() {
+            let (id, dirty, path, title, content, cursor_line, cursor_col) =
+                self.recovery_tab_snapshot(idx);
+            if !dirty {
+                continue;
+            }
+
+            let changed = self
+                .recovery_seen
+                .get(&id)
+                .map(|previous| previous != &content)
+                .unwrap_or(true);
+            if changed {
+                self.recovery_seen.insert(id, content.clone());
+                self.recovery_changed_at.insert(id, now);
+            }
+
+            let idle_for = self
+                .recovery_changed_at
+                .get(&id)
+                .map(|changed_at| now.saturating_duration_since(*changed_at))
+                .unwrap_or_default();
+            if idle_for < Duration::from_millis(1500) {
+                continue;
+            }
+            if self.recovery_journaled.get(&id) == Some(&content) {
+                continue;
+            }
+
+            let entry = RecoveryEntry {
+                original_path: path.clone(),
+                title,
+                content: content.clone(),
+                cursor_line,
+                cursor_col,
+                timestamp_secs: now_secs,
+            };
+            let filename = journal_filename(path.as_deref(), id);
+            if save_recovery_file(&dir, &filename, &entry).is_ok() {
+                self.recovery_journaled.insert(id, content);
+            }
+        }
+    }
+
+    /// v0.2.51: reabre cada entrada pendiente en una pestaña nueva, con
+    /// el texto recuperado marcado como dirty y el cursor restaurado.
+    pub fn restore_all_recovery(&mut self) {
+        let entries: Vec<RecoveryEntry> = self
+            .recovery_pending
+            .drain(..)
+            .map(|(_, entry)| entry)
+            .collect();
+        self.show_recovery_modal = false;
+        let restored = entries.len();
+        for entry in &entries {
+            self.restore_recovery_entry(entry);
+        }
+        let _ = clear_recovery_dir(&self.recovery_dir);
+        self.reset_recovery_tracking();
+        self.doc.status = if restored == 1 {
+            "Recovered 1 unsaved buffer".to_string()
+        } else {
+            format!("Recovered {restored} unsaved buffers")
+        };
+    }
+
+    /// v0.2.51: descarta los journals sin tocar los archivos en disco.
+    pub fn discard_all_recovery(&mut self) {
+        let _ = clear_recovery_dir(&self.recovery_dir);
+        self.recovery_pending.clear();
+        self.show_recovery_modal = false;
+        self.reset_recovery_tracking();
+        self.doc.status = "Crash recovery discarded".to_string();
+    }
+
+    /// v0.2.51: elimina el journal de la pestaña `idx` (guardado
+    /// exitoso, cierre o descarte). Borra tanto la clave por ruta como
+    /// la de untitled, por si el guardado le asignó nombre a la pestaña.
+    pub fn cleanup_recovery_for_tab(&mut self, idx: usize) {
+        let Some(tab) = self.doc.tabs.get(idx) else {
+            return;
+        };
+        let id = tab.id;
+        let path = if idx == self.doc.active_tab {
+            self.doc.current_file.clone()
+        } else {
+            tab.current_file.clone()
+        };
+
+        let dir = self.recovery_dir.clone();
+        let _ = remove_recovery_file(&dir, &journal_filename(None, id));
+        if let Some(path) = path.as_deref() {
+            let _ = remove_recovery_file(&dir, &journal_filename(Some(path), id));
+        }
+
+        self.recovery_seen.remove(&id);
+        self.recovery_journaled.remove(&id);
+        self.recovery_changed_at.remove(&id);
+    }
+
+    /// v0.2.51: variante para el guardado de la pestaña activa.
+    pub fn cleanup_recovery_for_active_tab(&mut self) {
+        let idx = self.doc.active_tab;
+        self.cleanup_recovery_for_tab(idx);
+    }
+
+    /// v0.2.51: limpia journals de todas las pestañas dirty (descartar
+    /// el cierre de la ventana completa).
+    pub fn cleanup_recovery_for_dirty_tabs(&mut self) {
+        for idx in 0..self.doc.tabs.len() {
+            let dirty = if idx == self.doc.active_tab {
+                self.doc.dirty
+            } else {
+                self.doc.tabs[idx].dirty
+            };
+            if dirty {
+                self.cleanup_recovery_for_tab(idx);
+            }
+        }
+    }
+
+    fn reset_recovery_tracking(&mut self) {
+        self.recovery_seen.clear();
+        self.recovery_journaled.clear();
+        self.recovery_changed_at.clear();
+        self.recovery_last_scan = None;
+    }
+
+    /// Datos de journaling de la pestaña `idx`: (id, dirty, ruta, título,
+    /// contenido, línea, columna). La pestaña activa vive en `doc`.
+    fn recovery_tab_snapshot(
+        &self,
+        idx: usize,
+    ) -> (usize, bool, Option<PathBuf>, String, String, usize, usize) {
+        let tab = &self.doc.tabs[idx];
+        let active = idx == self.doc.active_tab;
+        let dirty = if active { self.doc.dirty } else { tab.dirty };
+        let path = if active {
+            self.doc.current_file.clone()
+        } else {
+            tab.current_file.clone()
+        };
+        let content = if active {
+            self.doc.current_text()
+        } else {
+            tab.buffer.to_string()
+        };
+        let title = if let Some(name) = path
+            .as_ref()
+            .and_then(|path| path.file_name())
+            .and_then(|name| name.to_str())
+        {
+            name.to_string()
+        } else if !tab.file_path_input.is_empty() {
+            tab.file_path_input.clone()
+        } else {
+            format!("Untitled {}", tab.id)
+        };
+        let (cursor_line, cursor_col) = if active {
+            (self.editor_state.cursor_line, self.editor_state.cursor_col)
+        } else {
+            (tab.editor_state.cursor_line, tab.editor_state.cursor_col)
+        };
+        (tab.id, dirty, path, title, content, cursor_line, cursor_col)
+    }
+
+    fn restore_recovery_entry(&mut self, entry: &RecoveryEntry) {
+        self.new_tab();
+        self.doc.current_file = entry.original_path.clone();
+        if let Some(path) = &entry.original_path {
+            if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
+                self.doc.file_path_input = name.to_string();
+            }
+        } else if !entry.title.is_empty() {
+            self.doc.file_path_input = entry.title.clone();
+        }
+
+        self.set_text(&entry.content);
+        self.doc.last_snapshot = Rope::from_str(&entry.content);
+        self.doc.last_disk_mtime = entry
+            .original_path
+            .as_ref()
+            .and_then(|path| std::fs::metadata(path).ok())
+            .and_then(|metadata| metadata.modified().ok());
+        self.doc.dirty = true;
+
+        let line = entry
+            .cursor_line
+            .min(self.doc.lines.len().saturating_sub(1));
+        let col = entry
+            .cursor_col
+            .min(self.doc.lines.get(line).map(|text| text.chars().count()).unwrap_or(0));
+        self.editor_state.cursor_line = line;
+        self.editor_state.cursor_col = col;
+        self.editor_state.sel_anchor = None;
+        self.editor_state.scroll = 0.0;
+        self.sync_active_to_tab();
+    }
+
     /// S5 (Etapa 2): Retorna la paleta de colores del tema activo.
     pub fn theme(&self) -> crate::theme::Theme {
         self.theme_mode.theme()
@@ -890,6 +1177,10 @@ impl EditorApp {
         if idx >= self.doc.tabs.len() {
             return;
         }
+
+        // v0.2.51: una pestaña que se cierra ya no tiene trabajo que
+        // recuperar; su journal se elimina antes de sacarla del vector.
+        self.cleanup_recovery_for_tab(idx);
 
         if self.doc.tabs.len() == 1 {
             let reset_tab = TabDocument::new(self.doc.next_tab_id);
@@ -5910,5 +6201,201 @@ mod tests {
 
         assert!(app.open_folder_modal.is_some(), "el comando abre el modal");
         assert!(!app.command_palette.open, "el palette se cierra al ejecutar");
+    }
+
+    // ---- v0.2.51: journaling & crash recovery ----
+
+    fn recovery_test_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "karkinos_recovery_{tag}_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).expect("crear carpeta de recovery temporal");
+        dir
+    }
+
+    fn recovery_entry(title: &str, content: &str) -> RecoveryEntry {
+        RecoveryEntry {
+            original_path: None,
+            title: title.to_string(),
+            content: content.to_string(),
+            cursor_line: 0,
+            cursor_col: 0,
+            timestamp_secs: 1_700_000_000,
+        }
+    }
+
+    #[test]
+    fn recovery_inicio_detecta_journals_y_abre_el_modal() {
+        let dir = recovery_test_dir("detect");
+        let filename = journal_filename(Some(std::path::Path::new("/tmp/main.rs")), 7);
+        save_recovery_file(&dir, &filename, &recovery_entry("main.rs", "fn main() {}\n"))
+            .expect("journal escrito");
+
+        let mut app = EditorApp::default();
+        app.init_recovery_from_dir(dir.clone());
+
+        assert_eq!(app.recovery_pending.len(), 1);
+        assert!(app.show_recovery_modal);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn poll_recovery_autosave_espera_el_debounce_y_escribe_el_journal() {
+        let dir = recovery_test_dir("autosave");
+        let mut app = EditorApp::default();
+        app.init_recovery_from_dir(dir.clone());
+        app.set_text("hola mundo");
+        app.doc.dirty = true;
+
+        let t0 = Instant::now();
+        app.poll_recovery_autosave_at(t0);
+        assert!(
+            scan_recovery_dir(&dir).is_empty(),
+            "no escribe antes de 1.5 s de inactividad"
+        );
+
+        app.poll_recovery_autosave_at(t0 + Duration::from_secs(2));
+        let entries = scan_recovery_dir(&dir);
+        assert_eq!(entries.len(), 1, "un journal por pestaña dirty");
+        assert_eq!(entries[0].1.content, "hola mundo");
+        assert_eq!(entries[0].1.original_path, None);
+        assert_eq!(entries[0].1.title, "Untitled 1");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn poll_recovery_autosave_no_escribe_si_el_modal_esta_abierto() {
+        let dir = recovery_test_dir("modal_guard");
+        let mut app = EditorApp::default();
+        app.init_recovery_from_dir(dir.clone());
+        app.show_recovery_modal = true;
+        app.set_text("pendiente");
+        app.doc.dirty = true;
+
+        let t0 = Instant::now();
+        app.poll_recovery_autosave_at(t0 + Duration::from_secs(10));
+
+        assert!(scan_recovery_dir(&dir).is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn restore_all_recovery_abre_pestanas_dirty_y_limpia_el_directorio() {
+        let dir = recovery_test_dir("restore");
+        let target = dir.join("recuperado.rs");
+        let mut saved = recovery_entry("recuperado.rs", "fn main() {\n    println!(\"x\");\n}\n");
+        saved.original_path = Some(target.clone());
+        saved.cursor_line = 1;
+        saved.cursor_col = 4;
+        save_recovery_file(&dir, &journal_filename(Some(&target), 1), &saved)
+            .expect("journal con ruta");
+
+        let mut untitled = recovery_entry("Untitled 9", "abc\ndef");
+        untitled.cursor_line = 1;
+        untitled.cursor_col = 2;
+        save_recovery_file(&dir, &journal_filename(None, 9), &untitled)
+            .expect("journal untitled");
+
+        let mut app = EditorApp::default();
+        app.init_recovery_from_dir(dir.clone());
+        let tabs_before = app.doc.tabs.len();
+
+        app.restore_all_recovery();
+
+        assert!(!app.show_recovery_modal);
+        assert!(app.recovery_pending.is_empty());
+        assert_eq!(app.doc.tabs.len(), tabs_before + 2);
+        assert!(app.doc.dirty, "el buffer recuperado queda dirty");
+        assert_eq!(app.doc.current_text(), "abc\ndef");
+        assert_eq!(app.editor_state.cursor_line, 1);
+        assert_eq!(app.editor_state.cursor_col, 2);
+        assert!(
+            app.doc
+                .tabs
+                .iter()
+                .any(|tab| tab.current_file.as_ref() == Some(&target)),
+            "la ruta original se restaura en su pestaña"
+        );
+        assert!(scan_recovery_dir(&dir).is_empty());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn discard_all_recovery_limpia_journals_sin_tocar_disco() {
+        let dir = recovery_test_dir("discard");
+        let target = dir.join("intacto.txt");
+        std::fs::write(&target, "contenido en disco\n").expect("archivo de prueba");
+        let mut entry = recovery_entry("intacto.txt", "no guardado");
+        entry.original_path = Some(target.clone());
+        save_recovery_file(&dir, &journal_filename(Some(&target), 2), &entry)
+            .expect("journal escrito");
+
+        let mut app = EditorApp::default();
+        app.init_recovery_from_dir(dir.clone());
+
+        app.discard_all_recovery();
+
+        assert!(!app.show_recovery_modal);
+        assert!(app.recovery_pending.is_empty());
+        assert!(scan_recovery_dir(&dir).is_empty(), "journals borrados");
+        assert_eq!(
+            std::fs::read_to_string(&target).expect("el archivo sigue"),
+            "contenido en disco\n"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn cleanup_recovery_borra_journal_al_guardar_y_cerrar_pestana() {
+        let dir = recovery_test_dir("cleanup");
+        let mut app = EditorApp::default();
+        app.init_recovery_from_dir(dir.clone());
+        app.set_text("sin guardar");
+        app.doc.dirty = true;
+
+        let tab_id = app.doc.tabs[app.doc.active_tab].id;
+        let target = dir.join("guardado.txt");
+        app.doc.current_file = Some(target.clone());
+        save_recovery_file(&dir, &journal_filename(None, tab_id), &recovery_entry("Untitled", "x"))
+            .expect("journal untitled");
+        save_recovery_file(
+            &dir,
+            &journal_filename(Some(&target), tab_id),
+            &recovery_entry("guardado.txt", "x"),
+        )
+        .expect("journal por ruta");
+
+        app.cleanup_recovery_for_active_tab();
+        assert!(scan_recovery_dir(&dir).is_empty(), "el guardado limpia ambos journals");
+
+        save_recovery_file(
+            &dir,
+            &journal_filename(Some(&target), tab_id),
+            &recovery_entry("guardado.txt", "x"),
+        )
+        .expect("journal por ruta");
+        app.close_tab(0);
+        assert!(scan_recovery_dir(&dir).is_empty(), "cerrar la pestaña limpia su journal");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn format_recovery_age_at_escala_segundos_minutos_horas_y_dias() {
+        let now = 1_700_000_000;
+        assert_eq!(format_recovery_age_at(now, now), "hace unos segundos");
+        assert_eq!(format_recovery_age_at(now - 59, now), "hace unos segundos");
+        assert_eq!(format_recovery_age_at(now - 120, now), "hace 2 min");
+        assert_eq!(format_recovery_age_at(now - 7_200, now), "hace 2 h");
+        assert_eq!(format_recovery_age_at(now - 172_800, now), "hace 2 días");
     }
 }
