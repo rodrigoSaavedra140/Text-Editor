@@ -101,9 +101,9 @@ Cuando un desarrollador renombra un archivo o carpeta desde el editor:
 
 ## Tasks
 
-- **Tarea A** — Motor de renombrado y duplicado en `karkinos/src/app.rs` — ruta: inline — estado: ✅ — specs: S-A (secciones Tarea A arriba)
-- **Tarea B** — Integración UI del explorador en `karkinos/src/ui.rs` — ruta: inline — estado: ✅ — specs: S-B
-- **Tarea C** — Versión v0.2.49 y verificación — ruta: inline — estado: ✅ — specs: S-C
+- **Tarea A** — Motor de renombrado y duplicado en `karkinos/src/app.rs` — ruta: inline — estado: ✅ — commit: `dedf56e` — specs: S-A (secciones Tarea A arriba)
+- **Tarea B** — Integración UI del explorador en `karkinos/src/ui.rs` — ruta: inline — estado: ✅ — commit: `dedf56e` — specs: S-B
+- **Tarea C** — Versión v0.2.49 y verificación — ruta: inline — estado: ✅ — commit: `33a6bd4` — specs: S-C
 
 ## Log
 
@@ -111,3 +111,4 @@ Cuando un desarrollador renombra un archivo o carpeta desde el editor:
 - **Decisión (F2)**: `F2` se reasigna a "Renombrar archivo activo" según la spec (Tarea B.2). El Symbol Rename (LSP) existente se reubica a `Shift+F6` para no perder el atajo (asumido en corrida no interactiva; ver reporte).
 - **Detalle de implementación**: `ExplorerState` gana `renaming_item: Option<(PathBuf, String)>` (y `rename_focus` para el autofoco del input). `confirm_rename_explorer_item` sincroniza `tabs` y `doc.current_file` con `sync_active_to_tab()` previo y reescribe prefijos de carpeta con `strip_prefix` (límite de componente, no prefijo de string).
 - **Verificación**: `cargo check --workspace` ✅ · `cargo clippy --workspace --all-targets` 0 warnings ✅ · `cargo test --workspace` 307 passed / 0 failed ✅.
+- **RDD**: `gentle-ai review assess` (base `88bb755`, committed-only) → risk `medium`, `review_due=false` (`under_budget`); no hay ceremonia de review para este slice.
