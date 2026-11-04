@@ -172,6 +172,10 @@ pub struct EditorApp {
     pub last_disk_poll: Option<std::time::Instant>,
     pub last_git_mtime: Option<std::time::SystemTime>,
     pub blame_worker: crate::git_status_worker::BlameWorker,
+    // v0.2.48 (Tarea B): servidor IPC de instancia única. `None` cuando el
+    // proceso arrancó como secundario (no aplica) o el bind falló; en la
+    // instancia primaria canaliza los `karkinos <path>` entrantes.
+    pub ipc_server: Option<karkinos_core::ipc::IpcServer>,
 }
 
 /// v0.2.44: contenido del visor de diff de un archivo del Source Control.
@@ -724,6 +728,7 @@ impl Default for EditorApp {
             last_disk_poll: None,
             last_git_mtime: None,
             blame_worker: crate::git_status_worker::BlameWorker::spawn(),
+            ipc_server: None,
         }
     }
 }
@@ -2795,6 +2800,32 @@ impl EditorApp {
                 }
             }
             self.open_path(resolved);
+        }
+    }
+
+    /// v0.2.48 (Tarea B): drena los comandos IPC pendientes del canal del
+    /// servidor. Por cada `Open(path)` abre la pestaña/workspace con
+    /// `init_from_cli_path` y pide foco + atención al gestor de ventanas.
+    pub fn poll_ipc_events(&mut self, ctx: &egui::Context) {
+        // Drenar primero en un buffer local: el préstamo inmutable del canal
+        // del servidor no puede coexistir con la mutación de `self` abajo.
+        let mut commands = Vec::new();
+        if let Some(server) = &self.ipc_server {
+            while let Ok(command) = server.receiver.try_recv() {
+                commands.push(command);
+            }
+        }
+        for command in commands {
+            match command {
+                karkinos_core::ipc::IpcCommand::Open(path) => {
+                    self.init_from_cli_path(&path);
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                    ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
+                        egui::UserAttentionType::Critical,
+                    ));
+                    ctx.request_repaint();
+                }
+            }
         }
     }
 
@@ -5354,6 +5385,48 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    // ---- v0.2.48 (Tarea B): IPC single-instance ----
+
+    #[test]
+    fn poll_ipc_events_abre_archivo_de_comando_entrante() {
+        let root = cli_temp_dir("ipc_events");
+        let file = root.join("abrir.rs");
+        std::fs::write(&file, "fn main() {}").expect("crear archivo");
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = EditorApp {
+            ipc_server: Some(karkinos_core::ipc::IpcServer::from_receiver(rx)),
+            ..Default::default()
+        };
+
+        tx.send(karkinos_core::ipc::IpcCommand::Open(file.clone()))
+            .expect("enviar comando");
+
+        let ctx = egui::Context::default();
+        app.poll_ipc_events(&ctx);
+
+        assert_eq!(
+            app.doc.current_file.as_deref(),
+            Some(file.as_path()),
+            "el comando abre el archivo en la pestaña activa"
+        );
+        assert_eq!(app.doc.lines, vec!["fn main() {}".to_string()]);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn poll_ipc_events_sin_servidor_no_hace_nada() {
+        let mut app = EditorApp::default();
+
+        let ctx = egui::Context::default();
+        // No debe paniquear ni mutar el estado del documento.
+        let file_path_input = app.doc.file_path_input.clone();
+        app.poll_ipc_events(&ctx);
+        assert_eq!(app.doc.file_path_input, file_path_input);
+        assert!(app.doc.current_file.is_none());
     }
 
     // ---- Roadmap v0.2.45 (Tarea C): Open Folder ----

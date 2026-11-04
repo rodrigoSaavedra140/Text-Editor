@@ -61,6 +61,24 @@ fn main() -> eframe::Result<()> {
         }
     }
 
+    // v0.2.48 (Tarea B): coordinación de instancia única. Si ya hay una
+    // primaria escuchando, le reenviamos el path pedido y salimos al
+    // instante, sin abrir una segunda ventana (y su GPU/CPU extra). Si no
+    // hay primaria (o no traíamos path), nos convertimos en la primaria y
+    // levantamos el servidor IPC que atenderá los próximos `karkinos <path>`.
+    if let Some(path) = &target_path {
+        match karkinos_core::ipc::try_send_to_primary(path) {
+            Ok(true) => {
+                println!("Karkinos: opened in existing window");
+                return Ok(());
+            }
+            Ok(false) => {}
+            Err(e) => eprintln!("Karkinos: IPC check failed: {e}"),
+        }
+    }
+
+    let ipc_server = karkinos_core::ipc::IpcServer::spawn().ok();
+
     // WSLg usa una GPU virtual cuyo contexto OpenGL a veces falla en
     // silencio (la ventana nunca llega a abrirse, sin ningún error).
     // Forzamos renderizado por software SOLO si detectamos WSL — en
@@ -88,6 +106,9 @@ fn main() -> eframe::Result<()> {
         // desde el Storage de la app (app-storage.json). Sin Storage
         // (o valor corrupto) queda el default de 14 px.
         let mut app = EditorApp::default();
+        // v0.2.48 (Tarea B): la instancia primaria recibe el servidor IPC
+        // (o `None` si el bind falló o este proceso era secundario).
+        app.ipc_server = ipc_server;
         // Roadmap v0.2.45 (Tarea A): pasar el path posicional del CLI al
         // setup de EditorApp. La apertura completa (archivo nuevo, Git,
         // etc.) la resuelve `init_from_cli_path` (Tarea B).

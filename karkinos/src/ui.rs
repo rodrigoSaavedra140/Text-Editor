@@ -3467,6 +3467,9 @@ impl eframe::App for EditorApp {
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.show_save_progress(ctx);
+        // v0.2.48 (Tarea B): comandos IPC de instancias secundarias
+        // (`karkinos <path>`) — abrir pestaña y pedir foco, por frame.
+        self.poll_ipc_events(ctx);
         // S1: comprobación externa de disco (limitada a 1 stat/seg
         // dentro del método; aquí solo es invocarla por frame).
         self.doc.check_external_changes();
