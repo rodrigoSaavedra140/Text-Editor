@@ -102,6 +102,42 @@ pub fn word_range_at(line: &str, col: usize) -> (usize, usize) {
     }
 }
 
+/// Returns the matching closing delimiter for an opening delimiter, or `None`
+/// if `open` does not open a pair. Quotes and backticks are self-pairing.
+pub fn closing_delimiter(open: char) -> Option<char> {
+    match open {
+        '(' => Some(')'),
+        '[' => Some(']'),
+        '{' => Some('}'),
+        '"' => Some('"'),
+        '\'' => Some('\''),
+        '`' => Some('`'),
+        _ => None,
+    }
+}
+
+/// Returns `true` when `c` is a closing delimiter (`)`, `]`, `}`, `"`, `'`, `` ` ``).
+pub fn is_closing_delimiter(c: char) -> bool {
+    matches!(c, ')' | ']' | '}' | '"' | '\'' | '`')
+}
+
+/// Returns `true` when the cursor at `col` sits between an empty pair, i.e.
+/// the character before and after form `()`, `[]`, `{}`, `""`, `''` or `` `` ``.
+pub fn is_empty_pair_around(line: &str, col: usize) -> bool {
+    if col == 0 {
+        return false;
+    }
+    let chars: Vec<char> = line.chars().collect();
+    if col > chars.len() {
+        return false;
+    }
+    if let (Some(&before), Some(&after)) = (chars.get(col - 1), chars.get(col)) {
+        closing_delimiter(before) == Some(after)
+    } else {
+        false
+    }
+}
+
 /// Returns leading whitespace from `prev_line` for auto-indentation.
 pub fn inherited_indent(prev_line: &str) -> String {
     prev_line.chars().take_while(|c| c.is_whitespace()).collect()
@@ -317,6 +353,50 @@ mod tests {
         toggle_comment_range(&mut lines, 0, 1, "//");
         assert_eq!(lines[0], "    let a = 1;");
         assert_eq!(lines[1], "    let b = 2;");
+    }
+
+    #[test]
+    fn closing_delimiter_maps_parens_brackets_braces_and_quotes() {
+        assert_eq!(closing_delimiter('('), Some(')'));
+        assert_eq!(closing_delimiter('['), Some(']'));
+        assert_eq!(closing_delimiter('{'), Some('}'));
+        assert_eq!(closing_delimiter('"'), Some('"'));
+        assert_eq!(closing_delimiter('\''), Some('\''));
+        assert_eq!(closing_delimiter('`'), Some('`'));
+        // Caracteres que no abren un par.
+        assert_eq!(closing_delimiter(')'), None);
+        assert_eq!(closing_delimiter('a'), None);
+        assert_eq!(closing_delimiter(' '), None);
+    }
+
+    #[test]
+    fn is_closing_delimiter_detects_only_closing_chars() {
+        assert!(is_closing_delimiter(')'));
+        assert!(is_closing_delimiter(']'));
+        assert!(is_closing_delimiter('}'));
+        assert!(is_closing_delimiter('"'));
+        assert!(is_closing_delimiter('\''));
+        assert!(is_closing_delimiter('`'));
+        assert!(!is_closing_delimiter('('));
+        assert!(!is_closing_delimiter('['));
+        assert!(!is_closing_delimiter('{'));
+        assert!(!is_closing_delimiter('a'));
+    }
+
+    #[test]
+    fn is_empty_pair_around_detects_adjacent_empty_pairs() {
+        assert!(is_empty_pair_around("()", 1));
+        assert!(is_empty_pair_around("[]", 1));
+        assert!(is_empty_pair_around("{}", 1));
+        assert!(is_empty_pair_around("\"\"", 1));
+        assert!(is_empty_pair_around("''", 1));
+        assert!(is_empty_pair_around("``", 1));
+        // No son pares adyacentes vacíos.
+        assert!(!is_empty_pair_around("(x)", 1));
+        assert!(!is_empty_pair_around("()", 0)); // col 0: no hay char previo
+        assert!(!is_empty_pair_around("", 0));
+        assert!(!is_empty_pair_around("()", 2)); // fin de línea: no hay char posterior
+        assert!(!is_empty_pair_around("x(", 1));
     }
 
     #[test]

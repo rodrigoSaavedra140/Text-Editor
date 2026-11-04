@@ -1,5 +1,7 @@
 use eframe::egui;
 
+use karkinos_core::text_ops::{closing_delimiter, is_closing_delimiter, is_empty_pair_around};
+
 /// Posición en el documento (línea 0-based, columna 0-based).
 pub type TextPos = (usize, usize);
 /// Rango de texto delimitado por dos posiciones (inicio, fin).
@@ -787,6 +789,121 @@ pub fn find_matching_bracket(
 }
 
 // ============================================================
+// Smart delimiters & auto-closing pairs (Roadmap v0.2.50)
+// ============================================================
+
+/// Resultado de procesar un único carácter de delimitador en el cursor primario.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DelimiterOutcome {
+    /// Se insertó o borró texto: el llamador debe marcar el documento como modificado.
+    TextMutated,
+    /// Solo se movió el cursor (overtyping): no hubo cambio de texto.
+    CursorMoved,
+    /// No era un caso especial de delimitador: seguir con la inserción normal.
+    Unhandled,
+}
+
+/// Maneja la escritura de un único carácter `c` en el cursor primario.
+///
+/// Aplica, en orden:
+/// 1. **Selection wrap**: con selección y `c` de apertura, envuelve el texto
+///    seleccionado entre `c` y su cierre.
+/// 2. **Overtyping**: sin selección y `c` de cierre, si el carácter a la derecha
+///    es exactamente `c`, avanza el cursor sin duplicarlo.
+/// 3. **Auto-cierre**: sin selección y `c` de apertura, si a la derecha hay fin
+///    de línea, espacio o delimitador de cierre, inserta `c`+cierre y deja el
+///    cursor en el medio.
+fn handle_delimiter_char(
+    lines: &mut Vec<String>,
+    state: &mut EditorState,
+    c: char,
+) -> DelimiterOutcome {
+    // 1. Selection wrap.
+    if let Some((s, e)) = selection_range(state) {
+        if let Some(close) = closing_delimiter(c) {
+            let sel_text = selected_text(lines, s, e);
+            delete_range(lines, s, e);
+            let wrapped = format!("{}{}{}", c, sel_text, close);
+            let (nl, nc) = insert_text(lines, s, &wrapped);
+            state.cursor_line = nl;
+            state.cursor_col = nc;
+            state.sel_anchor = Some((nl, nc));
+            return DelimiterOutcome::TextMutated;
+        }
+        return DelimiterOutcome::Unhandled;
+    }
+
+    // 2. Overtyping (sin selección).
+    if is_closing_delimiter(c) {
+        let (l, col) = (state.cursor_line, state.cursor_col);
+        let chars: Vec<char> = lines[l].chars().collect();
+        if chars.get(col) == Some(&c) {
+            state.cursor_col = col + 1;
+            state.sel_anchor = Some((l, col + 1));
+            return DelimiterOutcome::CursorMoved;
+        }
+    }
+
+    // 3. Auto-cierre (sin selección).
+    if let Some(close) = closing_delimiter(c) {
+        let (l, col) = (state.cursor_line, state.cursor_col);
+        let after = lines[l].chars().nth(col);
+        let should_auto_close = match after {
+            None => true, // fin de línea
+            Some(ch) => ch.is_whitespace() || is_closing_delimiter(ch),
+        };
+        if should_auto_close {
+            let pair = format!("{}{}", c, close);
+            let (nl, nc) = insert_text(lines, (l, col), &pair);
+            state.cursor_line = nl;
+            state.cursor_col = nc - 1; // en el medio de la pareja
+            state.sel_anchor = Some((state.cursor_line, state.cursor_col));
+            return DelimiterOutcome::TextMutated;
+        }
+    }
+
+    DelimiterOutcome::Unhandled
+}
+
+/// Borra un par vacío `()`, `[]`, `{}`, `""`, `''` o `` `` `` alrededor del
+/// cursor primario. Devuelve `true` si borró ambos caracteres.
+fn backspace_empty_pair(lines: &mut Vec<String>, state: &mut EditorState) -> bool {
+    if selection_range(state).is_some() {
+        return false;
+    }
+    let (l, c) = (state.cursor_line, state.cursor_col);
+    if !is_empty_pair_around(&lines[l], c) {
+        return false;
+    }
+    delete_range(lines, (l, c - 1), (l, c + 1));
+    state.cursor_col = c - 1;
+    state.sel_anchor = Some((l, c - 1));
+    true
+}
+
+/// Expande un bloque `{|}` en tres líneas con indentación expandida y deja el
+/// cursor en el renglón intermedio. Devuelve `true` si lo hizo.
+fn enter_between_braces(lines: &mut Vec<String>, state: &mut EditorState) -> bool {
+    let line_idx = state.cursor_line;
+    let col = state.cursor_col;
+    let between_braces = {
+        let chars: Vec<char> = lines[line_idx].chars().collect();
+        col > 0 && col < chars.len() && chars[col - 1] == '{' && chars[col] == '}'
+    };
+    if !between_braces {
+        return false;
+    }
+    let base = inherited_indent(&lines[line_idx]);
+    let base_len = line_char_count(&base);
+    let insert = format!("\n{}    \n{}", base, base);
+    let (closing_line, _) = insert_text(lines, (line_idx, col), &insert);
+    state.cursor_line = closing_line - 1;
+    state.cursor_col = base_len + 4;
+    state.sel_anchor = Some((state.cursor_line, state.cursor_col));
+    true
+}
+
+// ============================================================
 // Ajuste de línea (word wrap) — todo lo de acá para abajo asume
 // fuente monoespaciada, así que "wrap_chars" caracteres entran
 // exactos en el ancho disponible.
@@ -1122,37 +1239,80 @@ pub fn show(
                     // F3 (Roadmap v0.2.29): el texto entra en el cursor
                     // primario y en todos los extra; si alguno tiene
                     // selección, primero se descarta en bloque.
-                    let primary_range = selection_range(state);
-                    let mut ranges = Vec::new();
-                    if let Some(r) = primary_range {
-                        ranges.push(r);
-                    }
-                    for c in &state.extra_carets {
-                        if let Some(r) = c.range() {
+                    // Roadmap v0.2.50: si `t` es un único delimitador, el
+                    // cursor primario aplica auto-cierre / overtyping / wrap.
+                    let single_char = {
+                        let mut it = t.chars();
+                        match (it.next(), it.next()) {
+                            (Some(c), None) => Some(c),
+                            _ => None,
+                        }
+                    };
+                    let primary_outcome = match single_char {
+                        Some(c) => handle_delimiter_char(lines, state, c),
+                        None => DelimiterOutcome::Unhandled,
+                    };
+
+                    if matches!(primary_outcome, DelimiterOutcome::Unhandled) {
+                        // Inserción normal multi-cursor.
+                        let primary_range = selection_range(state);
+                        let mut ranges = Vec::new();
+                        if let Some(r) = primary_range {
                             ranges.push(r);
                         }
-                    }
-                    let mut positions =
-                        vec![primary_range.map_or((state.cursor_line, state.cursor_col), |r| r.0)];
-                    for c in &state.extra_carets {
-                        positions.push(c.range().map_or((c.line, c.col), |r| r.0));
-                    }
-                    if !ranges.is_empty() {
-                        delete_ranges_multi(lines, &ranges);
-                    }
-                    let news = insert_text_multi(lines, &positions, &t);
-                    state.cursor_line = news[0].0;
-                    state.cursor_col = news[0].1;
-                    state.sel_anchor = Some(news[0]);
-                    for (i, caret) in state.extra_carets.iter_mut().enumerate() {
-                        if let Some(p) = news.get(i + 1) {
+                        for c in &state.extra_carets {
+                            if let Some(r) = c.range() {
+                                ranges.push(r);
+                            }
+                        }
+                        let mut positions =
+                            vec![primary_range.map_or((state.cursor_line, state.cursor_col), |r| r.0)];
+                        for c in &state.extra_carets {
+                            positions.push(c.range().map_or((c.line, c.col), |r| r.0));
+                        }
+                        if !ranges.is_empty() {
+                            delete_ranges_multi(lines, &ranges);
+                        }
+                        let news = insert_text_multi(lines, &positions, &t);
+                        state.cursor_line = news[0].0;
+                        state.cursor_col = news[0].1;
+                        state.sel_anchor = Some(news[0]);
+                        for (i, caret) in state.extra_carets.iter_mut().enumerate() {
+                            if let Some(p) = news.get(i + 1) {
+                                caret.line = p.0;
+                                caret.col = p.1;
+                                caret.anchor = Some(*p);
+                            }
+                        }
+                        changed = true;
+                        resync_rows!();
+                    } else {
+                        // El cursor primario ya aplicó el caso especial de
+                        // delimitador; los cursores extra reciben `t` normal.
+                        let text_mutated =
+                            matches!(primary_outcome, DelimiterOutcome::TextMutated);
+                        let mut ranges = Vec::new();
+                        let mut positions = Vec::new();
+                        for caret in &state.extra_carets {
+                            if let Some(r) = caret.range() {
+                                ranges.push(r);
+                            }
+                            positions.push(caret.range().map_or((caret.line, caret.col), |r| r.0));
+                        }
+                        if !ranges.is_empty() {
+                            delete_ranges_multi(lines, &ranges);
+                        }
+                        let news = insert_text_multi(lines, &positions, &t);
+                        for (caret, p) in state.extra_carets.iter_mut().zip(news) {
                             caret.line = p.0;
                             caret.col = p.1;
-                            caret.anchor = Some(*p);
+                            caret.anchor = Some(p);
                         }
+                        if text_mutated || !state.extra_carets.is_empty() {
+                            changed = true;
+                        }
+                        resync_rows!();
                     }
-                    changed = true;
-                    resync_rows!();
                 }
                 egui::Event::Paste(t) => {
                     pre_break_snapshot = Some(lines.join("\n"));
@@ -1261,33 +1421,51 @@ pub fn show(
                             state.cursor_line = s.0;
                             state.cursor_col = s.1;
                         }
-                        // S6: la línea nueva hereda la sangría de la
-                        // línea en la que estaba el cursor. (se lee
-                        // DESPUÉS de descartar la selección y ANTES de
-                        // partir la línea en dos).
-                        let indenta = inherited_indent(&lines[state.cursor_line]);
-                        let insert = if indenta.is_empty() {
-                            "\n".to_string()
+                        // Roadmap v0.2.50: Enter entre `{` y `}` expande el
+                        // bloque en 3 líneas con indentación +4 en el medio.
+                        if enter_between_braces(lines, state) {
+                            changed = true;
+                            force_snapshot = true;
+                            resync_rows!();
                         } else {
-                            format!("\n{}", indenta)
-                        };
-                        let (nl, nc) =
-                            insert_text(lines, (state.cursor_line, state.cursor_col), &insert);
-                        state.cursor_line = nl;
-                        state.cursor_col = nc;
-                        state.sel_anchor = Some((nl, nc));
-                        changed = true;
-                        force_snapshot = true;
-                        resync_rows!();
+                            // S6: la línea nueva hereda la sangría de la
+                            // línea en la que estaba el cursor. (se lee
+                            // DESPUÉS de descartar la selección y ANTES de
+                            // partir la línea en dos).
+                            let indenta = inherited_indent(&lines[state.cursor_line]);
+                            let insert = if indenta.is_empty() {
+                                "\n".to_string()
+                            } else {
+                                format!("\n{}", indenta)
+                            };
+                            let (nl, nc) =
+                                insert_text(lines, (state.cursor_line, state.cursor_col), &insert);
+                            state.cursor_line = nl;
+                            state.cursor_col = nc;
+                            state.sel_anchor = Some((nl, nc));
+                            changed = true;
+                            force_snapshot = true;
+                            resync_rows!();
+                        }
                     }
                     egui::Key::Backspace => {
                         // F3: borra la selección, o el carácter anterior, en cada cursor.
+                        let primary_range = selection_range(state);
+
+                        // Roadmap v0.2.50: el cursor primario borra un par vacío
+                        // si está justo entre `(`, `[`, `{`, comillas, etc. El
+                        // helper reposiciona el cursor primario y deja los
+                        // cursores extra para el flujo de backspace normal.
+                        let primary_handled =
+                            primary_range.is_none() && backspace_empty_pair(lines, state);
+
                         let mut ranges = Vec::new();
                         let mut single_positions = Vec::new();
-                        let primary_range = selection_range(state);
-                        match primary_range {
-                            Some(r) => ranges.push(r),
-                            None => single_positions.push((state.cursor_line, state.cursor_col)),
+                        if !primary_handled {
+                            match primary_range {
+                                Some(r) => ranges.push(r),
+                                None => single_positions.push((state.cursor_line, state.cursor_col)),
+                            }
                         }
                         for c in &state.extra_carets {
                             match c.range() {
@@ -1303,8 +1481,9 @@ pub fn show(
                             }
                         }
 
-                        // Las posiciones nuevas se calculan ANTES de borrar, con
-                        // las líneas todavía en su forma original.
+                        // Las posiciones nuevas se calculan con las líneas ya en
+                        // su forma definitiva (el helper del par vacío, si actuó,
+                        // ya borró su rango del primario).
                         let new_pos_after = |line: usize, col: usize, had_selection: bool| {
                             if had_selection {
                                 // el inicio de la selección ya es la posición final
@@ -1317,10 +1496,15 @@ pub fn show(
                                 Some((line, col))
                             }
                         };
-                        let primary_new = match primary_range {
-                            Some(r) => r.0,
-                            None => new_pos_after(state.cursor_line, state.cursor_col, false)
-                                .unwrap(),
+                        let primary_new = if primary_handled {
+                            // el helper ya dejó el cursor en el inicio del par borrado
+                            (state.cursor_line, state.cursor_col)
+                        } else {
+                            match primary_range {
+                                Some(r) => r.0,
+                                None => new_pos_after(state.cursor_line, state.cursor_col, false)
+                                    .unwrap(),
+                            }
                         };
                         let extras_new: Vec<(usize, usize)> = state
                             .extra_carets
@@ -3002,5 +3186,104 @@ mod tests {
         assert!(!state.collapsed_folds.contains(&1));
         let rows_restored = rebuild_row_counts(&lines, 80, &state);
         assert_eq!(rows_restored, vec![1, 1, 1, 1, 1]);
+    }
+
+    // Roadmap v0.2.50: smart delimiters & auto-closing pairs.
+
+    #[test]
+    fn smart_auto_close_paren_inserts_pair_and_centers_cursor() {
+        let mut lines = vec![String::new()];
+        let mut state = EditorState::default(); // cursor (0, 0)
+        let outcome = handle_delimiter_char(&mut lines, &mut state, '(');
+        assert_eq!(outcome, DelimiterOutcome::TextMutated);
+        assert_eq!(lines, vec!["()".to_string()]);
+        assert_eq!((state.cursor_line, state.cursor_col), (0, 1));
+        assert_eq!(state.sel_anchor, Some((0, 1)));
+    }
+
+    #[test]
+    fn smart_auto_close_skips_when_letter_follows() {
+        let mut lines = vec!["abc".to_string()];
+        let mut state = EditorState { cursor_line: 0, cursor_col: 1, ..Default::default() };
+        // cursor entre 'a' y 'b'; la letra 'b' a la derecha impide el auto-cierre.
+        let outcome = handle_delimiter_char(&mut lines, &mut state, '(');
+        assert_eq!(outcome, DelimiterOutcome::Unhandled);
+        assert_eq!(lines, vec!["abc".to_string()]);
+    }
+
+    #[test]
+    fn smart_overtype_closing_paren_advances_without_duplicating() {
+        let mut lines = vec![")".to_string()];
+        let mut state = EditorState::default(); // cursor (0, 0)
+        let outcome = handle_delimiter_char(&mut lines, &mut state, ')');
+        assert_eq!(outcome, DelimiterOutcome::CursorMoved);
+        assert_eq!(lines, vec![")".to_string()]); // sin duplicar
+        assert_eq!((state.cursor_line, state.cursor_col), (0, 1));
+    }
+
+    #[test]
+    fn smart_selection_wrap_wraps_selected_text() {
+        let mut lines = vec!["foo".to_string()];
+        let mut state = EditorState {
+            cursor_line: 0,
+            cursor_col: 3,
+            sel_anchor: Some((0, 0)),
+            ..Default::default()
+        };
+        let outcome = handle_delimiter_char(&mut lines, &mut state, '(');
+        assert_eq!(outcome, DelimiterOutcome::TextMutated);
+        assert_eq!(lines, vec!["(foo)".to_string()]);
+        assert_eq!((state.cursor_line, state.cursor_col), (0, 5));
+        assert_eq!(state.sel_anchor, Some((0, 5)));
+    }
+
+    #[test]
+    fn smart_backspace_removes_empty_pair() {
+        let mut lines = vec!["()".to_string()];
+        let mut state = EditorState { cursor_line: 0, cursor_col: 1, ..Default::default() };
+        assert!(backspace_empty_pair(&mut lines, &mut state));
+        assert_eq!(lines, vec![String::new()]);
+        assert_eq!((state.cursor_line, state.cursor_col), (0, 0));
+    }
+
+    #[test]
+    fn smart_backspace_leaves_non_empty_pair_alone() {
+        let mut lines = vec!["(x)".to_string()];
+        let mut state = EditorState { cursor_line: 0, cursor_col: 2, ..Default::default() };
+        assert!(!backspace_empty_pair(&mut lines, &mut state));
+        assert_eq!(lines, vec!["(x)".to_string()]);
+    }
+
+    #[test]
+    fn smart_enter_between_braces_expands_block() {
+        let mut lines = vec!["{}".to_string()];
+        let mut state = EditorState { cursor_line: 0, cursor_col: 1, ..Default::default() };
+        assert!(enter_between_braces(&mut lines, &mut state));
+        assert_eq!(
+            lines,
+            vec!["{".to_string(), "    ".to_string(), "}".to_string()]
+        );
+        assert_eq!((state.cursor_line, state.cursor_col), (1, 4));
+        assert_eq!(state.sel_anchor, Some((1, 4)));
+    }
+
+    #[test]
+    fn smart_enter_between_braces_preserves_base_indent() {
+        let mut lines = vec!["    {}".to_string()];
+        let mut state = EditorState { cursor_line: 0, cursor_col: 5, ..Default::default() };
+        assert!(enter_between_braces(&mut lines, &mut state));
+        assert_eq!(
+            lines,
+            vec!["    {".to_string(), "        ".to_string(), "    }".to_string()]
+        );
+        assert_eq!((state.cursor_line, state.cursor_col), (1, 8));
+    }
+
+    #[test]
+    fn smart_enter_outside_braces_is_unhandled() {
+        let mut lines = vec!["abc".to_string()];
+        let mut state = EditorState { cursor_line: 0, cursor_col: 1, ..Default::default() };
+        assert!(!enter_between_braces(&mut lines, &mut state));
+        assert_eq!(lines, vec!["abc".to_string()]);
     }
 }
