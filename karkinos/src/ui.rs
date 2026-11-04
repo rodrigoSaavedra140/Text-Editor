@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use eframe::egui;
 
-use crate::app::{picker_should_stay_open, EditorApp};
+use crate::app::{picker_should_stay_open, EditorApp, PickerNewItemKind};
 use crate::title_bar::{draw_resize_handles, title_bar_icon_button, TitleBarIcon};
 use crate::util::{format_size, request_close};
 use crate::LOGO_BYTES;
@@ -22,9 +22,14 @@ impl EditorApp {
         if !self.picker_open {
             return;
         }
-        // Esc lo cierra por convención (igual que la barra buscar).
+        // Esc cancela la creación inline si hay una; si no, cierra el popup.
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-            self.picker_open = false;
+            if self.picker_new_kind.is_some() {
+                self.picker_new_kind = None;
+                self.picker_new_name.clear();
+            } else {
+                self.picker_open = false;
+            }
             return;
         }
 
@@ -36,6 +41,9 @@ impl EditorApp {
         let dir_label = format!("📂 {}", self.doc.browse_dir.display());
         let mut navigate_to: Option<PathBuf> = None;
         let mut open_file: Option<PathBuf> = None;
+        let mut new_kind_request: Option<PickerNewItemKind> = None;
+        let mut submit_new_item = false;
+        let mut cancel_new_item = false;
 
         let area_response = egui::Area::new(egui::Id::new("file_picker_popup"))
             .order(egui::Order::Foreground)
@@ -47,6 +55,42 @@ impl EditorApp {
                     ui.set_min_width(280.0);
                     egui::ScrollArea::vertical().max_height(340.0).show(ui, |ui| {
                         ui.label(&dir_label);
+                        ui.separator();
+
+                        // v0.2.52: crear archivos/carpetas sin salir del popup.
+                        ui.horizontal(|ui| {
+                            if ui.button("📄+ New File").clicked() {
+                                new_kind_request = Some(PickerNewItemKind::File);
+                            }
+                            if ui.button("📁+ New Folder").clicked() {
+                                new_kind_request = Some(PickerNewItemKind::Folder);
+                            }
+                        });
+                        if let Some(kind) = self.picker_new_kind {
+                            let hint = match kind {
+                                PickerNewItemKind::File => "New file name",
+                                PickerNewItemKind::Folder => "New folder name",
+                            };
+                            ui.horizontal(|ui| {
+                                let input = ui.add_sized(
+                                    [(ui.available_width() - 28.0).max(80.0), 22.0],
+                                    egui::TextEdit::singleline(&mut self.picker_new_name)
+                                        .id_source("picker_new_item_input")
+                                        .hint_text(hint),
+                                );
+                                if !input.has_focus() && self.picker_new_name.is_empty() {
+                                    input.request_focus();
+                                }
+                                if input.lost_focus()
+                                    && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                                {
+                                    submit_new_item = true;
+                                }
+                                if ui.button("x").on_hover_text("Cancel").clicked() {
+                                    cancel_new_item = true;
+                                }
+                            });
+                        }
                         ui.separator();
 
                         // Subir a la carpeta padre (si existe).
@@ -76,6 +120,19 @@ impl EditorApp {
                     });
                 });
             });
+
+        // v0.2.52: abrir el input inline o crear/cancelar el ítem pendiente.
+        if let Some(kind) = new_kind_request {
+            self.picker_new_kind = Some(kind);
+            self.picker_new_name.clear();
+        }
+        if submit_new_item {
+            let _ = self.picker_create_item();
+        }
+        if cancel_new_item {
+            self.picker_new_kind = None;
+            self.picker_new_name.clear();
+        }
 
         // Elegir un ARCHIVO cierra el popup (ya se abrió en el
         // editor): es el objetivo final del selector.
@@ -794,7 +851,7 @@ impl EditorApp {
                     .strong(),
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("✕").on_hover_text("Close").clicked() {
+                if ui.button("x").on_hover_text("Close").clicked() {
                     *close_panel = true;
                 }
                 if ui.button("⊟").on_hover_text("Collapse All").clicked() {
@@ -875,7 +932,7 @@ impl EditorApp {
                         if ui.button("✓").on_hover_text("Create").clicked() {
                             submit = true;
                         }
-                        if ui.button("✕").on_hover_text("Cancel").clicked() {
+                        if ui.button("x").on_hover_text("Cancel").clicked() {
                             cancel = true;
                         }
                     });
@@ -913,7 +970,7 @@ impl EditorApp {
                         ui.with_layout(
                             egui::Layout::right_to_left(egui::Align::Center),
                             |ui| {
-                                if ui.button("✕").on_hover_text("Cancel").clicked() {
+                                if ui.button("x").on_hover_text("Cancel").clicked() {
                                     cancel = true;
                                 }
                                 if ui.button("Delete").clicked() {
@@ -932,7 +989,7 @@ impl EditorApp {
         }
 
         // v0.2.49: renombrado inline del explorador. El campo se muestra
-        // mientras `renaming_item` tenga un path; Enter/✓ confirma, Esc/✕ cancela.
+        // mientras `renaming_item` tenga un path; Enter/✓ confirma, Esc/x cancela.
         if self.explorer.renaming_item.is_some() {
             let display = self
                 .explorer
@@ -978,7 +1035,7 @@ impl EditorApp {
                         if ui.button("✓").on_hover_text("Rename").clicked() {
                             submit = true;
                         }
-                        if ui.button("✕").on_hover_text("Cancel").clicked() {
+                        if ui.button("x").on_hover_text("Cancel").clicked() {
                             cancel = true;
                         }
                     });
@@ -1412,7 +1469,7 @@ impl EditorApp {
                         );
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.small_button("✕").on_hover_text("Close diff").clicked() {
+                        if ui.small_button("x").on_hover_text("Close diff").clicked() {
                             close = true;
                         }
                     });
@@ -1803,7 +1860,7 @@ impl EditorApp {
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
-                    .button("✕")
+                    .button("x")
                     .on_hover_text("Close (Ctrl+Shift+F)")
                     .clicked()
                 {
@@ -2006,7 +2063,7 @@ impl EditorApp {
                     .strong(),
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("✕").on_hover_text("Close").clicked() {
+                if ui.button("x").on_hover_text("Close").clicked() {
                     *close_panel = true;
                 }
                 if ui
@@ -2169,7 +2226,7 @@ impl EditorApp {
                     .strong(),
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("✕").on_hover_text("Close").clicked() {
+                if ui.button("x").on_hover_text("Close").clicked() {
                     *close_panel = true;
                 }
             });
@@ -2486,7 +2543,7 @@ impl EditorApp {
                         }
                     }
 
-                    if ui.small_button("✕").on_hover_text("Close (Esc)").clicked() {
+                    if ui.small_button("x").on_hover_text("Close (Esc)").clicked() {
                         self.find_open = false;
                     }
                 });
@@ -2823,7 +2880,7 @@ impl EditorApp {
                                     let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
                                     ui.horizontal(|ui| {
                                         ui.label(egui::RichText::new(format!("● {}:{}", file_name, line + 1)).color(egui::Color32::from_rgb(240, 70, 70)));
-                                        if ui.small_button("×").clicked() {
+                                        if ui.small_button("x").clicked() {
                                             to_remove = Some((path.clone(), *line));
                                         }
                                     });
@@ -2867,7 +2924,7 @@ impl EditorApp {
             }
             if self.terminal.len() > 1
                 && ui
-                    .button("✕")
+                    .button("x")
                     .on_hover_text("Close Terminal (Ctrl+Shift+W)")
                     .clicked()
             {
@@ -4244,7 +4301,8 @@ impl eframe::App for EditorApp {
                                     ui.label(egui::RichText::new("●").color(theme.accent).size(10.0));
                                 }
 
-                                // × gris; pasa a rojo cuando el mouse está encima.
+                                // v0.2.52: trazos vectoriales (sin glifo de fuente),
+                                // igual que el botón de cierre de title_bar.rs.
                                 let (x_rect, x_response) =
                                     ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::click());
                                 let x_color = if x_response.hovered() {
@@ -4252,12 +4310,22 @@ impl eframe::App for EditorApp {
                                 } else {
                                     theme.text_muted
                                 };
-                                ui.painter().text(
-                                    x_rect.center(),
-                                    egui::Align2::CENTER_CENTER,
-                                    "×",
-                                    egui::FontId::proportional(14.0),
-                                    x_color,
+                                let x_center = x_rect.center();
+                                let h = 4.5;
+                                let x_stroke = egui::Stroke::new(1.2_f32, x_color);
+                                ui.painter().line_segment(
+                                    [
+                                        x_center + egui::vec2(-h, -h),
+                                        x_center + egui::vec2(h, h),
+                                    ],
+                                    x_stroke,
+                                );
+                                ui.painter().line_segment(
+                                    [
+                                        x_center + egui::vec2(-h, h),
+                                        x_center + egui::vec2(h, -h),
+                                    ],
+                                    x_stroke,
                                 );
                                 if x_response.on_hover_text("Close Tab (Ctrl+W)").clicked() {
                                     close_target = Some(idx);

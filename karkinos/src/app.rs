@@ -134,6 +134,10 @@ pub struct EditorApp {
     // cada vez). button rect se registra cada frame en ui.rs.
     pub picker_open: bool,
     pub picker_button_rect: Option<egui::Rect>,
+    // v0.2.52: creación de archivos/carpetas desde el popup "Open…".
+    // `picker_new_kind` distinto de `None` muestra el input inline.
+    pub picker_new_kind: Option<PickerNewItemKind>,
+    pub picker_new_name: String,
     // S10: tamaño en puntos de la fuente monoespaciada del editor
     // (clamp 8..32). Solo la fuente del editor, no toda la UI.
     pub font_size: f32,
@@ -323,6 +327,13 @@ pub struct ExplorerState {
 /// v0.2.41: tipo de ítem que crea el diálogo inline del explorador.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExplorerNewItemKind {
+    File,
+    Folder,
+}
+
+/// v0.2.52: tipo de ítem que crea el popup "Open…".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PickerNewItemKind {
     File,
     Folder,
 }
@@ -754,6 +765,8 @@ impl Default for EditorApp {
             find_current: 0,
             picker_open: false,
             picker_button_rect: None,
+            picker_new_kind: None,
+            picker_new_name: String::new(),
             font_size: 14.0,
             theme_mode: crate::theme::ThemeMode::Dark,
             quick_open: crate::quick_open::QuickOpenState::default(),
@@ -1410,6 +1423,52 @@ impl EditorApp {
         self.refresh_explorer();
 
         if kind == ExplorerNewItemKind::File {
+            self.open_path(path.clone());
+        }
+        self.doc.status = format!("Created {}", name);
+        Ok(path)
+    }
+
+    /// v0.2.52: crea el ítem pendiente del popup "Open…". Un archivo se
+    /// abre en una pestaña nueva y cierra el popup; una carpeta queda en
+    /// disco y el selector sigue abierto para seguir navegando.
+    pub fn picker_create_item(&mut self) -> Result<std::path::PathBuf, String> {
+        let Some(kind) = self.picker_new_kind else {
+            return Err("No item is being created".to_string());
+        };
+
+        let name = self.picker_new_name.trim().to_string();
+        if !is_valid_explorer_item_name(&name) {
+            let msg = "Invalid name: use a single file or folder name".to_string();
+            self.doc.status = msg.clone();
+            return Err(msg);
+        }
+
+        let path = self.doc.browse_dir.join(&name);
+        if path.exists() {
+            let msg = format!("Already exists: {}", path.display());
+            self.doc.status = msg.clone();
+            return Err(msg);
+        }
+
+        let created = match kind {
+            PickerNewItemKind::File => std::fs::File::create(&path).map(|_| ()),
+            PickerNewItemKind::Folder => std::fs::create_dir(&path),
+        };
+        if let Err(e) = created {
+            let msg = format!("Could not create {}: {}", name, e);
+            self.doc.status = msg.clone();
+            return Err(msg);
+        }
+
+        // El listado cacheado del popup tiene que reflejar el ítem nuevo.
+        self.doc.invalidate_dir_cache();
+        self.picker_new_name.clear();
+        self.picker_new_kind = None;
+
+        if kind == PickerNewItemKind::File {
+            self.picker_open = false;
+            self.picker_button_rect = None;
             self.open_path(path.clone());
         }
         self.doc.status = format!("Created {}", name);
@@ -4857,6 +4916,92 @@ mod tests {
             app.create_explorer_item().is_err(),
             "no pisa archivos existentes"
         );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn picker_crear_archivo_lo_abre_y_cierra_el_popup() {
+        let root = explorer_temp_root("picker_create_file");
+        let mut app = EditorApp::default();
+        app.doc.browse_dir = root.clone();
+        app.picker_open = true;
+        app.picker_new_kind = Some(PickerNewItemKind::File);
+        app.picker_new_name = "desde_picker.rs".to_string();
+
+        let path = app.picker_create_item().expect("crear archivo");
+
+        assert_eq!(path, root.join("desde_picker.rs"));
+        assert!(path.is_file(), "el archivo existe en disco");
+        assert_eq!(
+            app.doc.current_file,
+            Some(path.clone()),
+            "el archivo se abre de inmediato"
+        );
+        assert!(!app.picker_open, "el popup se cierra al abrir el archivo");
+        assert_eq!(app.picker_new_kind, None);
+        assert!(app.picker_new_name.is_empty());
+        assert_eq!(app.doc.status, "Created desde_picker.rs");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn picker_crear_carpeta_refresca_listado_y_mantiene_popup() {
+        let root = explorer_temp_root("picker_create_folder");
+        let mut app = EditorApp::default();
+        app.doc.browse_dir = root.clone();
+        app.picker_open = true;
+        // Calienta el caché antes de crear: el listado tiene que refrescarse.
+        let (dirs, _) = app.doc.cached_list_dir();
+        assert!(dirs.is_empty(), "{dirs:?}");
+
+        app.picker_new_kind = Some(PickerNewItemKind::Folder);
+        app.picker_new_name = "nueva_carpeta".to_string();
+
+        let path = app.picker_create_item().expect("crear carpeta");
+
+        assert_eq!(path, root.join("nueva_carpeta"));
+        assert!(path.is_dir());
+        assert!(app.picker_open, "el selector sigue abierto para navegar");
+        assert_eq!(app.picker_new_kind, None);
+        assert!(app.picker_new_name.is_empty());
+        assert_eq!(app.doc.current_file, None, "una carpeta no se abre");
+        let (dirs, _) = app.doc.cached_list_dir();
+        assert!(dirs.contains(&"nueva_carpeta".to_string()), "{dirs:?}");
+        assert_eq!(app.doc.status, "Created nueva_carpeta");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn picker_crear_item_rechaza_nombres_invalidos_y_existentes() {
+        let root = explorer_temp_root("picker_create_invalid");
+        let mut app = EditorApp::default();
+        app.doc.browse_dir = root.clone();
+        app.picker_open = true;
+        app.picker_new_kind = Some(PickerNewItemKind::File);
+
+        app.picker_new_name = "   ".to_string();
+        assert!(app.picker_create_item().is_err(), "nombre vacío");
+        assert!(
+            app.picker_new_kind.is_some(),
+            "el input sigue abierto para corregir"
+        );
+
+        app.picker_new_name = "../escapa".to_string();
+        assert!(app.picker_create_item().is_err(), "no sale de la raíz");
+        assert!(!root.parent().unwrap().join("escapa").exists());
+
+        std::fs::write(root.join("existente.rs"), "ya existe").expect("archivo");
+        app.picker_new_name = "existente.rs".to_string();
+        assert!(app.picker_create_item().is_err(), "no pisa archivos");
+
+        // Sin ítem pendiente, el método no toca el disco.
+        app.picker_new_kind = None;
+        app.picker_new_name = "otro.rs".to_string();
+        assert!(app.picker_create_item().is_err());
+        assert!(!root.join("otro.rs").exists());
 
         std::fs::remove_dir_all(&root).ok();
     }

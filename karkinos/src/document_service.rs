@@ -242,6 +242,12 @@ impl DocumentService {
         listing
     }
 
+    /// v0.2.52: descarta el listado cacheado (p. ej. tras crear un
+    /// archivo o carpeta desde el popup "Open…").
+    pub fn invalidate_dir_cache(&mut self) {
+        self.dir_cache = None;
+    }
+
     pub fn is_empty_buffer(&self) -> bool {
         self.lines.len() <= 1 && self.lines.first().map(|l| l.is_empty()).unwrap_or(true)
     }
