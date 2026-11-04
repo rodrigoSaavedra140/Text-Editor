@@ -269,6 +269,12 @@ pub struct ExplorerState {
     pub item_to_delete: Option<std::path::PathBuf>,
     /// Pide foco en el input de creación al abrir el diálogo inline.
     pub new_item_focus: bool,
+    /// v0.2.49: archivo/carpeta pendiente de renombrado inline.
+    /// La tupla es `(old_path, new_name)`: el `String` es el nombre
+    /// editable que muestra el input y que se confirma con Enter/✓.
+    pub renaming_item: Option<(std::path::PathBuf, String)>,
+    /// Pide foco en el input de renombrado al abrir el diálogo inline.
+    pub rename_focus: bool,
 }
 
 /// v0.2.41: tipo de ítem que crea el diálogo inline del explorador.
@@ -647,6 +653,18 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
         id: "git:close_diff",
         title: "Git: Close Diff Viewer",
         category: "Git",
+        shortcut: None,
+    },
+    PaletteCommand {
+        id: "file:rename_active",
+        title: "File: Rename Active File",
+        category: "File",
+        shortcut: Some("F2"),
+    },
+    PaletteCommand {
+        id: "file:duplicate_active",
+        title: "File: Duplicate Active File",
+        category: "File",
         shortcut: None,
     },
 ];
@@ -1144,6 +1162,172 @@ impl EditorApp {
         self.refresh_explorer();
         self.doc.status = format!("Deleted {}", name);
         Ok(())
+    }
+
+    /// v0.2.49: abre el renombrado inline para `path` (archivo o carpeta).
+    /// Guarda la ruta original y pre-carga el nombre actual como valor del input.
+    pub fn begin_rename_explorer_item(&mut self, path: &std::path::Path) {
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("item")
+            .to_string();
+        self.explorer.renaming_item = Some((path.to_path_buf(), name));
+        self.explorer.rename_focus = true;
+    }
+
+    /// v0.2.49: cancela el renombrado inline sin tocar el disco.
+    pub fn cancel_rename_explorer_item(&mut self) {
+        self.explorer.renaming_item = None;
+    }
+
+    /// v0.2.49: ejecuta el renombrado pendiente (`renaming_item`) en disco y
+    /// sincroniza las pestañas abiertas afectadas. Devuelve la ruta nueva o un
+    /// error legible; en caso de error el diálogo queda abierto para corregir.
+    pub fn confirm_rename_explorer_item(&mut self) -> Result<std::path::PathBuf, String> {
+        let Some((old_path, new_name)) = self.explorer.renaming_item.clone() else {
+            return Err("No item is being renamed".to_string());
+        };
+
+        let trimmed = new_name.trim().to_string();
+        if !is_valid_explorer_item_name(&trimmed) {
+            let msg = "Invalid name: use a single file or folder name".to_string();
+            self.doc.status = msg.clone();
+            return Err(msg);
+        }
+
+        let parent = old_path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| self.doc.browse_dir.clone());
+        let new_path = parent.join(&trimmed);
+
+        if new_path == old_path {
+            self.explorer.renaming_item = None;
+            self.doc.status = "Rename cancelled".to_string();
+            return Ok(old_path);
+        }
+        if new_path.exists() {
+            let msg = "Target already exists".to_string();
+            self.doc.status = msg.clone();
+            return Err(msg);
+        }
+
+        let is_dir = old_path.is_dir();
+        if let Err(e) = std::fs::rename(&old_path, &new_path) {
+            let msg = format!("Could not rename {}: {}", old_path.display(), e);
+            self.doc.status = msg.clone();
+            return Err(msg);
+        }
+
+        let old_name = old_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("item")
+            .to_string();
+
+        // La pestaña activa vive duplicada en `doc` y en `tabs[active_tab]`;
+        // sincronizamos primero para que el espejo parta del estado actual.
+        self.sync_active_to_tab();
+
+        if is_dir {
+            for tab in &mut self.doc.tabs {
+                if let Some(current) = tab.current_file.as_mut() {
+                    if let Ok(rest) = current.strip_prefix(&old_path) {
+                        *current = new_path.join(rest);
+                    }
+                }
+            }
+            if let Some(current) = self.doc.current_file.as_mut() {
+                if let Ok(rest) = current.strip_prefix(&old_path) {
+                    *current = new_path.join(rest);
+                }
+            }
+        } else {
+            for tab in &mut self.doc.tabs {
+                if tab.current_file.as_deref() == Some(old_path.as_path()) {
+                    tab.current_file = Some(new_path.clone());
+                    tab.file_path_input = trimmed.clone();
+                }
+            }
+            if self.doc.current_file.as_deref() == Some(old_path.as_path()) {
+                self.doc.current_file = Some(new_path.clone());
+                self.doc.file_path_input = trimmed.clone();
+            }
+        }
+
+        self.explorer.renaming_item = None;
+        self.explorer.loaded_for = None;
+        self.refresh_explorer();
+        self.refresh_git_status();
+        self.refresh_git_branch();
+        self.doc.status = format!("Renamed: {old_name} -> {trimmed}");
+        Ok(new_path)
+    }
+
+    /// v0.2.49: duplica `path` como `<stem>_copy.<ext>` (o con sufijo `_N` si
+    /// el nombre ya existe) y abre la copia en una pestaña nueva.
+    pub fn explorer_duplicate_item(&mut self, path: &std::path::Path) -> Result<std::path::PathBuf, String> {
+        if !path.is_file() {
+            let msg = format!("Not a file: {}", path.display());
+            self.doc.status = msg.clone();
+            return Err(msg);
+        }
+
+        let parent = path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| self.doc.browse_dir.clone());
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("copy")
+            .to_string();
+        let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+
+        let mut n = 0usize;
+        let dest = loop {
+            let name = if n == 0 {
+                format!("{stem}_copy")
+            } else {
+                format!("{stem}_copy_{n}")
+            };
+            let name = if ext.is_empty() { name } else { format!("{name}.{ext}") };
+            let candidate = parent.join(&name);
+            if !candidate.exists() {
+                break candidate;
+            }
+            n += 1;
+        };
+
+        if let Err(e) = std::fs::copy(path, &dest) {
+            let msg = format!("Could not duplicate {}: {}", path.display(), e);
+            self.doc.status = msg.clone();
+            return Err(msg);
+        }
+
+        self.explorer.loaded_for = None;
+        self.refresh_explorer();
+        self.open_path(dest.clone());
+        let name = dest
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("file")
+            .to_string();
+        self.doc.status = format!("Duplicated {name}");
+        Ok(dest)
+    }
+
+    /// v0.2.49: abre el renombrado inline del archivo activo y muestra el
+    /// explorador para que el campo inline quede visible.
+    pub fn begin_rename_active_file(&mut self) {
+        if let Some(path) = self.doc.current_file.clone() {
+            self.begin_rename_explorer_item(&path);
+            self.sidebar_tab = SidebarTab::Explorer;
+            self.explorer.open = true;
+            self.workspace_search.open = false;
+            self.refresh_explorer();
+        }
     }
 
     /// F8 (Roadmap v0.2.35): lee la rama del repo una sola vez (desde
@@ -1697,6 +1881,12 @@ impl EditorApp {
             }
             "file:new" => self.try_new_document(),
             "file:open_folder" => self.prompt_open_folder(),
+            "file:rename_active" => self.begin_rename_active_file(),
+            "file:duplicate_active" => {
+                if let Some(path) = self.doc.current_file.clone() {
+                    let _ = self.explorer_duplicate_item(&path);
+                }
+            }
             _ => {}
         }
     }
@@ -4452,6 +4642,147 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+    // v0.2.49: renombrado y duplicado desde el explorador.
+
+    #[test]
+    fn explorer_renombrar_archivo_sincroniza_pestana_y_titulo() {
+        let root = explorer_temp_root("rename_file");
+        let a = root.join("a.rs");
+        std::fs::write(&a, "fn a() {}").expect("a");
+
+        let mut app = EditorApp::default();
+        app.doc.browse_dir = root.clone();
+        app.open_path(a.clone());
+        assert_eq!(app.doc.current_file, Some(a.clone()));
+
+        app.begin_rename_explorer_item(&a);
+        app.explorer.renaming_item.as_mut().unwrap().1 = "b.rs".to_string();
+        let new_path = app.confirm_rename_explorer_item().expect("renombrar");
+
+        let b = root.join("b.rs");
+        assert_eq!(new_path, b);
+        assert!(!a.exists(), "a.rs desaparece del disco");
+        assert!(b.exists(), "b.rs aparece en disco");
+        assert_eq!(app.doc.current_file, Some(b.clone()));
+        assert_eq!(app.doc.file_path_input, "b.rs", "el título de la pestaña activa");
+        assert!(app
+            .doc
+            .tabs
+            .iter()
+            .all(|t| t.current_file.as_deref() != Some(a.as_path())));
+        assert_eq!(app.doc.tabs[0].current_file, Some(b.clone()));
+        assert_eq!(app.doc.status, "Renamed: a.rs -> b.rs");
+        assert!(app.explorer.renaming_item.is_none());
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn explorer_renombrar_carpeta_actualiza_pestanas_anidadas() {
+        let root = explorer_temp_root("rename_folder");
+        let src = root.join("src");
+        std::fs::create_dir_all(&src).expect("crear src");
+        let main = src.join("main.rs");
+        std::fs::write(&main, "fn main() {}").expect("main");
+
+        let mut app = EditorApp::default();
+        app.doc.browse_dir = root.clone();
+        app.open_path(main.clone());
+        assert_eq!(app.doc.current_file, Some(main.clone()));
+
+        app.begin_rename_explorer_item(&src);
+        app.explorer.renaming_item.as_mut().unwrap().1 = "src2".to_string();
+        let new_dir = app.confirm_rename_explorer_item().expect("renombrar carpeta");
+
+        let src2 = root.join("src2");
+        assert_eq!(new_dir, src2);
+        assert!(!src.exists(), "src desaparece del disco");
+        assert!(src2.exists(), "src2 aparece en disco");
+        let moved_main = src2.join("main.rs");
+        assert!(moved_main.exists(), "main.rs se mueve dentro de src2");
+        assert_eq!(
+            app.doc.current_file,
+            Some(moved_main.clone()),
+            "la pestaña activa reescribe su prefijo"
+        );
+        assert_eq!(app.doc.tabs[0].current_file, Some(moved_main));
+        assert_eq!(app.doc.status, "Renamed: src -> src2");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn explorer_renombrar_a_nombre_existente_o_invalido_es_rechazado() {
+        let root = explorer_temp_root("rename_reject");
+        let a = root.join("a.rs");
+        let b = root.join("b.rs");
+        std::fs::write(&a, "fn a() {}").expect("a");
+        std::fs::write(&b, "fn b() {}").expect("b");
+
+        let mut app = EditorApp::default();
+        app.doc.browse_dir = root.clone();
+
+        app.begin_rename_explorer_item(&a);
+        app.explorer.renaming_item.as_mut().unwrap().1 = "   ".to_string();
+        assert!(app.confirm_rename_explorer_item().is_err(), "nombre vacío");
+        assert!(a.exists(), "a.rs queda intacto");
+
+        app.begin_rename_explorer_item(&a);
+        app.explorer.renaming_item.as_mut().unwrap().1 = "../escape".to_string();
+        assert!(app.confirm_rename_explorer_item().is_err(), "no sale de la raíz");
+        assert!(a.exists());
+        assert!(!root.parent().unwrap().join("escape").exists());
+
+        app.begin_rename_explorer_item(&a);
+        app.explorer.renaming_item.as_mut().unwrap().1 = "b.rs".to_string();
+        assert!(app.confirm_rename_explorer_item().is_err(), "no pisa archivos existentes");
+        assert!(a.exists());
+        assert!(b.exists());
+        assert!(
+            app.explorer.renaming_item.is_some(),
+            "el diálogo sigue abierto para corregir"
+        );
+
+        app.cancel_rename_explorer_item();
+        assert!(app.explorer.renaming_item.is_none());
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn explorer_duplicar_genera_copia_libre_y_la_abre() {
+        let root = explorer_temp_root("duplicate");
+        let a = root.join("a.rs");
+        std::fs::write(&a, "fn a() {}").expect("a");
+
+        let mut app = EditorApp::default();
+        app.doc.browse_dir = root.clone();
+
+        let dest = app.explorer_duplicate_item(&a).expect("duplicar");
+        assert_eq!(dest, root.join("a_copy.rs"));
+        assert!(dest.is_file());
+        assert_eq!(
+            std::fs::read_to_string(&dest).expect("leer copia"),
+            "fn a() {}",
+            "la copia es fiel"
+        );
+        assert_eq!(app.doc.current_file, Some(dest.clone()), "la copia se abre");
+
+        let dest2 = app.explorer_duplicate_item(&a).expect("duplicar de nuevo");
+        assert_eq!(dest2, root.join("a_copy_1.rs"), "elige un nombre libre");
+        assert!(dest2.is_file());
+        assert_eq!(app.doc.current_file, Some(dest2.clone()));
+
+        let carpeta = root.join("sub");
+        std::fs::create_dir_all(&carpeta).expect("carpeta");
+        assert!(
+            app.explorer_duplicate_item(&carpeta).is_err(),
+            "rechaza carpetas, solo duplica archivos"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
 
     fn symbol(name: &str, kind: karkinos_core::syntax_ast::SymbolKind, line: usize) -> karkinos_core::syntax_ast::DocumentSymbol {
         karkinos_core::syntax_ast::DocumentSymbol {
@@ -4825,7 +5156,7 @@ mod tests {
         ids.sort_unstable();
         ids.dedup();
         assert_eq!(ids.len(), total, "cada id del catálogo es único");
-        assert_eq!(total, 31, "el catálogo de v0.2.45 tiene 31 comandos");
+        assert_eq!(total, 33, "el catálogo de v0.2.49 tiene 33 comandos");
 
         for expected in [
             "layout:split_vertical",
@@ -4854,6 +5185,8 @@ mod tests {
             "file:save",
             "file:new",
             "file:open_folder",
+            "file:rename_active",
+            "file:duplicate_active",
             "git:source_control",
             "git:refresh",
             "git:stage_all",
@@ -4896,7 +5229,13 @@ mod tests {
             .collect();
         assert_eq!(
             files,
-            ["file:save", "file:new", "file:open_folder"],
+            [
+                "file:save",
+                "file:new",
+                "file:open_folder",
+                "file:rename_active",
+                "file:duplicate_active"
+            ],
             "el trim también aplica"
         );
 

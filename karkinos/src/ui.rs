@@ -489,7 +489,7 @@ impl EditorApp {
         }
     }
 
-    /// S4 (Rust IDE): Modal dialog for symbol renaming (F2)
+    /// S4 (Rust IDE): Modal dialog for symbol renaming (Shift+F6)
     fn show_rename_dialog(&mut self, ctx: &egui::Context) {
         if !self.lsp.rename_dialog_open {
             return;
@@ -515,7 +515,7 @@ impl EditorApp {
             .frame(crate::theme::modal_card_frame(&theme))
             .show(ctx, |ui| {
                 ui.label(
-                    egui::RichText::new("✏ Rename Symbol (F2)")
+                    egui::RichText::new("✏ Rename Symbol (Shift+F6)")
                         .color(theme.text_muted)
                         .size(12.0),
                 );
@@ -770,6 +770,7 @@ impl EditorApp {
         let mut open_file = None;
         let mut toggle_dir = None;
         let mut delete_file = None;
+        let mut rename_file = None;
         let mut refresh = false;
         let mut collapse_all = false;
         let mut start_new_file = false;
@@ -921,6 +922,67 @@ impl EditorApp {
             }
         }
 
+        // v0.2.49: renombrado inline del explorador. El campo se muestra
+        // mientras `renaming_item` tenga un path; Enter/✓ confirma, Esc/✕ cancela.
+        if self.explorer.renaming_item.is_some() {
+            let display = self
+                .explorer
+                .renaming_item
+                .as_ref()
+                .and_then(|(p, _)| p.file_name().and_then(|n| n.to_str()))
+                .unwrap_or("item")
+                .to_string();
+            let focus = self.explorer.rename_focus;
+            self.explorer.rename_focus = false;
+            let mut submit = false;
+            let mut cancel = false;
+
+            egui::Frame::none()
+                .fill(theme.elevated_bg)
+                .stroke(egui::Stroke::new(1.0_f32, theme.border_subtle))
+                .rounding(egui::Rounding::same(4.0))
+                .inner_margin(egui::Margin::symmetric(6.0, 4.0))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("✏").size(12.0));
+                        ui.label(
+                            egui::RichText::new(display)
+                                .color(theme.text_muted)
+                                .size(11.5),
+                        );
+                        let input = ui.add_sized(
+                            [(ui.available_width() - 64.0).max(60.0), 22.0],
+                            egui::TextEdit::singleline(
+                                &mut self.explorer.renaming_item.as_mut().expect("renaming").1,
+                            )
+                            .id_source("explorer_rename_input")
+                            .hint_text("new name"),
+                        );
+                        if focus {
+                            input.request_focus();
+                        }
+                        if input.lost_focus()
+                            && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                        {
+                            submit = true;
+                        }
+                        if ui.button("✓").on_hover_text("Rename").clicked() {
+                            submit = true;
+                        }
+                        if ui.button("✕").on_hover_text("Cancel").clicked() {
+                            cancel = true;
+                        }
+                    });
+                });
+
+            if submit {
+                // Si falla, el diálogo queda abierto para corregir el nombre.
+                let _ = self.confirm_rename_explorer_item();
+            } else if cancel || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                self.cancel_rename_explorer_item();
+            }
+        }
+
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -934,6 +996,7 @@ impl EditorApp {
                     &mut toggle_dir,
                     &mut open_file,
                     &mut delete_file,
+                    &mut rename_file,
                 );
             });
 
@@ -956,6 +1019,9 @@ impl EditorApp {
             self.explorer.cancel_new_item();
             self.explorer.item_to_delete = Some(path);
         }
+        if let Some(path) = rename_file {
+            self.begin_rename_explorer_item(&path);
+        }
         if let Some(path) = open_file {
             self.open_path(path);
         }
@@ -975,6 +1041,7 @@ impl EditorApp {
         toggle_dir: &mut Option<std::path::PathBuf>,
         open_file: &mut Option<std::path::PathBuf>,
         delete_file: &mut Option<std::path::PathBuf>,
+        rename_file: &mut Option<std::path::PathBuf>,
     ) {
         for node in nodes {
             match node {
@@ -997,7 +1064,17 @@ impl EditorApp {
                         );
                     }
 
-                    if response.clicked() {
+                    // v0.2.49: botón ✏ de renombrado (solo al hover). Su rect
+                    // se excluye del click que pliega/despliega la carpeta.
+                    let rename_rect = egui::Rect::from_min_size(
+                        egui::pos2(rect.right() - 22.0, rect.top() + 3.0),
+                        egui::vec2(18.0, 16.0),
+                    );
+                    let over_rename = ui
+                        .input(|i| i.pointer.interact_pos())
+                        .is_some_and(|p| rename_rect.contains(p));
+
+                    if response.clicked() && !over_rename {
                         *toggle_dir = Some(path.clone());
                     }
 
@@ -1016,6 +1093,28 @@ impl EditorApp {
                     );
 
                     response.on_hover_cursor(egui::CursorIcon::PointingHand);
+
+                    // v0.2.49: botón ✏ de renombrado de carpeta al hover.
+                    if hovered {
+                        ui.painter().text(
+                            rename_rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            "✏",
+                            egui::FontId::proportional(10.0),
+                            theme.text_muted,
+                        );
+                        let rename = ui.interact(
+                            rename_rect,
+                            ui.id().with(("explorer_rename", path)),
+                            egui::Sense::click(),
+                        );
+                        if rename.clicked() {
+                            *rename_file = Some(path.clone());
+                        }
+                        rename
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .on_hover_text("Rename (F2)");
+                    }
 
                     // v0.2.42: una carpeta expandida sin hijos muestra un
                     // renglón tenue para dejar claro que está vacía.
@@ -1045,6 +1144,7 @@ impl EditorApp {
                             toggle_dir,
                             open_file,
                             delete_file,
+                            rename_file,
                         );
                     }
                 }
@@ -1077,17 +1177,24 @@ impl EditorApp {
                         );
                     }
 
-                    // v0.2.41: botón de borrado sutil al hacer hover. El
-                    // rect del botón se excluye del click que abre el archivo.
+                    // v0.2.41/0.2.49: botones sutiles al hacer hover (✏ renombrar,
+                    // 🗑 borrar). Los rects se excluyen del click que abre el archivo.
                     let trash_rect = egui::Rect::from_min_size(
                         egui::pos2(rect.right() - 22.0, rect.top() + 3.0),
+                        egui::vec2(18.0, 16.0),
+                    );
+                    let rename_rect = egui::Rect::from_min_size(
+                        egui::pos2(rect.right() - 44.0, rect.top() + 3.0),
                         egui::vec2(18.0, 16.0),
                     );
                     let over_trash = ui
                         .input(|i| i.pointer.interact_pos())
                         .is_some_and(|p| trash_rect.contains(p));
+                    let over_rename = ui
+                        .input(|i| i.pointer.interact_pos())
+                        .is_some_and(|p| rename_rect.contains(p));
 
-                    if response.clicked() && !over_trash {
+                    if response.clicked() && !over_trash && !over_rename {
                         *open_file = Some(path.clone());
                     }
 
@@ -1111,6 +1218,25 @@ impl EditorApp {
                     response.on_hover_cursor(egui::CursorIcon::PointingHand);
 
                     if hovered {
+                        ui.painter().text(
+                            rename_rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            "✏",
+                            egui::FontId::proportional(10.0),
+                            theme.text_muted,
+                        );
+                        let rename = ui.interact(
+                            rename_rect,
+                            ui.id().with(("explorer_rename", path)),
+                            egui::Sense::click(),
+                        );
+                        if rename.clicked() {
+                            *rename_file = Some(path.clone());
+                        }
+                        rename
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .on_hover_text("Rename (F2)");
+
                         ui.painter().text(
                             trash_rect.center(),
                             egui::Align2::CENTER_CENTER,
@@ -3617,7 +3743,8 @@ impl eframe::App for EditorApp {
             want_goto_def,
             want_hover,
             want_code_action,
-            want_rename,
+            want_file_rename,
+            want_symbol_rename,
             want_breakpoint_toggle,
             want_debug_step_over,
             want_debug_step_in,
@@ -3635,6 +3762,7 @@ impl eframe::App for EditorApp {
                 (i.modifiers.ctrl && i.key_pressed(egui::Key::Period))
                     || (i.modifiers.alt && i.key_pressed(egui::Key::Enter)),
                 i.key_pressed(egui::Key::F2),
+                i.modifiers.shift && i.key_pressed(egui::Key::F6),
                 i.key_pressed(egui::Key::F9),
                 i.key_pressed(egui::Key::F10),
                 i.key_pressed(egui::Key::F11) && !i.modifiers.shift,
@@ -3694,7 +3822,10 @@ impl eframe::App for EditorApp {
         if want_code_action {
             self.request_code_actions();
         }
-        if want_rename {
+        if want_file_rename {
+            self.begin_rename_active_file();
+        }
+        if want_symbol_rename {
             self.lsp.rename_input.clear();
             self.lsp.rename_dialog_open = true;
         }
@@ -4378,7 +4509,7 @@ impl eframe::App for EditorApp {
         self.show_extensions_dialog(ctx);
         // S4 (Rust IDE): Quick Fix / Code Actions (Ctrl+.)
         self.show_code_actions_modal(ctx);
-        // S4 (Rust IDE): Symbol Rename (F2)
+        // S4 (Rust IDE): Symbol Rename (Shift+F6)
         self.show_rename_dialog(ctx);
         // F7 (Roadmap v0.2.34): selector de símbolos del documento.
         self.show_symbol_picker(ctx, &theme);
