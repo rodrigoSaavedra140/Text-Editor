@@ -202,10 +202,19 @@ pub fn save_recovery_file(
     }
 
     if let Err(err) = fs::rename(&tmp_path, &destination) {
-        // Windows cannot rename over an existing file, so replace it explicitly.
+        // Windows cannot rename over an existing file, so perform a safe replacement
+        // by moving destination to .old first, renaming .tmp into place, then deleting .old.
+        // If renaming .tmp fails, destination is restored from .old.
         if destination.exists() {
-            fs::remove_file(&destination)?;
-            fs::rename(&tmp_path, &destination)?;
+            let old_path = dir.join(format!("{filename}.old"));
+            let _ = fs::remove_file(&old_path);
+            fs::rename(&destination, &old_path)?;
+            if let Err(rename_err) = fs::rename(&tmp_path, &destination) {
+                let _ = fs::rename(&old_path, &destination);
+                let _ = fs::remove_file(&tmp_path);
+                return Err(rename_err);
+            }
+            let _ = fs::remove_file(&old_path);
         } else {
             let _ = fs::remove_file(&tmp_path);
             return Err(err);
@@ -215,9 +224,13 @@ pub fn save_recovery_file(
     Ok(destination)
 }
 
-/// Removes a journal file, succeeding when it is already gone.
+/// Removes a journal file and any companion temporary files, succeeding when it is already gone.
 pub fn remove_recovery_file(dir: &Path, filename: &str) -> io::Result<()> {
     let target = validated_target(dir, filename)?;
+    let tmp = dir.join(format!("{filename}.tmp"));
+    let old = dir.join(format!("{filename}.old"));
+    let _ = fs::remove_file(tmp);
+    let _ = fs::remove_file(old);
     match fs::remove_file(target) {
         Ok(()) => Ok(()),
         Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
@@ -252,7 +265,7 @@ pub fn scan_recovery_dir(dir: &Path) -> Vec<(PathBuf, RecoveryEntry)> {
     found
 }
 
-/// Deletes every journal file in `dir`, leaving unrelated files untouched.
+/// Deletes every journal file and recovery artifact in `dir`, leaving unrelated files untouched.
 pub fn clear_recovery_dir(dir: &Path) -> io::Result<()> {
     let read_dir = match fs::read_dir(dir) {
         Ok(read_dir) => read_dir,
@@ -262,7 +275,7 @@ pub fn clear_recovery_dir(dir: &Path) -> io::Result<()> {
 
     for item in read_dir {
         let path = item?.path();
-        if !is_recovery_file(&path) {
+        if !is_recovery_artifact(&path) {
             continue;
         }
         match fs::remove_file(&path) {
@@ -292,6 +305,16 @@ fn validated_target(dir: &Path, filename: &str) -> io::Result<PathBuf> {
 
 fn is_recovery_file(path: &Path) -> bool {
     path.extension().and_then(|extension| extension.to_str()) == Some(RECOVERY_EXTENSION)
+}
+
+fn is_recovery_artifact(path: &Path) -> bool {
+    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+        name.ends_with(".recovery")
+            || name.ends_with(".recovery.tmp")
+            || name.ends_with(".recovery.old")
+    } else {
+        false
+    }
 }
 
 fn trim_line_end(line: &str) -> &str {
@@ -558,10 +581,14 @@ mod tests {
         let dir = TestDir::new();
         save_recovery_file(dir.path(), "a.recovery", &saved_entry()).unwrap();
         save_recovery_file(dir.path(), "b.recovery", &untitled_entry()).unwrap();
+        fs::write(dir.path().join("c.recovery.tmp"), "temp").unwrap();
+        fs::write(dir.path().join("d.recovery.old"), "old").unwrap();
         fs::write(dir.path().join("keep.bin"), "data").unwrap();
 
         clear_recovery_dir(dir.path()).unwrap();
         assert!(scan_recovery_dir(dir.path()).is_empty());
+        assert!(!dir.path().join("c.recovery.tmp").exists());
+        assert!(!dir.path().join("d.recovery.old").exists());
         assert!(dir.path().join("keep.bin").exists());
     }
 

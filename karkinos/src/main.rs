@@ -66,15 +66,19 @@ fn main() -> eframe::Result<()> {
     // instante, sin abrir una segunda ventana (y su GPU/CPU extra). Si no
     // hay primaria (o no traíamos path), nos convertimos en la primaria y
     // levantamos el servidor IPC que atenderá los próximos `karkinos <path>`.
-    if let Some(path) = &target_path {
-        match karkinos_core::ipc::try_send_to_primary(path) {
-            Ok(true) => {
+    // Coordinación de instancia única: verifica siempre si ya hay una instancia primaria activa.
+    // Si viene con path, le reenviamos el path y sale. Si no trae path, le pide foco/activación y sale.
+    match karkinos_core::ipc::try_send_to_primary(target_path.as_deref()) {
+        Ok(true) => {
+            if target_path.is_some() {
                 println!("Karkinos: opened in existing window");
-                return Ok(());
+            } else {
+                println!("Karkinos: activated existing window");
             }
-            Ok(false) => {}
-            Err(e) => eprintln!("Karkinos: IPC check failed: {e}"),
+            return Ok(());
         }
+        Ok(false) => {}
+        Err(e) => eprintln!("Karkinos: IPC check failed: {e}"),
     }
 
     let ipc_server = karkinos_core::ipc::IpcServer::spawn().ok();

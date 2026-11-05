@@ -210,6 +210,7 @@ pub struct EditorApp {
     // proceso arrancó como secundario (no aplica) o el bind falló; en la
     // instancia primaria canaliza los `karkinos <path>` entrantes.
     pub ipc_server: Option<karkinos_core::ipc::IpcServer>,
+    pub ipc_waker_installed: bool,
     // v0.2.51: journaling & crash recovery. `recovery_pending` holds the
     // journals found at startup until the user restores or discards them.
     pub recovery_pending: Vec<(PathBuf, RecoveryEntry)>,
@@ -803,6 +804,7 @@ impl Default for EditorApp {
             last_git_mtime: None,
             blame_worker: crate::git_status_worker::BlameWorker::spawn(),
             ipc_server: None,
+            ipc_waker_installed: false,
             recovery_pending: Vec::new(),
             show_recovery_modal: false,
             recovery_dir: karkinos_core::recovery::recovery_dir(),
@@ -1580,11 +1582,16 @@ impl EditorApp {
         // sincronizamos primero para que el espejo parta del estado actual.
         self.sync_active_to_tab();
 
+        let mut renamed_tabs: Vec<(usize, PathBuf, PathBuf)> = Vec::new();
+
         if is_dir {
             for tab in &mut self.doc.tabs {
                 if let Some(current) = tab.current_file.as_mut() {
                     if let Ok(rest) = current.strip_prefix(&old_path) {
-                        *current = new_path.join(rest);
+                        let old_tab_path = current.clone();
+                        let updated = new_path.join(rest);
+                        *current = updated.clone();
+                        renamed_tabs.push((tab.id, old_tab_path, updated));
                     }
                 }
             }
@@ -1596,14 +1603,24 @@ impl EditorApp {
         } else {
             for tab in &mut self.doc.tabs {
                 if tab.current_file.as_deref() == Some(old_path.as_path()) {
+                    let old_tab_path = old_path.clone();
                     tab.current_file = Some(new_path.clone());
                     tab.file_path_input = trimmed.clone();
+                    renamed_tabs.push((tab.id, old_tab_path, new_path.clone()));
                 }
             }
             if self.doc.current_file.as_deref() == Some(old_path.as_path()) {
                 self.doc.current_file = Some(new_path.clone());
                 self.doc.file_path_input = trimmed.clone();
             }
+        }
+
+        // v0.2.54: sincronizar journals de recuperación para pestañas renombradas
+        for (tab_id, old_tab_path, _) in renamed_tabs {
+            let old_filename = journal_filename(Some(&old_tab_path), tab_id);
+            let _ = remove_recovery_file(&self.recovery_dir, &old_filename);
+            self.recovery_journaled.remove(&tab_id);
+            self.recovery_changed_at.insert(tab_id, std::time::Instant::now());
         }
 
         self.explorer.renaming_item = None;
@@ -3359,6 +3376,13 @@ impl EditorApp {
             match command {
                 karkinos_core::ipc::IpcCommand::Open(path) => {
                     self.init_from_cli_path(&path);
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                    ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
+                        egui::UserAttentionType::Critical,
+                    ));
+                    ctx.request_repaint();
+                }
+                karkinos_core::ipc::IpcCommand::Focus => {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                     ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
                         egui::UserAttentionType::Critical,

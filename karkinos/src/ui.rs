@@ -3739,6 +3739,16 @@ impl eframe::App for EditorApp {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if !self.ipc_waker_installed {
+            if let Some(ref server) = self.ipc_server {
+                let ctx_clone = ctx.clone();
+                server.set_waker(move || {
+                    ctx_clone.request_repaint();
+                });
+            }
+            self.ipc_waker_installed = true;
+        }
+
         self.show_save_progress(ctx);
         // v0.2.48 (Tarea B): comandos IPC de instancias secundarias
         // (`karkinos <path>`) — abrir pestaña y pedir foco, por frame.

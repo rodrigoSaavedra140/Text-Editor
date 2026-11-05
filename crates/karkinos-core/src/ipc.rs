@@ -17,6 +17,8 @@ use std::path::PathBuf;
 pub enum IpcCommand {
     /// Open a file or folder in the running editor.
     Open(PathBuf),
+    /// Focus the running editor window.
+    Focus,
 }
 
 /// Resolve the well-known IPC socket path for the current user.
@@ -40,21 +42,26 @@ pub fn socket_path() -> PathBuf {
     PathBuf::new()
 }
 
-/// Try to forward `path` to an already-running primary instance.
+/// Try to forward `path` (or focus command if None) to an already-running primary instance.
 ///
 /// Returns `Ok(true)` when the primary acknowledged the command with `OK`,
 /// `Ok(false)` when no live primary is listening (no socket, refused
 /// connection, or no `OK` reply), and `Err` only for an I/O failure while
 /// talking to a socket that *did* connect.
 #[cfg(unix)]
-pub fn try_send_to_primary(path: &std::path::Path) -> Result<bool, String> {
-    send_to_socket(&socket_path(), path)
+pub fn try_send_to_primary(target: Option<&std::path::Path>) -> Result<bool, String> {
+    send_to_socket(&socket_path(), target)
 }
 
 #[cfg(not(unix))]
-pub fn try_send_to_primary(_path: &std::path::Path) -> Result<bool, String> {
+pub fn try_send_to_primary(_target: Option<&std::path::Path>) -> Result<bool, String> {
     Ok(false)
 }
+
+#[cfg(unix)]
+type WakerCallback = Box<dyn Fn() + Send + Sync>;
+#[cfg(unix)]
+type SharedWaker = std::sync::Arc<std::sync::Mutex<Option<WakerCallback>>>;
 
 /// Listening endpoint of the primary instance.
 ///
@@ -67,6 +74,8 @@ pub struct IpcServer {
     socket_path: PathBuf,
     #[cfg(unix)]
     shutdown: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    #[cfg(unix)]
+    waker: SharedWaker,
 }
 
 impl IpcServer {
@@ -86,6 +95,18 @@ impl IpcServer {
         Ok(IpcServer { receiver })
     }
 
+    /// Sets a callback invoked immediately when an IPC command is received.
+    /// Used by the UI thread to request an instant repaint even when idle/unfocused.
+    pub fn set_waker<F>(&self, waker: F)
+    where
+        F: Fn() + Send + Sync + 'static,
+    {
+        #[cfg(unix)]
+        if let Ok(mut guard) = self.waker.lock() {
+            *guard = Some(Box::new(waker));
+        }
+    }
+
     /// Build a server around an already-created receiver.
     ///
     /// Used by tests and embedders that drive the command stream themselves.
@@ -97,6 +118,8 @@ impl IpcServer {
             socket_path: PathBuf::new(),
             #[cfg(unix)]
             shutdown: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            #[cfg(unix)]
+            waker: std::sync::Arc::new(std::sync::Mutex::new(None)),
         }
     }
 }
@@ -122,7 +145,7 @@ mod unix_impl {
 
     /// Core client logic against an explicit socket path (testable without
     /// touching the process-wide well-known path).
-    pub fn send_to_socket(socket: &Path, target: &Path) -> Result<bool, String> {
+    pub fn send_to_socket(socket: &Path, target: Option<&Path>) -> Result<bool, String> {
         let mut stream = match UnixStream::connect(socket) {
             Ok(stream) => stream,
             Err(_) => return Ok(false),
@@ -131,8 +154,23 @@ mod unix_impl {
         stream
             .set_read_timeout(Some(std::time::Duration::from_secs(2)))
             .map_err(|e| e.to_string())?;
-        let canonical = std::fs::canonicalize(target).unwrap_or_else(|_| target.to_path_buf());
-        writeln!(stream, "OPEN {}", canonical.display()).map_err(|e| e.to_string())?;
+        stream
+            .set_write_timeout(Some(std::time::Duration::from_secs(2)))
+            .map_err(|e| e.to_string())?;
+
+        if let Some(target) = target {
+            let abs_path = if target.is_absolute() {
+                target.to_path_buf()
+            } else {
+                std::env::current_dir()
+                    .map(|cwd| cwd.join(target))
+                    .unwrap_or_else(|_| target.to_path_buf())
+            };
+            let canonical = std::fs::canonicalize(&abs_path).unwrap_or(abs_path);
+            writeln!(stream, "OPEN {}", canonical.display()).map_err(|e| e.to_string())?;
+        } else {
+            writeln!(stream, "FOCUS").map_err(|e| e.to_string())?;
+        }
         stream.flush().map_err(|e| e.to_string())?;
 
         let mut reader = BufReader::new(&stream);
@@ -165,16 +203,19 @@ mod unix_impl {
         let shutdown = Arc::new(AtomicBool::new(false));
         let thread_shutdown = Arc::clone(&shutdown);
         let thread_socket = socket_path.clone();
+        let waker: super::SharedWaker = Arc::new(std::sync::Mutex::new(None));
+        let thread_waker = Arc::clone(&waker);
 
         std::thread::Builder::new()
             .name("karkinos-ipc".to_string())
-            .spawn(move || accept_loop(listener, tx, thread_shutdown, thread_socket))
+            .spawn(move || accept_loop(listener, tx, thread_shutdown, thread_socket, thread_waker))
             .map_err(|e| e.to_string())?;
 
         Ok(IpcServer {
             receiver,
             socket_path,
             shutdown,
+            waker,
         })
     }
 
@@ -183,18 +224,19 @@ mod unix_impl {
         tx: mpsc::Sender<IpcCommand>,
         shutdown: Arc<AtomicBool>,
         socket_path: PathBuf,
+        waker: super::SharedWaker,
     ) {
         // Non-blocking accept lets the loop poll the shutdown flag and exit
         // promptly when the server drops.
         listener.set_nonblocking(true).ok();
         while !shutdown.load(Ordering::SeqCst) {
             match listener.accept() {
-                Ok((stream, _addr)) => handle_connection(stream, &tx),
+                Ok((stream, _addr)) => handle_connection(stream, &tx, &waker),
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(std::time::Duration::from_millis(5));
+                    std::thread::sleep(std::time::Duration::from_millis(20));
                 }
                 Err(_) => {
-                    std::thread::sleep(std::time::Duration::from_millis(5));
+                    std::thread::sleep(std::time::Duration::from_millis(20));
                 }
             }
         }
@@ -202,8 +244,15 @@ mod unix_impl {
         let _ = std::fs::remove_file(&socket_path);
     }
 
-    fn handle_connection(mut stream: UnixStream, tx: &mpsc::Sender<IpcCommand>) {
+    fn handle_connection(
+        mut stream: UnixStream,
+        tx: &mpsc::Sender<IpcCommand>,
+        waker: &super::SharedWaker,
+    ) {
+        let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
+        let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(2)));
         let mut line = String::new();
+        let mut success = false;
         {
             let mut reader = BufReader::new(&stream);
             if reader.read_line(&mut line).is_ok() {
@@ -212,13 +261,24 @@ mod unix_impl {
                     let path = rest.trim();
                     if !path.is_empty() {
                         let _ = tx.send(IpcCommand::Open(PathBuf::from(path)));
+                        success = true;
                     }
+                } else if trimmed == "FOCUS" {
+                    let _ = tx.send(IpcCommand::Focus);
+                    success = true;
                 }
             }
         }
-        // Every accepted connection gets an acknowledgement so the client can
-        // exit immediately after a successful handshake.
-        let _ = stream.write_all(b"OK\n");
+        if success {
+            if let Ok(guard) = waker.lock() {
+                if let Some(ref wake) = *guard {
+                    wake();
+                }
+            }
+            let _ = stream.write_all(b"OK\n");
+        } else {
+            let _ = stream.write_all(b"ERR\n");
+        }
         let _ = stream.flush();
     }
 }
@@ -258,7 +318,7 @@ mod tests {
         let target = dir.join("archivo.rs");
         std::fs::write(&target, "fn main() {}").expect("crear archivo");
 
-        let sent = send_to_socket(&socket, &target).expect("client send");
+        let sent = send_to_socket(&socket, Some(&target)).expect("client send");
         assert!(sent, "the server must answer OK");
 
         let cmd = server
@@ -269,6 +329,15 @@ mod tests {
             cmd,
             IpcCommand::Open(std::fs::canonicalize(&target).expect("canonical path"))
         );
+
+        // Also test FOCUS command
+        let sent_focus = send_to_socket(&socket, None).expect("client send focus");
+        assert!(sent_focus, "the server must answer OK to FOCUS");
+        let cmd_focus = server
+            .receiver
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("focus command delivered over mpsc");
+        assert_eq!(cmd_focus, IpcCommand::Focus);
 
         drop(server);
         std::fs::remove_dir_all(&dir).ok();
@@ -287,7 +356,7 @@ mod tests {
         // And it actually answers, proving the stale file was replaced.
         let target = dir.join("x.txt");
         std::fs::write(&target, "hola").expect("crear archivo");
-        assert!(send_to_socket(&socket, &target).expect("send to fresh socket"));
+        assert!(send_to_socket(&socket, Some(&target)).expect("send to fresh socket"));
 
         drop(server);
         std::fs::remove_dir_all(&dir).ok();
@@ -299,7 +368,7 @@ mod tests {
         let dir = temp_dir("none");
         let socket = dir.join("missing.sock");
         let result =
-            send_to_socket(&socket, std::path::Path::new("/no/such/file")).expect("send");
+            send_to_socket(&socket, Some(std::path::Path::new("/no/such/file"))).expect("send");
         assert!(!result, "no server must yield Ok(false)");
         std::fs::remove_dir_all(&dir).ok();
     }
