@@ -66,14 +66,77 @@ pub fn prev_word_pos(lines: &[String], line: usize, col: usize) -> (usize, usize
         let line = line.min(lines.len() - 1);
         let chars: Vec<char> = lines[line].chars().collect();
         let mut c = col.min(chars.len());
-        while c > 0 {
+        // 1. Skip whitespace backwards
+        while c > 0 && chars[c - 1].is_whitespace() {
             c -= 1;
-            if !is_word_char(chars[c]) {
-                break;
+        }
+        if c == 0 {
+            return (line, 0);
+        }
+        // 2. Skip either word characters or punctuation characters
+        if is_word_char(chars[c - 1]) {
+            while c > 0 && is_word_char(chars[c - 1]) {
+                c -= 1;
+            }
+        } else {
+            while c > 0 && !is_word_char(chars[c - 1]) && !chars[c - 1].is_whitespace() {
+                c -= 1;
             }
         }
         (line, c)
     }
+}
+
+/// Default visual tab size (4 spaces).
+pub const DEFAULT_TAB_SIZE: usize = 4;
+
+/// Computes the 0-based visual column for a given 0-based character index within `line`,
+/// expanding `\t` characters to tab stops of `tab_size`.
+pub fn visual_col_at(line: &str, char_idx: usize, tab_size: usize) -> usize {
+    let tab_size = tab_size.max(1);
+    let mut vcol = 0;
+    for (i, ch) in line.chars().enumerate() {
+        if i >= char_idx {
+            break;
+        }
+        if ch == '\t' {
+            vcol += tab_size - (vcol % tab_size);
+        } else {
+            vcol += 1;
+        }
+    }
+    vcol
+}
+
+/// Converts a 0-based visual column back to the corresponding character index within `line`.
+/// Rounds to the nearest character boundary.
+pub fn col_from_visual_col(line: &str, target_vcol: usize, tab_size: usize) -> usize {
+    let tab_size = tab_size.max(1);
+    let mut current_vcol = 0;
+    for (i, ch) in line.chars().enumerate() {
+        if current_vcol >= target_vcol {
+            return i;
+        }
+        let char_width = if ch == '\t' {
+            tab_size - (current_vcol % tab_size)
+        } else {
+            1
+        };
+        if current_vcol + char_width > target_vcol {
+            if target_vcol - current_vcol >= char_width.div_ceil(2) {
+                return i + 1;
+            } else {
+                return i;
+            }
+        }
+        current_vcol += char_width;
+    }
+    line_char_count(line)
+}
+
+/// Computes the total visual character length of a line, expanding `\t`.
+pub fn line_visual_char_count(line: &str, tab_size: usize) -> usize {
+    visual_col_at(line, usize::MAX, tab_size)
 }
 
 /// Returns the `[start, end)` character bounds of the word at `col`.
@@ -326,7 +389,35 @@ mod tests {
         assert_eq!(next_word_pos(&lines, 0, 2), (0, 3)); // skip " "
         assert_eq!(next_word_pos(&lines, 0, 3), (0, 7)); // after "main"
 
-        assert_eq!(prev_word_pos(&lines, 0, 7), (0, 2));
+        assert_eq!(prev_word_pos(&lines, 0, 7), (0, 3)); // start of "main"
+        assert_eq!(prev_word_pos(&lines, 0, 3), (0, 0)); // start of "fn"
+        assert_eq!(prev_word_pos(&lines, 1, 14), (1, 12)); // start of "42" (from before ';')
+        assert_eq!(prev_word_pos(&lines, 1, 12), (1, 10)); // start of "="
+    }
+
+    #[test]
+    fn test_visual_col_and_tab_expansion() {
+        // Line with tabs: "\tfoo\tbar"
+        let line = "\tfoo\tbar";
+        // Col 0: before first tab -> vcol 0
+        assert_eq!(visual_col_at(line, 0, 4), 0);
+        // Col 1: after first tab -> vcol 4 (tab takes 4 columns)
+        assert_eq!(visual_col_at(line, 1, 4), 4);
+        // Col 2: 'f' -> vcol 5
+        assert_eq!(visual_col_at(line, 2, 4), 5);
+        // Col 4: after "foo" -> vcol 7
+        assert_eq!(visual_col_at(line, 4, 4), 7);
+        // Col 5: after second tab -> vcol 8 (next tab stop multiple of 4)
+        assert_eq!(visual_col_at(line, 5, 4), 8);
+        // Total visual length
+        assert_eq!(line_visual_char_count(line, 4), 11);
+
+        // Roundtrip col_from_visual_col
+        assert_eq!(col_from_visual_col(line, 0, 4), 0);
+        assert_eq!(col_from_visual_col(line, 4, 4), 1);
+        assert_eq!(col_from_visual_col(line, 5, 4), 2);
+        assert_eq!(col_from_visual_col(line, 7, 4), 4);
+        assert_eq!(col_from_visual_col(line, 8, 4), 5);
     }
 
     #[test]

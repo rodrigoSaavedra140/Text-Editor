@@ -48,9 +48,10 @@ pub use syntax_ast::{
 pub use terminal::{PtyTerminal, TerminalCell, TerminalColor, TerminalSnapshot};
 pub use workspace_search::{FileMatches, SearchEvent, SearchMatch, SearchQuery, WorkspaceSearch};
 pub use text_ops::{
-    char_to_byte, closing_delimiter, dedent_line, find_matching_bracket, indent_line,
-    inherited_indent, is_closing_delimiter, is_empty_pair_around, is_word_char, line_char_count,
-    next_word_pos, prev_word_pos, toggle_comment_range, word_range_at, BracketMatch,
+    char_to_byte, closing_delimiter, col_from_visual_col, dedent_line, find_matching_bracket,
+    indent_line, inherited_indent, is_closing_delimiter, is_empty_pair_around, is_word_char,
+    line_char_count, line_visual_char_count, next_word_pos, prev_word_pos, toggle_comment_range,
+    visual_col_at, word_range_at, BracketMatch, DEFAULT_TAB_SIZE,
 };
 pub use undo::{
     should_snapshot_immediately, ChunkTracker, Edit, EditAction, UndoStack, CHUNK_TIMEOUT,

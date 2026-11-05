@@ -1,6 +1,9 @@
 use eframe::egui;
 
-use karkinos_core::text_ops::{closing_delimiter, is_closing_delimiter, is_empty_pair_around};
+use karkinos_core::text_ops::{
+    closing_delimiter, col_from_visual_col, is_closing_delimiter, is_empty_pair_around,
+    visual_col_at, DEFAULT_TAB_SIZE,
+};
 
 /// Posición en el documento (línea 0-based, columna 0-based).
 pub type TextPos = (usize, usize);
@@ -491,9 +494,9 @@ fn dedent_line(line: &mut String) -> usize {
     }
 }
 
-/// S4 (Etapa 2): indenta una línea insertando '\t' al inicio.
+/// S4 (Etapa 2): indenta una línea insertando 4 espacios al inicio (soft tab).
 fn indent_line(line: &mut String) {
-    line.insert(0, '\t');
+    line.insert_str(0, "    ");
 }
 
 /// S6: Comenta o descomenta el rango de líneas [start_line..=end_line] usando el prefijo indicado.
@@ -838,9 +841,23 @@ fn handle_delimiter_char(
         let (l, col) = (state.cursor_line, state.cursor_col);
         let chars: Vec<char> = lines[l].chars().collect();
         if chars.get(col) == Some(&c) {
-            state.cursor_col = col + 1;
-            state.sel_anchor = Some((l, col + 1));
-            return DelimiterOutcome::CursorMoved;
+            let is_quote = matches!(c, '"' | '\'' | '`');
+            let should_overtype = if is_quote {
+                if col == 0 {
+                    false
+                } else {
+                    let prev = chars[col - 1];
+                    prev == c || (!prev.is_whitespace() && !matches!(prev, '(' | '[' | '{' | '=' | ',' | ':' | '<'))
+                }
+            } else {
+                true
+            };
+
+            if should_overtype {
+                state.cursor_col = col + 1;
+                state.sel_anchor = Some((l, col + 1));
+                return DelimiterOutcome::CursorMoved;
+            }
         }
     }
 
@@ -914,7 +931,7 @@ fn wrap_chars_for(usable_width: f32, char_width: f32) -> usize {
 }
 
 fn row_count_for(line: &str, wrap_chars: usize) -> usize {
-    let len = line_char_count(line);
+    let len = karkinos_core::text_ops::line_visual_char_count(line, DEFAULT_TAB_SIZE);
     if len == 0 {
         1
     } else {
@@ -1137,9 +1154,14 @@ pub fn show(
                     }
                 } else {
                     let rel_x = (pos.x - text_left).max(0.0);
-                    let col_in_row = (rel_x / char_width).round() as usize;
-                    let clicked_col =
-                        (sub_row * wrap_chars + col_in_row).min(line_char_count(&lines[clicked_line]));
+                    let target_vcol = (rel_x / char_width).round() as usize;
+                    let target_line = &lines[clicked_line];
+                    let vstart = visual_col_at(target_line, sub_row * wrap_chars, DEFAULT_TAB_SIZE);
+                    let clicked_col = col_from_visual_col(
+                        target_line,
+                        vstart + target_vcol,
+                        DEFAULT_TAB_SIZE,
+                    );
 
                     // F3: Alt+Click agrega un cursor extra sin mover el primario.
                     if ui.input(|i| i.modifiers.alt) {
@@ -1365,12 +1387,12 @@ pub fn show(
                                     state.sel_anchor = Some((s.0, new_s_col));
                                 }
                             } else {
-                                // S4 (Etapa 2): Tab indenta bloque multilínea
+                                // S4 (Etapa 2): Tab indenta bloque multilínea con 4 espacios
                                 for line in lines.iter_mut().take(to_l + 1).skip(from_l) {
                                     indent_line(line);
                                 }
-                                let new_s_col = s.1 + 1;
-                                let new_e_col = if e.1 > 0 || e.0 == to_l { e.1 + 1 } else { e.1 };
+                                let new_s_col = s.1 + 4;
+                                let new_e_col = if e.1 > 0 || e.0 == to_l { e.1 + 4 } else { e.1 };
                                 if state.cursor_line == s.0 {
                                     state.cursor_col = new_s_col;
                                     state.sel_anchor = Some((e.0, new_e_col));
@@ -1399,18 +1421,21 @@ pub fn show(
                                 resync_rows!();
                             }
                         } else {
-                            // S6: Tab en línea simple inserta \t
+                            // S6: Tab en línea simple alinea a tab stops de 4 espacios (soft tab)
                             if let Some((s, e)) = sel {
                                 delete_range(lines, s, e);
                                 state.cursor_line = s.0;
                                 state.cursor_col = s.1;
                             }
+                            let spaces = DEFAULT_TAB_SIZE - (state.cursor_col % DEFAULT_TAB_SIZE);
+                            let indent_str = " ".repeat(spaces);
                             let (nl, nc) =
-                                insert_text(lines, (state.cursor_line, state.cursor_col), "\t");
+                                insert_text(lines, (state.cursor_line, state.cursor_col), &indent_str);
                             state.cursor_line = nl;
                             state.cursor_col = nc;
                             state.sel_anchor = Some((nl, nc));
                             changed = true;
+                            force_snapshot = true;
                             resync_rows!();
                         }
                     }
@@ -1916,8 +1941,10 @@ pub fn show(
                 continue;
             }
             if let Some((start_pos, end_pos)) = caret.range() {
-                let sx = text_left + start_pos.1 as f32 * char_width;
-                let ex = text_left + end_pos.1 as f32 * char_width;
+                let vs = visual_col_at(line, start_pos.1, DEFAULT_TAB_SIZE);
+                let ve = visual_col_at(line, end_pos.1, DEFAULT_TAB_SIZE);
+                let sx = text_left + vs as f32 * char_width;
+                let ex = text_left + ve as f32 * char_width;
                 painter.rect_filled(
                     egui::Rect::from_min_max(
                         egui::pos2(sx, line_top_y),
@@ -1927,7 +1954,7 @@ pub fn show(
                     theme.selection,
                 );
             }
-            let cx = text_left + caret.col as f32 * char_width;
+            let cx = text_left + visual_col_at(line, caret.col, DEFAULT_TAB_SIZE) as f32 * char_width;
             painter.line_segment(
                 [egui::pos2(cx, line_top_y), egui::pos2(cx, line_top_y + row_height)],
                 egui::Stroke::new(1.5_f32, theme.caret),
@@ -2113,9 +2140,12 @@ pub fn show(
                     let row_start = line_start_col.max(start);
                     let row_end = line_end_col.min(end);
                     if row_start < row_end || (line_start_col == line_end_col && start == 0 && sub == 0) {
-                        let x0 = text_left + (row_start.saturating_sub(start)) as f32 * char_width;
+                        let vs_start = visual_col_at(line, row_start, DEFAULT_TAB_SIZE);
+                        let vs_end = visual_col_at(line, row_end, DEFAULT_TAB_SIZE);
+                        let vs_sub = visual_col_at(line, start, DEFAULT_TAB_SIZE);
+                        let x0 = text_left + (vs_start.saturating_sub(vs_sub)) as f32 * char_width;
                         let x1 =
-                            text_left + (row_end.saturating_sub(start)).max(row_start.saturating_sub(start) + 1) as f32 * char_width;
+                            text_left + (vs_end.saturating_sub(vs_sub)).max(vs_start.saturating_sub(vs_sub) + 1) as f32 * char_width;
                         let sel_rect =
                             egui::Rect::from_min_max(egui::pos2(x0, y), egui::pos2(x1, y + row_height));
                         painter.rect_filled(sel_rect, 0.0, sel_color.gamma_multiply(0.5));
@@ -2247,7 +2277,9 @@ pub fn show(
                 && state.cursor_col >= start
                 && (state.cursor_col < end || (state.cursor_col == end && sub == rows_here - 1))
             {
-                let caret_x = text_left + (state.cursor_col - start) as f32 * char_width;
+                let vcol = visual_col_at(line, state.cursor_col, DEFAULT_TAB_SIZE);
+                let vstart = visual_col_at(line, start, DEFAULT_TAB_SIZE);
+                let caret_x = text_left + (vcol.saturating_sub(vstart)) as f32 * char_width;
                 painter.line_segment(
                     [egui::pos2(caret_x, y), egui::pos2(caret_x, y + row_height)],
                     egui::Stroke::new(1.5_f32, theme.caret),
@@ -2928,8 +2960,8 @@ mod tests {
 
         let mut line_clean = "codigo".to_string();
         indent_line(&mut line_clean);
-        assert_eq!(line_clean, "\tcodigo");
-        assert_eq!(dedent_line(&mut line_clean), 1);
+        assert_eq!(line_clean, "    codigo");
+        assert_eq!(dedent_line(&mut line_clean), 4);
         assert_eq!(line_clean, "codigo");
     }
 
@@ -3285,5 +3317,25 @@ mod tests {
         let mut state = EditorState { cursor_line: 0, cursor_col: 1, ..Default::default() };
         assert!(!enter_between_braces(&mut lines, &mut state));
         assert_eq!(lines, vec!["abc".to_string()]);
+    }
+
+    #[test]
+    fn smart_quote_overtype_inside_empty_pair_moves_cursor() {
+        // Cursor at col 1 inside `""`
+        let mut lines = vec!["\"\"".to_string()];
+        let mut state = EditorState { cursor_line: 0, cursor_col: 1, ..Default::default() };
+        let outcome = handle_delimiter_char(&mut lines, &mut state, '"');
+        assert_eq!(outcome, DelimiterOutcome::CursorMoved);
+        assert_eq!((state.cursor_line, state.cursor_col), (0, 2));
+    }
+
+    #[test]
+    fn smart_quote_before_existing_quote_does_not_overtype() {
+        // Cursor at col 0 before `"hello"`
+        let mut lines = vec!["\"hello\"".to_string()];
+        let mut state = EditorState { cursor_line: 0, cursor_col: 0, ..Default::default() };
+        let outcome = handle_delimiter_char(&mut lines, &mut state, '"');
+        // Debe auto-cerrar o tratarse como apertura, NO saltar sobre la comilla existente
+        assert_ne!(outcome, DelimiterOutcome::CursorMoved);
     }
 }
