@@ -1,7 +1,7 @@
 # Maintainer: Rodrigo Saavedra <hugorodrigo.saavedradiaz@gmail.com>
 
 pkgname=karkinos
-pkgver=0.2.54
+pkgver=0.2.55
 pkgrel=1
 pkgdesc="Lightweight, ultra-fast native Rust IDE"
 url="https://github.com/rodrigoSaavedra140/Text-Editor"

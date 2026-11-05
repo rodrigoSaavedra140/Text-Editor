@@ -65,6 +65,30 @@ pub fn title_bar_icon_button(
     response
 }
 
+/// Dibuja un botón de cierre compacto con trazo vectorial en forma de X (independiente de fuentes).
+pub fn icon_close_button(
+    ui: &mut egui::Ui,
+    hover_text: &str,
+    theme: &crate::theme::Theme,
+) -> egui::Response {
+    let size = egui::vec2(18.0, 18.0);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    if response.hovered() {
+        ui.painter().rect_filled(rect, egui::Rounding::same(3.0), theme.badge_bg);
+    }
+    let color = if response.hovered() {
+        egui::Color32::from_rgb(248, 81, 73)
+    } else {
+        theme.text_muted
+    };
+    let center = rect.center();
+    let h = 4.0;
+    let stroke = egui::Stroke::new(1.2_f32, color);
+    ui.painter().line_segment([center + egui::vec2(-h, -h), center + egui::vec2(h, h)], stroke);
+    ui.painter().line_segment([center + egui::vec2(-h, h), center + egui::vec2(h, -h)], stroke);
+    response.on_hover_text(hover_text)
+}
+
 /// Bordes invisibles en los 4 lados + 4 esquinas de la ventana, para
 /// poder seguir redimensionando arrastrando el borde con el mouse
 /// ahora que le sacamos la decoración nativa (que era la que hacía

@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use eframe::egui;
 
 use crate::app::{picker_should_stay_open, EditorApp, PickerNewItemKind};
-use crate::title_bar::{draw_resize_handles, title_bar_icon_button, TitleBarIcon};
+use crate::title_bar::{draw_resize_handles, icon_close_button, title_bar_icon_button, TitleBarIcon};
 use crate::util::{format_size, request_close};
 use crate::LOGO_BYTES;
 
@@ -37,6 +37,7 @@ impl EditorApp {
         let pos = button_rect
             .map(|r| r.left_bottom())
             .unwrap_or_else(|| ctx.screen_rect().left_top() + egui::vec2(10.0, 34.0));
+        let theme = self.theme_mode.theme();
 
         let dir_label = format!("📂 {}", self.doc.browse_dir.display());
         let mut navigate_to: Option<PathBuf> = None;
@@ -86,7 +87,7 @@ impl EditorApp {
                                 {
                                     submit_new_item = true;
                                 }
-                                if ui.button("x").on_hover_text("Cancel").clicked() {
+                                if icon_close_button(ui, "Cancel", &theme).clicked() {
                                     cancel_new_item = true;
                                 }
                             });
@@ -95,7 +96,7 @@ impl EditorApp {
 
                         // Subir a la carpeta padre (si existe).
                         if let Some(parent) = self.doc.browse_dir.parent() {
-                            if ui.selectable_label(false, "⬆ ..").clicked() {
+                            if ui.selectable_label(false, ".. (Parent directory)").clicked() {
                                 navigate_to = Some(parent.to_path_buf());
                             }
                         }
@@ -745,7 +746,7 @@ impl EditorApp {
                     if source_control.clicked() {
                         self.open_source_control();
                     }
-                    if tool(ui, "🧩", extensions_active)
+                    if tool(ui, "📦", extensions_active)
                         .on_hover_text("Extensions")
                         .clicked()
                     {
@@ -851,13 +852,13 @@ impl EditorApp {
                     .strong(),
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("x").on_hover_text("Close").clicked() {
+                if icon_close_button(ui, "Close", theme).clicked() {
                     *close_panel = true;
                 }
-                if ui.button("⊟").on_hover_text("Collapse All").clicked() {
+                if ui.button("▾").on_hover_text("Collapse All").clicked() {
                     collapse_all = true;
                 }
-                if ui.button("⟳").on_hover_text("Refresh").clicked() {
+                if ui.button("↻").on_hover_text("Refresh").clicked() {
                     refresh = true;
                 }
                 // v0.2.41: creación inline de archivos y carpetas.
@@ -929,10 +930,10 @@ impl EditorApp {
                         {
                             submit = true;
                         }
-                        if ui.button("✓").on_hover_text("Create").clicked() {
+                        if ui.button("OK").on_hover_text("Create (Enter)").clicked() {
                             submit = true;
                         }
-                        if ui.button("x").on_hover_text("Cancel").clicked() {
+                        if icon_close_button(ui, "Cancel (Esc)", theme).clicked() {
                             cancel = true;
                         }
                     });
@@ -970,7 +971,7 @@ impl EditorApp {
                         ui.with_layout(
                             egui::Layout::right_to_left(egui::Align::Center),
                             |ui| {
-                                if ui.button("x").on_hover_text("Cancel").clicked() {
+                                if icon_close_button(ui, "Cancel (Esc)", theme).clicked() {
                                     cancel = true;
                                 }
                                 if ui.button("Delete").clicked() {
@@ -1032,10 +1033,10 @@ impl EditorApp {
                         {
                             submit = true;
                         }
-                        if ui.button("✓").on_hover_text("Rename").clicked() {
+                        if ui.button("OK").on_hover_text("Rename (Enter)").clicked() {
                             submit = true;
                         }
-                        if ui.button("x").on_hover_text("Cancel").clicked() {
+                        if icon_close_button(ui, "Cancel (Esc)", theme).clicked() {
                             cancel = true;
                         }
                     });
@@ -1469,7 +1470,7 @@ impl EditorApp {
                         );
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.small_button("x").on_hover_text("Close diff").clicked() {
+                        if icon_close_button(ui, "Close diff", theme).clicked() {
                             close = true;
                         }
                     });
@@ -1755,7 +1756,7 @@ impl EditorApp {
         let mut restore = false;
         let mut discard = false;
 
-        egui::Window::new("⚠️ Sesión previa recuperada (Crash Recovery)")
+        egui::Window::new("⚠ Sesión previa recuperada (Crash Recovery)")
             .id(egui::Id::new("recovery_modal"))
             .collapsible(false)
             .resizable(false)
@@ -1859,11 +1860,7 @@ impl EditorApp {
                 self.workspace_search.show_replace = !self.workspace_search.show_replace;
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui
-                    .button("x")
-                    .on_hover_text("Close (Ctrl+Shift+F)")
-                    .clicked()
-                {
+                if icon_close_button(ui, "Close (Ctrl+Shift+F)", theme).clicked() {
                     *close_panel = true;
                 }
             });
@@ -2063,11 +2060,11 @@ impl EditorApp {
                     .strong(),
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("x").on_hover_text("Close").clicked() {
+                if icon_close_button(ui, "Close", theme).clicked() {
                     *close_panel = true;
                 }
                 if ui
-                    .button("🔄")
+                    .button("↻")
                     .on_hover_text("Refresh status")
                     .clicked()
                 {
@@ -2170,7 +2167,7 @@ impl EditorApp {
                                         stage_path = Some(entry.path.clone());
                                     }
                                     if ui
-                                        .small_button("↔")
+                                        .small_button("Diff")
                                         .on_hover_text("View Diff")
                                         .clicked()
                                     {
@@ -2226,7 +2223,7 @@ impl EditorApp {
                     .strong(),
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("x").on_hover_text("Close").clicked() {
+                if icon_close_button(ui, "Close", theme).clicked() {
                     *close_panel = true;
                 }
             });
@@ -2543,7 +2540,7 @@ impl EditorApp {
                         }
                     }
 
-                    if ui.small_button("x").on_hover_text("Close (Esc)").clicked() {
+                    if icon_close_button(ui, "Close (Esc)", &theme).clicked() {
                         self.find_open = false;
                     }
                 });
@@ -2640,7 +2637,7 @@ impl EditorApp {
                         }
                     };
 
-                    let pill_prefix = if self.cargo.active_tab == 0 { "💻" } else { "🦀" };
+                    let pill_prefix = if self.cargo.active_tab == 0 { "💻" } else { "⚡" };
                     crate::title_bar::status_pill(
                         ui,
                         egui::RichText::new(format!("{} {}", pill_prefix, status_text))
@@ -2740,12 +2737,12 @@ impl EditorApp {
                             }
                         }
                         if self.cargo.active_tab == 0 {
-                            if ui.small_button("🔄 Restart").on_hover_text("Restart interactive terminal session").clicked() {
+                            if ui.small_button("↻ Restart").on_hover_text("Restart interactive terminal session").clicked() {
                                 let cwd = self.current_working_dir();
                                 self.terminal.restart(&cwd);
                             }
                         } else if self.cargo.runner.is_running()
-                            && ui.small_button("⏹ Stop").clicked()
+                            && ui.small_button("Stop").clicked()
                         {
                             self.cargo.runner.kill();
                         }
@@ -2812,16 +2809,16 @@ impl EditorApp {
                             }
                         }
 
-                        if ui.add_enabled(is_stopped, egui::Button::new("↷ Step Over (F10)")).clicked() {
+                        if ui.add_enabled(is_stopped, egui::Button::new("Step Over (F10)")).clicked() {
                             self.step_over();
                         }
-                        if ui.add_enabled(is_stopped, egui::Button::new("⇲ Step In (F11)")).clicked() {
+                        if ui.add_enabled(is_stopped, egui::Button::new("Step In (F11)")).clicked() {
                             self.step_in();
                         }
-                        if ui.add_enabled(is_stopped, egui::Button::new("⇱ Step Out (Shift+F11)")).clicked() {
+                        if ui.add_enabled(is_stopped, egui::Button::new("Step Out (Shift+F11)")).clicked() {
                             self.step_out();
                         }
-                        if ui.add_enabled(is_active, egui::Button::new("⏹ Stop (Shift+F5)")).clicked() {
+                        if ui.add_enabled(is_active, egui::Button::new("Stop (Shift+F5)")).clicked() {
                             self.stop_debugging();
                         }
 
@@ -2880,7 +2877,7 @@ impl EditorApp {
                                     let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
                                     ui.horizontal(|ui| {
                                         ui.label(egui::RichText::new(format!("● {}:{}", file_name, line + 1)).color(egui::Color32::from_rgb(240, 70, 70)));
-                                        if ui.small_button("x").clicked() {
+                                        if icon_close_button(ui, "Remove breakpoint", theme).clicked() {
                                             to_remove = Some((path.clone(), *line));
                                         }
                                     });
@@ -2919,14 +2916,11 @@ impl EditorApp {
                     switch_to = Some(idx);
                 }
             }
-            if ui.button("＋").on_hover_text("New Terminal").clicked() {
+            if ui.button("+").on_hover_text("New Terminal").clicked() {
                 new_tab = true;
             }
             if self.terminal.len() > 1
-                && ui
-                    .button("x")
-                    .on_hover_text("Close Terminal (Ctrl+Shift+W)")
-                    .clicked()
+                && icon_close_button(ui, "Close Terminal (Ctrl+Shift+W)", theme).clicked()
             {
                 close_tab = true;
             }
@@ -3368,7 +3362,7 @@ impl EditorApp {
         let mut open = self.extensions_modal_open;
         let mut close_clicked = false;
 
-        egui::Window::new("🧩 Community Extensions & Plugins")
+        egui::Window::new("📦 Community Extensions & Plugins")
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
@@ -3382,7 +3376,7 @@ impl EditorApp {
                     if ui.selectable_label(self.extensions_tab == 1, "🌐 Community Showcase").clicked() {
                         self.extensions_tab = 1;
                     }
-                    if ui.selectable_label(self.extensions_tab == 2, "🛒 Open VSX Registry").clicked() {
+                    if ui.selectable_label(self.extensions_tab == 2, "🌐 Open VSX Registry").clicked() {
                         self.extensions_tab = 2;
                         if self.open_vsx_results.is_empty() && !self.open_vsx_searching {
                             self.search_open_vsx("rust");
@@ -3416,7 +3410,7 @@ impl EditorApp {
                                             .color(egui::Color32::from_gray(140)),
                                     );
                                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                        if ui.small_button("🗑️ Uninstall").clicked() {
+                                        if ui.small_button("🗑 Uninstall").clicked() {
                                             plugin_to_uninstall = Some(plugin.name.clone());
                                         }
                                         ui.label(
@@ -3470,7 +3464,7 @@ impl EditorApp {
                                                 .color(egui::Color32::from_gray(140)),
                                         );
                                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                            if ui.small_button("🗑️ Uninstall").clicked() {
+                                            if ui.small_button("🗑 Uninstall").clicked() {
                                                 vsix_to_uninstall = Some(filename.clone());
                                             }
                                         });
@@ -3624,11 +3618,11 @@ impl EditorApp {
                                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                         let vsix_name = format!("{}-{}.vsix", ext.name, ext.version);
                                         if self.is_vsix_installed(ext) {
-                                            if ui.small_button("🗑️ Uninstall").clicked() {
+                                            if ui.small_button("🗑 Uninstall").clicked() {
                                                 vsix_to_uninstall_registry = Some(vsix_name);
                                             }
                                             ui.label(
-                                                egui::RichText::new("✓ Installed")
+                                                egui::RichText::new("● Installed")
                                                     .color(egui::Color32::from_rgb(80, 200, 120))
                                                     .strong(),
                                             );
@@ -4162,51 +4156,6 @@ impl eframe::App for EditorApp {
                         }
                         ui.add_space(6.0);
 
-                        let panel_toggle_label = if self.cargo.panel_open { "Console ▾" } else { "Console ▸" };
-                        if ui.button(panel_toggle_label).on_hover_text("Toggle Cargo Console (Ctrl+`)").clicked() {
-                            self.cargo.panel_open = !self.cargo.panel_open;
-                        }
-
-                        // Menú de extensiones: comunidad y plugins activos.
-                        let mut chosen_cmd: Option<String> = None;
-                        ui.menu_button("🧩 Extensions", |ui| {
-                            if ui.button("📦 Installed Extensions…").clicked() {
-                                self.extensions_modal_open = true;
-                                self.extensions_tab = 0;
-                                ui.close_menu();
-                            }
-                            if ui.button("🗑️ Uninstall / Manage Extensions…").clicked() {
-                                self.extensions_modal_open = true;
-                                self.extensions_tab = 0;
-                                ui.close_menu();
-                            }
-                            if ui.button("🛒 Open VSX Registry…").clicked() {
-                                self.extensions_modal_open = true;
-                                self.extensions_tab = 2;
-                                if self.open_vsx_results.is_empty() && !self.open_vsx_searching {
-                                    self.search_open_vsx("rust");
-                                }
-                                ui.close_menu();
-                            }
-                            if ui.button("🌐 Browse Community Showcase…").clicked() {
-                                self.extensions_modal_open = true;
-                                self.extensions_tab = 1;
-                                ui.close_menu();
-                            }
-                            ui.separator();
-                            ui.label(egui::RichText::new("Quick Commands:").strong());
-                            let commands = self.plugin_manager.available_commands();
-                            for cmd in commands {
-                                if ui.button(format!("⚡ {}", cmd.title)).on_hover_text(&cmd.description).clicked() {
-                                    chosen_cmd = Some(cmd.id);
-                                    ui.close_menu();
-                                }
-                            }
-                        });
-                        if let Some(cmd_id) = chosen_cmd {
-                            self.execute_plugin_command(&cmd_id);
-                        }
-
                         // Selector de temas visuales.
                         egui::ComboBox::from_id_source("theme_picker")
                             .selected_text(format!("🎨 {}", self.theme_mode.name()))
@@ -4437,7 +4386,7 @@ impl eframe::App for EditorApp {
                     if let Some(branch) = &self.git_status.branch {
                         crate::title_bar::status_pill(
                             ui,
-                            egui::RichText::new(format!("⎇ {branch}"))
+                            egui::RichText::new(format!("git: {branch}"))
                                 .color(theme.text_muted)
                                 .size(11.0),
                             &theme,
@@ -4538,7 +4487,7 @@ impl eframe::App for EditorApp {
                         // Language badge
                         let lang = self.current_language();
                         let lang_badge = match lang {
-                            crate::syntax::Language::Rust => "🦀 Rust 2021".to_string(),
+                            crate::syntax::Language::Rust => "Rust 2021".to_string(),
                             crate::syntax::Language::JavaScript => format!("JS {}", lang.name()),
                             crate::syntax::Language::Html => format!("🌐 {}", lang.name()),
                             crate::syntax::Language::Css => format!("🎨 {}", lang.name()),
@@ -4559,7 +4508,7 @@ impl eframe::App for EditorApp {
                             let (lsp_text, lsp_color) = if self.lsp.client.is_some() {
                                 ("● LSP Ready", egui::Color32::from_rgb(63, 185, 80))
                             } else {
-                                ("○ LSP Off", theme.text_muted)
+                                ("LSP Off", theme.text_muted)
                             };
                             crate::title_bar::status_pill(
                                 ui,
@@ -4698,7 +4647,7 @@ impl eframe::App for EditorApp {
 /// UI-6: icono contextual del explorador según la extensión.
 fn explorer_file_icon(extension: &str) -> &'static str {
     match extension {
-        "rs" => "🦀",
+        "rs" => "⚡",
         "toml" => "⚙",
         "md" => "📄",
         "json" => "📦",
