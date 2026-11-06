@@ -5,6 +5,11 @@ pub enum TitleBarIcon {
     Minimize,
     Maximize,
     Restore,
+    /// S2 (auto-actualización): flecha hacia arriba en un círculo abierto,
+    /// el botón que solo aparece cuando hay un release más nuevo.
+    Update,
+    /// S2: el mismo botón mientras descarga e instala, como spinner.
+    UpdateSpinner,
 }
 
 /// Dibuja un botón de la barra de título con un ícono hecho a mano
@@ -59,6 +64,54 @@ pub fn title_bar_icon_button(
             // superpuestas y no como dos cuadrados cruzados.
             painter.rect_filled(front, 0.0, theme.title_bar_bg);
             painter.rect_stroke(front, 0.0, stroke);
+        }
+        TitleBarIcon::Update => {
+            // Círculo abierto arriba + flecha hacia arriba: el glifo de
+            // "actualizar", en trazos vectoriales como el resto.
+            painter.circle_stroke(center + egui::vec2(0.0, 1.0), 6.5, stroke);
+            painter.line_segment(
+                [
+                    center + egui::vec2(0.0, 3.5),
+                    center + egui::vec2(0.0, -6.5),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    center + egui::vec2(0.0, -6.5),
+                    center + egui::vec2(-3.0, -3.5),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    center + egui::vec2(0.0, -6.5),
+                    center + egui::vec2(3.0, -3.5),
+                ],
+                stroke,
+            );
+        }
+        TitleBarIcon::UpdateSpinner => {
+            // Spinner de la descarga (S2): puntos alrededor del centro con
+            // brillo en fase, así el conjunto parece girar sin mover la
+            // geometría. El reloj viene de egui, así que el llamador pide
+            // repintados mientras este ícono esté en pantalla.
+            let time = ui.input(|i| i.time);
+            const DOTS: usize = 8;
+            let phase = (time * 1.6).rem_euclid(1.0) as f32;
+            for dot in 0..DOTS {
+                let offset = dot as f32 / DOTS as f32;
+                let gap = (phase - offset).abs();
+                let distance = gap.min(1.0 - gap);
+                let alpha = (1.0 - distance * 2.0).clamp(0.0, 1.0);
+                let angle = std::f32::consts::TAU * offset;
+                let pos = center + egui::vec2(angle.cos(), angle.sin()) * 6.0;
+                ui.painter().circle_filled(
+                    pos,
+                    1.2,
+                    egui::Color32::from_white_alpha((40.0 + 215.0 * alpha) as u8),
+                );
+            }
         }
     }
 

@@ -53,8 +53,17 @@ fn main() -> eframe::Result<()> {
     // Roadmap v0.2.45 (Tarea A): argumentos de línea de comandos.
     // `--version`/`-v` y `--help`/`-h` imprimen y salen con código 0; un
     // path posicional se guarda para abrirlo en la pestaña inicial.
+    // T4 (S2): `--after-update <pid>` es interno del reinicio tras una
+    // actualización y no es un path que abrir.
+    let raw_args: Vec<String> = std::env::args().skip(1).collect();
+    let launch_mode = karkinos_core::updater::launch_mode(&raw_args);
     let mut target_path: Option<std::path::PathBuf> = None;
-    for arg in std::env::args().skip(1) {
+    let mut skip_value = false;
+    for arg in &raw_args {
+        if skip_value {
+            skip_value = false;
+            continue;
+        }
         match arg.as_str() {
             "-v" | "--version" => {
                 println!("karkinos {}", env!("CARGO_PKG_VERSION"));
@@ -64,10 +73,18 @@ fn main() -> eframe::Result<()> {
                 print_usage();
                 return Ok(());
             }
+            karkinos_core::updater::AFTER_UPDATE_FLAG => skip_value = true,
             _ => {
                 target_path = Some(std::path::PathBuf::from(arg));
             }
         }
+    }
+
+    // T4 (S2): un `karkinos.exe.old` de una actualización anterior solo se
+    // puede borrar ahora (en Windows estaba bloqueado por el proceso que lo
+    // ejecutaba). Best effort: si falla, queda para el próximo arranque.
+    if let Ok(exe) = std::env::current_exe() {
+        karkinos_core::updater::cleanup_stale_backup(&exe);
     }
 
     // v0.2.48 (Tarea B): coordinación de instancia única. Si ya hay una
@@ -77,17 +94,26 @@ fn main() -> eframe::Result<()> {
     // levantamos el servidor IPC que atenderá los próximos `karkinos <path>`.
     // Coordinación de instancia única: verifica siempre si ya hay una instancia primaria activa.
     // Si viene con path, le reenviamos el path y sale. Si no trae path, le pide foco/activación y sale.
-    match karkinos_core::ipc::try_send_to_primary(target_path.as_deref()) {
-        Ok(true) => {
-            if target_path.is_some() {
-                println!("Karkinos: opened in existing window");
-            } else {
-                println!("Karkinos: activated existing window");
+    // T4 (S2): el arranque tras una actualización NO reenvía nada: ver
+    // `wait_until_previous_instance_is_gone`.
+    match launch_mode {
+        karkinos_core::updater::LaunchMode::Forward => {
+            match karkinos_core::ipc::try_send_to_primary(target_path.as_deref()) {
+                Ok(true) => {
+                    if target_path.is_some() {
+                        println!("Karkinos: opened in existing window");
+                    } else {
+                        println!("Karkinos: activated existing window");
+                    }
+                    return Ok(());
+                }
+                Ok(false) => {}
+                Err(e) => eprintln!("Karkinos: IPC check failed: {e}"),
             }
-            return Ok(());
         }
-        Ok(false) => {}
-        Err(e) => eprintln!("Karkinos: IPC check failed: {e}"),
+        karkinos_core::updater::LaunchMode::TakeOver { previous_pid } => {
+            wait_until_previous_instance_is_gone(previous_pid);
+        }
     }
 
     let ipc_server = karkinos_core::ipc::IpcServer::spawn().ok();
@@ -165,6 +191,43 @@ fn main() -> eframe::Result<()> {
     }))
 }
 
+/// T4 (S2): espera a que la instancia que estamos reemplazando suelte el
+/// socket de instancia única antes de que este proceso levante el suyo.
+///
+/// Por qué hace falta: al reiniciar tras actualizar, el proceso nuevo
+/// arranca mientras el viejo todavía existe (y `request_close` lo mata a
+/// la fuerza ~1 s después, sin correr destructores). Si el nuevo pasara
+/// por el camino normal de instancia única, el viejo se quedaría con los
+/// argumentos del reinicio —abriría el proyecto en la ventana que se está
+/// cerrando— y el nuevo saldría sin abrir nada. Y si bindeara el socket de
+/// inmediato, `spawn_on` vería una primaria viva y también fallaría.
+///
+/// Por eso el reinicio usa el flag interno `--after-update <pid>`, que (a)
+/// desvía este arranque del reenvío normal y (b) trae el pid para
+/// diagnóstico. La condición de espera es el socket: ese es el recurso que
+/// hay que tomar. Pasado el tope se sigue igual — `spawn_on` ya sabe
+/// reemplazar un socket huérfano.
+fn wait_until_previous_instance_is_gone(previous_pid: Option<u32>) {
+    const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+    const POLL: std::time::Duration = std::time::Duration::from_millis(25);
+
+    let start = std::time::Instant::now();
+    while start.elapsed() < TIMEOUT {
+        match karkinos_core::ipc::try_send_to_primary(None) {
+            // Sigue habiendo una primaria viva: esperamos.
+            Ok(true) => std::thread::sleep(POLL),
+            // Sin primaria (o error al hablarle): el socket está libre.
+            _ => return,
+        }
+    }
+    eprintln!(
+        "Karkinos: the previous instance{} did not release the IPC socket in time",
+        previous_pid
+            .map(|pid| format!(" (pid {pid})"))
+            .unwrap_or_default()
+    );
+}
+
 /// Imprime el uso básico y las opciones; el llamador sale con código 0.
 fn print_usage() {
     println!("karkinos [PATH]");
@@ -175,4 +238,9 @@ fn print_usage() {
     println!("Options:");
     println!("  -h, --help     Print this help message and exit");
     println!("  -v, --version  Print version information and exit");
+    println!();
+    println!("Internal:");
+    println!(
+        "  --after-update <pid>  Waits for the previous instance after an in-place update"
+    );
 }

@@ -20,8 +20,9 @@ const MAX_DOWNLOAD_BYTES: u64 = 100 * 1024 * 1024;
 
 /// Agente HTTP que solo habla `https`, también al seguir redirecciones:
 /// una respuesta que redirija a `http://` se rechaza en vez de bajar el
-/// paquete por un canal sin cifrar.
-fn https_agent() -> ureq::Agent {
+/// paquete por un canal sin cifrar. `pub(crate)` para que el actualizador
+/// (S1/S2) reuse el mismo agente en vez de duplicarlo.
+pub(crate) fn https_agent() -> ureq::Agent {
     ureq::AgentBuilder::new().https_only(true).build()
 }
 

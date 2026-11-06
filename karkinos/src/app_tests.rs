@@ -3053,6 +3053,46 @@
     }
 
     #[test]
+    fn update_restart_prompt_avisa_solo_si_hay_cambios_reales_sin_guardar() {
+        let Some(asset) = karkinos_core::updater::platform_asset_name() else {
+            return;
+        };
+        let mut app = EditorApp::default();
+        // Sin instalación no hay nada que preguntar.
+        assert!(app.update_restart_prompt().is_none());
+
+        // Instalación exitosa simulada (sin red ni disco: el resultado se
+        // inyecta como lo haría el hilo de descarga).
+        app.updates.apply(Ok(update_release("v99.0.0", &[asset])));
+        app.updates.apply_install_result(Ok(()));
+        assert_eq!(
+            app.update_restart_prompt().as_deref(),
+            Some("Karkinos v99.0.0 is installed. Restart now?"),
+            "sin cambios sin guardar el diálogo solo pregunta si reiniciar"
+        );
+
+        // Cambios sin guardar: el diálogo lo dice ANTES de reiniciar.
+        app.set_text("borrador");
+        app.doc.dirty = true;
+        let dirty = app.update_restart_prompt().expect("sigue habiendo instalación");
+        assert!(
+            dirty.starts_with("Karkinos v99.0.0 is installed. Restart now?"),
+            "fue: {dirty}"
+        );
+        assert!(dirty.contains("1 tab with unsaved changes"), "fue: {dirty}");
+
+        // Una pestaña sucia pero VACÍA no cuenta: mismo criterio que
+        // `try_close` (cerrar/Exit) para no avisar por nada.
+        app.set_text("");
+        app.doc.dirty = true;
+        assert_eq!(
+            app.update_restart_prompt().as_deref(),
+            Some("Karkinos v99.0.0 is installed. Restart now?"),
+            "un buffer sucio y vacío no es un cambio que perder"
+        );
+    }
+
+    #[test]
     fn file_menu_exit_sin_contexto_no_hace_nada() {
         // Exit necesita el `egui::Context` para pedir el cierre de la
         // ventana; sin él la acción es un no-op deliberado.

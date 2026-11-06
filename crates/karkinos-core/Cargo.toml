@@ -15,6 +15,9 @@ ureq = { version = "2", default-features = false, features = ["tls"] }
 portable-pty = "0.9"
 vt100 = "0.18"
 regex = "1"
+# S5 (verificación de integridad del release): SHA-256 del binario
+# descargado contra `SHA256SUMS`.
+sha2 = "0.10"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

@@ -3195,9 +3195,9 @@ impl EditorApp {
         self.updates.button_visible()
     }
 
-    /// S1: click del botón. En esta tarea solo deja el pedido pendiente y
-    /// observable; T4 (S2/S5) se encarga de descargar, verificar e
-    /// instalar.
+    /// S1: click del botón. Deja el pedido pendiente y observable; el
+    /// bucle de la UI lo toma con `updates.begin_install()` en el frame
+    /// siguiente y lo ejecuta en un hilo aparte (S2/S5).
     pub fn start_update(&mut self) {
         self.updates.start();
     }
@@ -3205,6 +3205,65 @@ impl EditorApp {
     /// S1: hay un pedido de actualización esperando ejecutarse.
     pub fn update_pending(&self) -> bool {
         self.updates.pending()
+    }
+
+    /// S2: mientras descarga e instala, el botón muestra un spinner y no
+    /// se puede volver a apretar.
+    pub fn update_installing(&self) -> bool {
+        self.updates.installing()
+    }
+
+    /// S2: pregunta del diálogo modal cuando la actualización ya está
+    /// instalada, o `None` si no hay nada que preguntar. Si hay pestañas
+    /// con cambios sin guardar lo avisa antes de reiniciar, con el mismo
+    /// criterio que `try_close` (cerrar/Exit): una pestaña sucia pero
+    /// vacía no es un cambio que se pierda.
+    pub fn update_restart_prompt(&self) -> Option<String> {
+        let crate::update_service::InstallOutcome::Installed { version } = self.updates.result()?
+        else {
+            return None;
+        };
+        let dirty_tabs = if self.doc.all_dirty_tabs_are_empty() {
+            0
+        } else {
+            self.doc.dirty_tabs_count()
+        };
+        Some(crate::update_service::restart_prompt(version, dirty_tabs))
+    }
+
+    /// S2: lanza el binario recién instalado con los mismos argumentos y
+    /// cierra esta ventana.
+    ///
+    /// El flag interno `--after-update <pid>` le dice al proceso nuevo que
+    /// NO reenvíe los argumentos a esta instancia (que está muriendo y se
+    /// quedaría con ellos) y que espere a que soltemos el socket de
+    /// instancia única antes de tomar la primaria. Ver `main.rs`.
+    pub fn restart_after_update(&mut self, ctx: &egui::Context) {
+        let exe = match std::env::current_exe() {
+            Ok(exe) => exe,
+            Err(e) => {
+                self.doc.status = format!("Restart failed: {}", e);
+                self.updates.dismiss_result();
+                return;
+            }
+        };
+        let current_args: Vec<String> = std::env::args().skip(1).collect();
+        let args = karkinos_core::updater::restart_args(&current_args, std::process::id());
+
+        match std::process::Command::new(&exe).args(&args).spawn() {
+            Ok(_) => {
+                self.updates.dismiss_result();
+                // Cierre prolijo: el mismo camino que cerrar la ventana,
+                // que además fuerza la salida del proceso en ~1 s (el
+                // binario nuevo espera justo eso antes de tomar la
+                // instancia única).
+                crate::util::request_close(ctx, &mut self.doc.closing_since);
+            }
+            Err(e) => {
+                self.doc.status = format!("Restart failed: {}", e);
+                self.updates.dismiss_result();
+            }
+        }
     }
 
     /// S10: cambia el tamaño de la fuente del editor un paso (zoom in

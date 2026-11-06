@@ -331,6 +331,68 @@ impl EditorApp {
         }
     }
 
+    /// T4 (S2/S5): diálogo con el resultado de la actualización. Éxito →
+    /// "Karkinos vX.Y.Z is installed. Restart now?" con `Restart` / `Later`
+    /// (y el aviso de pestañas sin guardar antes de reiniciar). Error → el
+    /// mensaje tal cual, sin haber tocado el ejecutable.
+    fn show_update_result(&mut self, ctx: &egui::Context) {
+        let Some(outcome) = self.updates.result().cloned() else {
+            return;
+        };
+
+        match outcome {
+            crate::update_service::InstallOutcome::Failed { message } => {
+                let mut close = false;
+                egui::Window::new("Update Failed")
+                    .collapsible(false)
+                    .resizable(false)
+                    .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                    .show(ctx, |ui| {
+                        ui.set_min_width(340.0);
+                        ui.label(message);
+                        ui.add_space(6.0);
+                        if ui.button("OK").clicked() {
+                            close = true;
+                        }
+                    });
+                if close || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    // Cerrar el diálogo NO descarta la actualización: el
+                    // botón sigue ahí para reintentar.
+                    self.updates.dismiss_result();
+                }
+            }
+            crate::update_service::InstallOutcome::Installed { .. } => {
+                let Some(prompt) = self.update_restart_prompt() else {
+                    return;
+                };
+                let mut restart = false;
+                let mut later = false;
+                egui::Window::new("Update Installed")
+                    .collapsible(false)
+                    .resizable(false)
+                    .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                    .show(ctx, |ui| {
+                        ui.set_min_width(360.0);
+                        ui.label(prompt);
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            if ui.button("Restart").clicked() {
+                                restart = true;
+                            }
+                            if ui.button("Later").clicked() {
+                                later = true;
+                            }
+                        });
+                    });
+                if restart {
+                    self.restart_after_update(ctx);
+                } else if later || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    self.updates.dismiss_result();
+                }
+            }
+        }
+    }
+
     /// S8 (Etapa 2) / S3: Diálogo de confirmación para cerrar pestaña con cambios sin guardar.
     fn show_tab_close_confirm(&mut self, ctx: &egui::Context) {
         let Some(idx) = self.doc.tab_close_pending else {
@@ -2696,41 +2758,6 @@ impl EditorApp {
 
 }
 
-/// S1 (auto-actualización): botón de la barra de título para instalar la
-/// actualización disponible. Mantiene el mismo chrome que
-/// `title_bar::title_bar_icon_button` (32×32, hover blanco translúcido),
-/// porque ese helper solo sabe dibujar los íconos de ventana; el de
-/// "actualizar" (flecha hacia arriba en un círculo) se dibuja acá.
-fn update_icon_button(ui: &mut egui::Ui) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(32.0, 32.0), egui::Sense::click());
-
-    if response.hovered() {
-        ui.painter()
-            .rect_filled(rect, 0.0, egui::Color32::from_white_alpha(25));
-    }
-
-    let stroke = egui::Stroke::new(1.4_f32, egui::Color32::from_gray(225));
-    let center = rect.center();
-    let painter = ui.painter();
-
-    // Círculo abierto arriba + flecha hacia arriba: el glifo de "actualizar".
-    painter.circle_stroke(center + egui::vec2(0.0, 1.0), 6.5, stroke);
-    painter.line_segment(
-        [center + egui::vec2(0.0, 3.5), center + egui::vec2(0.0, -6.5)],
-        stroke,
-    );
-    painter.line_segment(
-        [center + egui::vec2(0.0, -6.5), center + egui::vec2(-3.0, -3.5)],
-        stroke,
-    );
-    painter.line_segment(
-        [center + egui::vec2(0.0, -6.5), center + egui::vec2(3.0, -3.5)],
-        stroke,
-    );
-
-    response
-}
-
 /// Procesa una imagen RGBA eliminando el fondo oscuro opaco y suavizando
 /// los bordes con transparencia alfa (feathering), para que el logo se
 /// mezcle de forma limpia sin contornos ni bordes cuadrados sobre
@@ -2910,6 +2937,16 @@ impl eframe::App for EditorApp {
         }
         if let Some(remaining) = self.updates.next_check_in(now) {
             ctx.request_repaint_after(remaining);
+        }
+        // T4 (S2/S5): el click del botón deja un pedido pendiente; acá se
+        // convierte en descarga + verificación + instalación en un hilo
+        // aparte (una sola vez por pedido). El resultado, cuando llega,
+        // abre el diálogo de reinicio o el del error.
+        if self.updates.begin_install() {
+            ctx.request_repaint();
+        }
+        if self.updates.poll_install() {
+            ctx.request_repaint();
         }
 
         // Atajos de teclado globales
@@ -3233,17 +3270,37 @@ impl eframe::App for EditorApp {
                         // cuando hay un release más nuevo con el binario de
                         // esta plataforma, con el tooltip de la versión.
                         // Un segundo click no repite el pedido: queda
-                        // pendiente hasta que T4 lo ejecute (spinner).
+                        // pendiente hasta que el bucle lo ejecute (spinner)
+                        // y mientras descarga no se puede volver a apretar.
                         // Las instalaciones que administra el gestor de
                         // paquetes se resuelven en T5.
                         if self.update_button_visible() {
+                            let installing = self.update_installing();
                             let pending = self.update_pending();
-                            let hover = match (pending, self.updates.available_version()) {
-                                (true, _) => "Update pending".to_string(),
-                                (false, Some(version)) => format!("Update to {}", version),
-                                (false, None) => "Update available".to_string(),
+                            let hover = match (
+                                installing,
+                                pending,
+                                self.updates.available_version(),
+                            ) {
+                                (true, _, Some(version)) => format!("Installing {}", version),
+                                (true, _, None) => "Installing update".to_string(),
+                                (false, true, _) => "Update pending".to_string(),
+                                (false, false, Some(version)) => format!("Update to {}", version),
+                                (false, false, None) => "Update available".to_string(),
                             };
-                            if update_icon_button(ui).on_hover_text(hover).clicked() && !pending {
+                            let icon = if installing {
+                                TitleBarIcon::UpdateSpinner
+                            } else {
+                                TitleBarIcon::Update
+                            };
+                            let response = title_bar_icon_button(ui, icon, &theme)
+                                .on_hover_text(hover);
+                            if installing {
+                                // El spinner se mueve con el reloj de egui.
+                                ui.ctx().request_repaint_after(
+                                    std::time::Duration::from_millis(80),
+                                );
+                            } else if response.clicked() {
                                 self.start_update();
                             }
                         }
@@ -3774,6 +3831,9 @@ impl eframe::App for EditorApp {
         // S1: al final, para que el diálogo SIEMPRE pinte por encima
         // de todos los paneles ya dibujados este frame.
         self.show_close_confirm(ctx);
+        // T4 (S2/S5): resultado de la actualización (pregunta de reinicio
+        // o el error de verificación), por encima de todo.
+        self.show_update_result(ctx);
         // S8: confirmación de cierre de pestaña con cambios sin guardar
         self.show_tab_close_confirm(ctx);
         // S4: igual que el confirm, arriba de todo (los paneles
