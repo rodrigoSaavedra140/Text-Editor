@@ -7,6 +7,7 @@
 //! - [`Document`]: High-level headless document model.
 //! - Text algorithms: Word boundary navigation, comment toggling, auto-indentation, and bracket matching.
 
+pub mod atomic_write;
 pub mod buffer;
 pub mod cargo;
 pub mod dap;

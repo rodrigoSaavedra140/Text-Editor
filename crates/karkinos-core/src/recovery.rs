@@ -8,7 +8,7 @@
 
 use std::env;
 use std::fs;
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 
 /// First token of the format header.
@@ -177,8 +177,8 @@ pub fn deserialize_entry(data: &str) -> Option<RecoveryEntry> {
 
 /// Writes an entry atomically and returns the resulting journal path.
 ///
-/// Data goes to a sibling `.tmp` file first and is renamed into place, so a crash
-/// never leaves a half-written journal at the destination.
+/// Data goes to a sibling hidden temporary file first and is renamed into
+/// place, so a crash never leaves a half-written journal at the destination.
 pub fn save_recovery_file(
     dir: &Path,
     filename: &str,
@@ -187,39 +187,8 @@ pub fn save_recovery_file(
     let destination = validated_target(dir, filename)?;
     fs::create_dir_all(dir)?;
 
-    let tmp_path = dir.join(format!("{filename}.tmp"));
     let data = serialize_entry(entry);
-
-    let write_result = (|| -> io::Result<()> {
-        let mut file = fs::File::create(&tmp_path)?;
-        file.write_all(data.as_bytes())?;
-        file.sync_all()?;
-        Ok(())
-    })();
-    if let Err(err) = write_result {
-        let _ = fs::remove_file(&tmp_path);
-        return Err(err);
-    }
-
-    if let Err(err) = fs::rename(&tmp_path, &destination) {
-        // Windows cannot rename over an existing file, so perform a safe replacement
-        // by moving destination to .old first, renaming .tmp into place, then deleting .old.
-        // If renaming .tmp fails, destination is restored from .old.
-        if destination.exists() {
-            let old_path = dir.join(format!("{filename}.old"));
-            let _ = fs::remove_file(&old_path);
-            fs::rename(&destination, &old_path)?;
-            if let Err(rename_err) = fs::rename(&tmp_path, &destination) {
-                let _ = fs::rename(&old_path, &destination);
-                let _ = fs::remove_file(&tmp_path);
-                return Err(rename_err);
-            }
-            let _ = fs::remove_file(&old_path);
-        } else {
-            let _ = fs::remove_file(&tmp_path);
-            return Err(err);
-        }
-    }
+    crate::atomic_write::write_atomic(&destination, data.as_bytes(), |_| {})?;
 
     Ok(destination)
 }

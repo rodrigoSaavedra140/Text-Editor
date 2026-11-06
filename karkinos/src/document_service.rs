@@ -451,27 +451,15 @@ impl DocumentService {
         // cuánto se lleva escrito — así la ventana de progreso tiene
         // algo real que mostrar (y no bloqueamos la interfaz
         // mientras se guarda un archivo grande o un disco lento).
+        // S1: el destino se reemplaza de forma atómica (temporal +
+        // rename), así que un fallo a mitad de camino nunca deja el
+        // archivo del usuario truncado.
         thread::spawn(move || {
-            let result = (|| -> std::io::Result<()> {
-                use std::io::Write;
-                let mut file = std::fs::File::create(&path)?;
-                // Repartimos en ~20 pasos parejos (mínimo 1 byte por
-                // paso) para que la barra se vea animarse incluso en
-                // archivos chicos, en vez de completarse de golpe.
-                let steps = 20usize;
-                let chunk_size = (total / steps).max(1);
-                let mut written = 0usize;
-                while written < total {
-                    let end = (written + chunk_size).min(total);
-                    file.write_all(&data[written..end])?;
-                    written = end;
-                    if let Ok(mut p) = progress.lock() {
-                        p.written = written;
-                    }
-                    thread::sleep(Duration::from_millis(15));
+            let result = karkinos_core::atomic_write::write_atomic(&path, &data, |written| {
+                if let Ok(mut p) = progress.lock() {
+                    p.written = written;
                 }
-                file.flush()
-            })();
+            });
 
             if let Ok(mut p) = progress.lock() {
                 p.done = true;
