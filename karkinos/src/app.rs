@@ -1240,7 +1240,8 @@ impl EditorApp {
 
     /// T2 (S4): ejecuta una acción del menú File. El `ctx` solo hace falta
     /// para `Exit`, que delega en `try_close` (diálogo de cambios sin
-    /// guardar); el resto son acciones de estado sin UI.
+    /// guardar); el resto son acciones de estado sin UI. `Exit` con `None`
+    /// es un no-op deliberado: solo los tests lo llaman sin contexto.
     pub fn apply_file_menu_action(&mut self, action: FileMenuAction, ctx: Option<&egui::Context>) {
         match action {
             FileMenuAction::NewTab => self.new_tab(),

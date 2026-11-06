@@ -1,0 +1,94 @@
+# Feature: Tests del menú File, contraste de los temas y estilo del panel de extensiones
+
+**Objetivo**: cubrir con tests las acciones del menú File que faltan, corregir el contraste de texto en los temas y alinear el panel de extensiones con el estilo del resto de la app.
+**Branch**: `main` (commits convencionales, SIN líneas de atribución AI / Co-Authored-By).
+**Runner de tests**: `cargo test --workspace` + `cargo clippy --workspace --all-targets -- -D warnings` (hoy ambos en verde: 253 + 2 ignored y 149 tests).
+**Versionado**: cada tarea cerrada sube el patch (`0.2.79` → `0.2.80` …) en `karkinos/Cargo.toml`, `crates/karkinos-core/Cargo.toml` y `scripts/PKGBUILD`.
+
+## Reglas para el implementador (leer antes de cada tarea)
+
+1. Hacé UNA tarea por vez, en el orden de la tabla. Un commit por tarea.
+2. Leé completos los archivos y rangos que nombra la tarea antes de tocar código. Los números de línea son de v0.2.79 y pueden correrse: buscá el símbolo nombrado.
+3. Test primero: escribí el test pedido, verificá que FALLA (RED), implementá, verificá que PASA (GREEN). Si el test pedido no falla en RED, NO inventes el arreglo: anotá en el Log qué observaste.
+4. Reutilizá los helpers que se nombran. No reimplementes la misma lógica con otra forma.
+5. No cambies comportamiento que la tarea no pide. No reformatees archivos enteros. No agregues dependencias.
+6. Comentarios en español, explicativos, como el código existente. Textos de UI en inglés.
+7. Al cerrar cada tarea: tests y clippy en verde, versión subida, tarea marcada `hecha` en la tabla, entrada nueva en `## Log` con la evidencia (RED/GREEN y números), commit con el mensaje sugerido. NO hagas push ni crees tags.
+8. Tests sin efectos fuera de un directorio temporal único, y NUNCA arranques la terminal PTY real en un test.
+
+## Specs
+
+- **S1 — Tests del menú File.** El usuario pide: "agregá los tests que faltan del menú File". Hoy `file_menu_acciones_basicas` (`karkinos/src/app_tests.rs`) cubre 4 de las 9 variantes de `FileMenuAction`. Cada variante restante (Save, SaveAs, SearchInWorkspace, CloseTab, Exit) queda cubierta por un test que verifica su efecto observable a través de `apply_file_menu_action`.
+- **S2 — Contraste de los temas.** El usuario reporta: "pasa algo con los temas que algunas ventanas le falta contraaste de las letras con el fondo, en algunos lugares no se diferencia bin el fondo de las letras". En los 4 temas de `ThemeMode::ALL`, todo texto de la UI (labels, botones, menús, popups, ventanas y modales de egui, y textos secundarios) tiene una relación de contraste WCAG de al menos 4.5:1 contra el fondo sobre el que se dibuja.
+- **S3 — Estilo de extensiones acorde a la app.** El usuario pide: "mejora el estilo de la parte de extenciones para que sea mas acorde a la app". El panel de extensiones usa el mismo lenguaje visual que los otros paneles laterales (Explorer, Search, Source Control): el mismo encabezado, la misma tipografía y los mismos márgenes, botones y colores, sin perder ninguna función (Installed / Marketplace / Showcase, buscar, descargar, borrar, ejecutar comandos de plugins).
+
+## Tasks
+
+| ID | Specs | Riesgo | Estado | Commit sugerido |
+|----|-------|--------|--------|-----------------|
+| T1 | S1 | Bajo | hecha | `test(ui): cover every file menu action` |
+| T2 | S2 | Medio | pendiente | `fix(theme): readable text contrast across all themes` |
+| T3 | S3 | Bajo | pendiente | `style(extensions): align extensions panel with sidebar panels` |
+
+---
+
+### T1 — Tests de las acciones restantes del menú File (S1)
+
+**Dónde.** `karkinos/src/app.rs`: `FileMenuAction` y `apply_file_menu_action` (~1230-1265). Tests en `karkinos/src/app_tests.rs`, junto a `file_menu_acciones_basicas` (~2826), reutilizando su armado (`EditorApp` de test y carpeta temporal única).
+
+**Tests a agregar (uno por variante, nombres sugeridos).**
+- `file_menu_save_escribe_el_archivo`: documento con `current_file` dentro de la carpeta temporal y texto conocido; `apply_file_menu_action(Save, None)`; esperá el guardado como lo hacen los tests existentes de guardado (buscá `poll_save` / `finish_save` en `app_tests.rs` y reutilizá el mismo patrón); el archivo en disco tiene el texto y `doc.dirty == false`.
+- `file_menu_save_as_abre_el_dialogo_de_nombre`: `apply_file_menu_action(SaveAs, None)` deja el diálogo de "Save As" pendiente (el mismo flag que setea `DocumentService::save_as`; leelo en `document_service.rs` ~520).
+- `file_menu_search_in_workspace_abre_la_busqueda`: deja abierto el estado que abre `open_workspace_search()` (leelo en `app.rs` ~2084).
+- `file_menu_close_tab_cierra_la_pestana_limpia`: dos pestañas sin cambios; `CloseTab` deja una sola pestaña. Y `file_menu_close_tab_con_cambios_pide_confirmacion`: pestaña activa `dirty`; `CloseTab` no cierra y deja pendiente la confirmación que usa `try_close_tab` (leela en `app.rs` ~1341).
+- `file_menu_exit_sin_contexto_no_hace_nada`: `apply_file_menu_action(Exit, None)` no cambia pestañas, texto ni `dirty`. Además, documentá en el doc-comment de `apply_file_menu_action` que `Exit` requiere `Some(ctx)` y que con `None` es un no-op deliberado (solo los tests lo llaman sin contexto).
+
+**RED.** Estos tests cubren comportamiento existente, así que se espera que pasen de entrada. Para obtener evidencia de que detectan errores, cambiá temporalmente un brazo del `match` (por ejemplo `Save => self.save_document_as()`), corré los tests y anotá en el Log cuál falla y con qué mensaje; después revertí ese cambio. NO commitees el cambio temporal.
+
+### T2 — Contraste de texto en los cuatro temas (S2)
+
+**Causas encontradas.**
+1. **Los widgets de egui no usan el tema de la app.** `karkinos/src/main.rs` (~150-170) solo ajusta redondeos y sombras sobre `cc.egui_ctx.style()`; nunca copia los colores de `Theme` a `egui::Visuals`. Además, `eframe::NativeOptions` (~115) queda con `follow_system_theme: true` por defecto, así que con el sistema operativo en modo claro egui usa `Visuals::light()`. Resultado: menús (`menu_button`), popups de `ComboBox`, `egui::Window`, tooltips, botones y labels sin color explícito se pintan con colores de egui, que no combinan con los fondos oscuros que pinta la app (texto claro sobre fondo claro o al revés, según el caso).
+2. **`text_muted` tiene poco contraste en tres temas.** Relación WCAG medida contra `elevated_bg`: Dark ≈ 5.1 (bien); Monokai `(117,113,94)` sobre `(44,45,38)` ≈ 2.8; Dracula `(98,114,164)` sobre `(50,52,66)` ≈ 2.6; One Dark `(92,99,112)` sobre `(47,52,64)` ≈ 2.0. Por eso los textos secundarios casi no se leen en modales, paneles y menús.
+3. **Grises fijos.** `ui.rs` y `ui_source_control.rs` usan grises fijos para texto (`Color32::from_gray(140)`, `from_gray(160)`, etc.) que no dependen del tema.
+
+**Cómo hacerlo.**
+1. En `karkinos/src/theme.rs` agregá `pub fn contrast_ratio(a: egui::Color32, b: egui::Color32) -> f32` (luminancia relativa WCAG 2.x con linealización sRGB; ignorá el alfa) y `pub fn apply_visuals(ctx: &egui::Context, theme: &Theme)`. `apply_visuals` parte de `egui::Visuals::dark()`, conserva los redondeos y sombras que hoy fija `main.rs` (moviendo esa lógica acá para que no se pierda) y asigna, como mínimo: `panel_fill = surface_bg`, `window_fill = elevated_bg`, `window_stroke = Stroke(1.0, border_subtle)`, `extreme_bg_color = bg` (fondo de los `TextEdit`), `faint_bg_color = badge_bg`, `code_bg_color = badge_bg`, `override_text_color = None`, `selection.bg_fill = selection`, `selection.stroke = Stroke(1.0, text)`, `hyperlink_color = accent`, y para `widgets.noninteractive/inactive/hovered/active/open`: `fg_stroke.color = text` (el `noninteractive` también usa `text`), y `bg_fill`/`weak_bg_fill` de la escala de superficies del tema (`elevated_bg` para inactivo, `elevated_bg` aclarado con `lerp_color` hacia `text` en un 8 % para hovered y 14 % para active/open), `bg_stroke` con `border_subtle` (y `border_focus` en hovered/active). Luego `ctx.set_style(style)`.
+2. En `main.rs`, `NativeOptions` con `follow_system_theme: false` y `default_theme: eframe::Theme::Dark`; reemplazá el ajuste manual del estilo por `crate::theme::apply_visuals(&cc.egui_ctx, &app.theme_mode.theme())`.
+3. En `EditorApp` agregá `applied_theme: Option<ThemeMode>`. Al principio de `update` (`ui.rs` ~2745), si `applied_theme != Some(self.theme_mode)`, llamá a `apply_visuals` y actualizalo. Así el cambio de tema desde el menú File → Theme y desde la paleta de comandos se refleja en los widgets de egui al instante.
+4. Subí `text_muted` (y `gutter_text` y `syntax_comment` cuando hoy son el mismo color) en Monokai, Dracula y One Dark al color más cercano posible en tono al actual que llegue a ≥ 4.5:1 contra `elevated_bg` y contra `surface_bg`. No toques `Dark` salvo que el test lo pida. Anotá en el Log los valores viejos, los nuevos y sus relaciones medidas.
+5. Reemplazá los grises fijos usados como color de TEXTO en `ui.rs` y `ui_source_control.rs` (`from_gray(...)` en `RichText::color`, `label` o `galley`) por `theme.text_muted` (o `theme.text` si es texto principal). NO cambies colores semánticos de estado (rojo error, amarillo warning, verde éxito) ni los colores de la terminal (`terminal_color_to_egui`).
+
+**Tests (en `theme.rs`, reemplazando el débil `theme_palettes_valid_contrasts`).**
+- `contrast_ratio_coincide_con_wcag`: negro/blanco = 21.0 (± 0.05); un color consigo mismo = 1.0; es simétrico.
+- `texto_legible_en_todos_los_temas`: para cada `ThemeMode::ALL`, `text` y `text_muted` tienen ≥ 4.5 contra `bg`, `surface_bg` y `elevated_bg`. RED esperado en Monokai, Dracula y One Dark: anotá las relaciones medidas.
+- `apply_visuals_usa_los_tokens_del_tema`: con un `egui::Context::default()`, para cada tema, después de `apply_visuals`, `ctx.style().visuals` tiene `window_fill == elevated_bg`, `panel_fill == surface_bg`, `widgets.noninteractive.fg_stroke.color == text`, `dark_mode == true`, y `contrast_ratio(widgets.inactive.fg_stroke.color, widgets.inactive.bg_fill) >= 4.5`.
+- En `app_tests.rs`: `cambiar_de_tema_actualiza_los_visuals`: tras cambiar `theme_mode` y correr la lógica del paso 3 (extraela a `fn sync_theme_visuals(&mut self, ctx: &egui::Context)` para testearla sin `eframe::Frame`), `ctx.style().visuals.window_fill` es el `elevated_bg` del tema nuevo.
+
+### T3 — Panel de extensiones con el estilo de los paneles laterales (S3) — después de T2
+
+**Referencia de estilo.** El encabezado del Explorer (`karkinos/src/ui_explorer.rs` ~39-75): título en MAYÚSCULAS `"EXPLORER"` 10 px, `strong`, color `theme.text_muted`; a la derecha `icon_close_button` y botones de herramienta; debajo, una línea de contexto 13.5 px `strong` en `theme.text`. Mirá también los encabezados de Search (`render_search_tab` en `ui.rs`) y Source Control (`ui_source_control.rs`) y usá lo que tengan en común.
+
+**Cómo hacerlo** (`karkinos/src/ui_extensions.rs`, `karkinos/src/ui_components.rs`).
+1. Encabezado: reemplazá `"Extensions"` 15 px por `"EXTENSIONS"` con el mismo estilo que `"EXPLORER"`; el contador (`"N installed"` / `"N results"` / `"4 curated"`) pasa a la línea de contexto debajo del título (11 px, `theme.text_muted`) en vez de quedar a la derecha. Mantené `icon_close_button` a la derecha.
+2. Márgenes y separaciones iguales a los del Explorer (mismos `add_space`, sin `item_spacing.y = 8.0` propio si los otros paneles no lo usan).
+3. Tarjetas (`extension_card`, `compact_card`): fondo `theme.badge_bg` en reposo y el hover animado del explorador (`animate_bool_with_time(..., 0.12)` + `lerp_color`); radio 6 px como el resto de los widgets (no 8-10); sin sombra; título 13 px `theme.text`, metadatos 11 px `theme.text_muted`. Los avatares de color se reemplazan por un ícono neutro sobre `theme.badge_bg` en color `theme.accent` (quitá `avatar_color` si queda sin uso, junto con su test, y anotalo en el Log).
+4. Títulos de sección (`PLUGINS`, `DOWNLOADED PACKAGES`): mismo estilo que los títulos de sección del Explorer o Search (10 px, `strong`, `text_muted`).
+5. `ERROR_COLOR` en `ui_components.rs`: si T2 dejó todos los textos con ≥ 4.5:1, verificá que el rojo también lo cumpla contra `surface_bg` en los 4 temas; si no, aclaralo con `lerp_color` hacia `theme.text` hasta cumplirlo. Anotá la medición en el Log.
+6. No cambies la lógica: mismas pestañas, misma búsqueda, mismas acciones de descargar, borrar y ejecutar comandos.
+
+**Tests.**
+- El test de render existente `render_extensions_tab_sin_panico_en_los_3_tabs_y_temas` debe seguir pasando.
+- `encabezado_extensions_usa_el_estilo_del_explorer` (si se puede leer el texto pintado desde la salida de `ctx.run` buscando `"EXTENSIONS"` en las formas de texto; si no es práctico, anotalo en el Log y no lo agregues).
+- Si `ERROR_COLOR` cambia: `error_color_legible_en_todos_los_temas` usando `contrast_ratio`.
+
+## Fuera de alcance
+
+- Agregar temas nuevos o un tema claro.
+- Cambiar la paleta de sintaxis del editor (salvo `syntax_comment` cuando comparte color con `text_muted`, según T2).
+
+## Log
+
+- **L1 (2026-11-06)** — Pedido original: "agregá los tests que faltan del menú File, mejora el estilo de la parte de extenciones para que sea mas acorde a la app y pasa algo con los temas que algunas ventanas le falta contraaste de las letras con el fondo, en algunos lugares no se diferencia bin el fondo de las letras".
+- **L2 (2026-11-06)** — Análisis previo (v0.2.79): (a) `main.rs` nunca pasa los colores del tema a `egui::Visuals` y `follow_system_theme` queda en `true`, así que menús, popups, ventanas y widgets de egui usan la paleta propia de egui (clara si el sistema está en modo claro); (b) `text_muted` mide ≈ 2.8 (Monokai), 2.6 (Dracula) y 2.0 (One Dark) contra `elevated_bg`, muy por debajo de 4.5; (c) hay grises fijos de texto en `ui.rs` (51 colores literales en total) y `ui_source_control.rs` (7). (d) El panel de extensiones usa un encabezado "Extensions" 15 px con contador a la derecha y tarjetas con avatares de color, distinto del encabezado en mayúsculas 10 px de Explorer/Search/Source Control. Supuesto: "más acorde a la app" = mismo lenguaje visual que los otros paneles laterales.
+- **L3 (2026-11-06)** — T1 implementada (S1). Se agregaron 6 tests en `karkinos/src/app_tests.rs`, junto a `file_menu_acciones_basicas`: `file_menu_save_escribe_el_archivo` (usa `wait_for_save_done` + `finish_save`, verifica texto en disco y `dirty == false`), `file_menu_save_as_abre_el_dialogo_de_nombre` (`save_name_pending` y `save_name_input` con el nombre actual), `file_menu_search_in_workspace_abre_la_busqueda` (`sidebar_tab == Search`, `workspace_search.open` y `focus_requested`), `file_menu_close_tab_cierra_la_pestana_limpia` (2 → 1 pestaña), `file_menu_close_tab_con_cambios_pide_confirmacion` (`tab_close_pending == Some(0)` y no cierra) y `file_menu_exit_sin_contexto_no_hace_nada` (pestañas, texto, `dirty`, `close_pending` y `tab_close_pending` intactos). RED: con el cambio temporal `Save => self.save_document_as()`, `file_menu_save_escribe_el_archivo` falla con `el guardado asincrónico no terminó` (los otros 6 pasan); cambio revertido, no commiteado. GREEN: los 7 tests `file_menu*` pasan. Doc-comment de `apply_file_menu_action` actualizado: `Exit` con `None` es un no-op deliberado, solo los tests lo llaman sin contexto. Versión **0.2.80** en `karkinos/Cargo.toml`, `crates/karkinos-core/Cargo.toml` y `scripts/PKGBUILD` (más `Cargo.lock`). Evidencia: `cargo test --workspace` → 259 passed, 2 ignored + 149 passed; `cargo clippy --workspace --all-targets -- -D warnings` → verde. Commit: `test(ui): cover every file menu action`.

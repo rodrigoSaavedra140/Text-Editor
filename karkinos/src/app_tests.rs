@@ -2857,3 +2857,121 @@
 
         std::fs::remove_dir_all(&root).ok();
     }
+
+    #[test]
+    fn file_menu_save_escribe_el_archivo() -> std::io::Result<()> {
+        // Save delega en el guardado asincrónico de siempre: se espera el
+        // hilo, se cierra con `finish_save` y el disco queda con el texto.
+        let root = cli_temp_dir("file_menu_save");
+        let path = root.join("guardado.txt");
+
+        let mut app = EditorApp::default();
+        app.doc.current_file = Some(path.clone());
+        app.set_text("texto conocido");
+        app.doc.dirty = true;
+
+        app.apply_file_menu_action(FileMenuAction::Save, None);
+        wait_for_save_done(&app);
+        assert!(app.doc.finish_save(), "el guardado debe terminar bien");
+
+        assert_eq!(std::fs::read_to_string(&path)?, "texto conocido");
+        assert!(!app.doc.dirty, "guardar sin cambios en el buffer limpia dirty");
+
+        std::fs::remove_dir_all(&root).ok();
+        Ok(())
+    }
+
+    #[test]
+    fn file_menu_save_as_abre_el_dialogo_de_nombre() {
+        let mut app = EditorApp::default();
+        app.doc.current_file = Some(std::path::PathBuf::from("documento.txt"));
+
+        assert!(!app.doc.save_name_pending);
+        app.apply_file_menu_action(FileMenuAction::SaveAs, None);
+
+        assert!(
+            app.doc.save_name_pending,
+            "Save As… debe abrir el diálogo de nombre"
+        );
+        assert_eq!(
+            app.doc.save_name_input, "documento.txt",
+            "el diálogo arranca con el nombre actual"
+        );
+    }
+
+    #[test]
+    fn file_menu_search_in_workspace_abre_la_busqueda() {
+        let mut app = EditorApp::default();
+        app.workspace_search.open = false;
+
+        app.apply_file_menu_action(FileMenuAction::SearchInWorkspace, None);
+
+        assert_eq!(
+            app.sidebar_tab,
+            SidebarTab::Search,
+            "debe activar la pestaña Search de la barra lateral"
+        );
+        assert!(app.workspace_search.open, "debe abrir el panel de búsqueda");
+        assert!(
+            app.workspace_search.focus_requested,
+            "debe pedir foco para el campo de búsqueda"
+        );
+    }
+
+    #[test]
+    fn file_menu_close_tab_cierra_la_pestana_limpia() {
+        let mut app = EditorApp::default();
+        app.new_tab();
+        assert_eq!(app.doc.tabs.len(), 2);
+
+        app.apply_file_menu_action(FileMenuAction::CloseTab, None);
+
+        assert_eq!(
+            app.doc.tabs.len(),
+            1,
+            "Close Tab cierra la pestaña activa sin cambios"
+        );
+        assert_eq!(app.doc.active_tab, 0);
+        assert!(app.doc.tab_close_pending.is_none());
+    }
+
+    #[test]
+    fn file_menu_close_tab_con_cambios_pide_confirmacion() {
+        let mut app = EditorApp::default();
+        app.set_text("cambios sin guardar");
+        app.doc.dirty = true;
+
+        app.apply_file_menu_action(FileMenuAction::CloseTab, None);
+
+        assert_eq!(
+            app.doc.tabs.len(),
+            1,
+            "no debe cerrar una pestaña con cambios sin guardar"
+        );
+        assert_eq!(
+            app.doc.tab_close_pending,
+            Some(0),
+            "debe dejar pendiente la confirmación de cierre"
+        );
+    }
+
+    #[test]
+    fn file_menu_exit_sin_contexto_no_hace_nada() {
+        // Exit necesita el `egui::Context` para pedir el cierre de la
+        // ventana; sin él la acción es un no-op deliberado.
+        let mut app = EditorApp::default();
+        app.new_tab();
+        app.set_text("borrador");
+        app.doc.dirty = true;
+        let tabs = app.doc.tabs.len();
+        let active = app.doc.active_tab;
+
+        app.apply_file_menu_action(FileMenuAction::Exit, None);
+
+        assert_eq!(app.doc.tabs.len(), tabs, "Exit sin ctx no toca las pestañas");
+        assert_eq!(app.doc.active_tab, active);
+        assert_eq!(app.doc.current_text(), "borrador");
+        assert!(app.doc.dirty, "Exit sin ctx no guarda ni limpia dirty");
+        assert!(!app.doc.close_pending, "sin ctx no hay diálogo de cierre");
+        assert!(app.doc.tab_close_pending.is_none());
+    }
