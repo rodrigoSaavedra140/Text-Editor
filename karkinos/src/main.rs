@@ -19,6 +19,7 @@ mod terminal_service;
 mod theme;
 mod title_bar;
 mod ui;
+mod ui_components;
 mod ui_explorer;
 mod ui_extensions;
 mod ui_source_control;

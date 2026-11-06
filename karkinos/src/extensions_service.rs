@@ -21,6 +21,9 @@ pub struct ExtensionsService {
     pub open_vsx_searching: bool,
     pub open_vsx_error: Option<String>,
     pub open_vsx_status: Option<String>,
+    /// Identificador (`namespace.name`) de la extensión que se está descargando.
+    /// La UI lo usa para mostrar el estado "Downloading" en su tarjeta.
+    pub downloading: Option<String>,
     open_vsx_rx: Option<Receiver<Result<OpenVsxSearchResult, String>>>,
     open_vsx_download_rx: Option<Receiver<Result<String, String>>>,
 }
@@ -34,6 +37,7 @@ impl Default for ExtensionsService {
             open_vsx_searching: false,
             open_vsx_error: None,
             open_vsx_status: None,
+            downloading: None,
             open_vsx_rx: None,
             open_vsx_download_rx: None,
         }
@@ -146,6 +150,7 @@ impl ExtensionsService {
         };
         let id_name = ext.id();
 
+        self.downloading = Some(id_name.clone());
         self.open_vsx_status = Some(format!("Downloading {}...", file_name));
 
         let (tx, rx) = std::sync::mpsc::channel();
@@ -183,6 +188,9 @@ impl ExtensionsService {
 
         if let Some(ref rx) = self.open_vsx_download_rx {
             if let Ok(result) = rx.try_recv() {
+                // La descarga terminó (con éxito o error): la tarjeta deja de
+                // mostrar "Downloading" y vuelve a su estado normal.
+                self.downloading = None;
                 match result {
                     Ok(msg) => {
                         self.open_vsx_status = Some(msg.clone());
@@ -257,6 +265,20 @@ mod tests {
         assert!(uninstalled);
         assert!(!test_vsix.exists());
         assert!(app.doc.status.contains("Deleted .vsix package: test-ext-1.0.0.vsix"));
+    }
+
+    #[test]
+    fn downloading_se_limpia_al_terminar() {
+        let mut app = EditorApp::default();
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.extensions.open_vsx_download_rx = Some(rx);
+        app.extensions.downloading = Some("rust-lang.rust-analyzer".to_string());
+
+        tx.send(Ok("Successfully downloaded rust-lang.rust-analyzer".to_string()))
+            .unwrap();
+        app.extensions.poll_open_vsx(&mut app.doc);
+
+        assert_eq!(app.extensions.downloading, None);
     }
 
     #[test]
