@@ -1,9 +1,22 @@
 //! Open VSX Registry client for community extensions and themes.
 //!
 //! Provides querying of https://open-vsx.org/api/-/search and downloading of .vsix packages.
+//! Todo el transporte HTTP es nativo (`ureq` con rustls): no depende del
+//! binario `curl` del sistema.
 
 use serde::{Deserialize, Serialize};
+use std::io::Read;
 use std::path::Path;
+use std::time::Duration;
+
+use crate::atomic_write::write_atomic;
+
+/// Tiempo máximo de espera de una búsqueda en Open VSX.
+const SEARCH_TIMEOUT: Duration = Duration::from_secs(10);
+/// Tiempo máximo de espera de una descarga de `.vsix`.
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30);
+/// Tamaño máximo aceptado para un `.vsix` (100 MiB).
+const MAX_DOWNLOAD_BYTES: u64 = 100 * 1024 * 1024;
 
 /// Metadata for an extension published on Open VSX.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -51,22 +64,11 @@ impl OpenVsxClient {
             size.clamp(1, 50)
         );
 
-        let mut cmd = std::process::Command::new("curl");
-        crate::platform::configure_background_command(&mut cmd);
-        let output = cmd
-            .arg("-s")
-            .arg("-L")
-            .arg("--max-time")
-            .arg("10")
-            .arg(&url)
-            .output()
-            .map_err(|e| format!("Failed to execute curl: {}", e))?;
-
-        if !output.status.success() {
-            return Err(format!("curl request failed with exit code {:?}", output.status.code()));
-        }
-
-        let body = String::from_utf8(output.stdout)
+        let body = ureq::get(&url)
+            .timeout(SEARCH_TIMEOUT)
+            .call()
+            .map_err(|e| format!("Open VSX request failed: {}", e))?
+            .into_string()
             .map_err(|e| format!("Invalid UTF-8 response: {}", e))?;
 
         parse_search_json(&body)
@@ -81,33 +83,32 @@ impl OpenVsxClient {
             return Err("Refusing unsafe download URL".to_string());
         }
 
+        let response = ureq::get(download_url)
+            .timeout(DOWNLOAD_TIMEOUT)
+            .call()
+            .map_err(|e| format!("Download request failed: {}", e))?;
+
+        // Leemos un byte de más que el límite para poder distinguir un
+        // archivo justo en el límite de uno que lo excede.
+        let mut data = Vec::new();
+        response
+            .into_reader()
+            .take(MAX_DOWNLOAD_BYTES + 1)
+            .read_to_end(&mut data)
+            .map_err(|e| format!("Failed to read response body: {}", e))?;
+        if data.len() as u64 > MAX_DOWNLOAD_BYTES {
+            return Err(format!(
+                "Download exceeds the {} byte limit",
+                MAX_DOWNLOAD_BYTES
+            ));
+        }
+
         if let Some(parent) = destination.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
 
-        let mut cmd = std::process::Command::new("curl");
-        crate::platform::configure_background_command(&mut cmd);
-        let output = cmd
-            .arg("-s")
-            .arg("-L")
-            .arg("--max-time")
-            .arg("30")
-            .arg("--proto")
-            .arg("=https")
-            .arg("-o")
-            .arg(destination)
-            .arg("--")
-            .arg(download_url)
-            .output()
-            .map_err(|e| format!("Failed to execute curl: {}", e))?;
-
-        if !output.status.success() {
-            return Err(format!("curl download failed with exit code {:?}", output.status.code()));
-        }
-
-        if !destination.exists() {
-            return Err("Destination file was not created".to_string());
-        }
+        write_atomic(destination, &data, |_| {})
+            .map_err(|e| format!("Failed to write {}: {}", destination.display(), e))?;
 
         Ok(())
     }
