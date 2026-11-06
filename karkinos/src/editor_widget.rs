@@ -1319,8 +1319,11 @@ pub fn show(
                         state.cursor_col = we;
                         state.preferred_col = None;
                     } else {
-                        if (response.clicked() && !response.dragged()) || response.drag_started() {
+                        let shift = ui.input(|i| i.modifiers.shift);
+                        if !shift && !response.dragged() && !response.drag_stopped() {
                             state.sel_anchor = Some((clicked_line, clicked_col));
+                        } else if shift && state.sel_anchor.is_none() {
+                            state.sel_anchor = Some((state.cursor_line, state.cursor_col));
                         }
                         state.cursor_line = clicked_line;
                         state.cursor_col = clicked_col;
@@ -3798,5 +3801,130 @@ mod tests {
 
         state.sel_anchor = Some((0, 0));
         assert!(selection_range(&state).is_some(), "rango activo detectado para suprimir smear");
+    }
+
+    // Espejo de la rama de `show()` que coloca el cursor con un clic simple.
+    // `show()` depende de un `egui::Ui`/`egui::Response` reales que un test
+    // unitario no puede construir, así que este helper reproduce esa decisión
+    // para poder fijar el contrato. Mantener en sincronía con `show()`.
+    fn place_cursor_like_click(
+        state: &mut EditorState,
+        clicked: (usize, usize),
+        shift: bool,
+        dragged: bool,
+        drag_stopped: bool,
+    ) {
+        if !shift && !dragged && !drag_stopped {
+            state.sel_anchor = Some(clicked);
+        } else if shift && state.sel_anchor.is_none() {
+            state.sel_anchor = Some((state.cursor_line, state.cursor_col));
+        }
+        state.cursor_line = clicked.0;
+        state.cursor_col = clicked.1;
+        state.preferred_col = None;
+    }
+
+    #[test]
+    fn test_mouse_click_without_drag_updates_anchor_to_cursor() {
+        // Había una selección activa; un clic simple en otra posición debe
+        // recolocar el ancla en el cursor en el MISMO frame, para que no quede
+        // ninguna selección fantasma (selection_range == None).
+        let mut state = EditorState {
+            cursor_line: 1,
+            cursor_col: 10,
+            sel_anchor: Some((1, 4)),
+            ..Default::default()
+        };
+
+        place_cursor_like_click(&mut state, (3, 2), false, false, false);
+
+        assert_eq!(state.cursor_line, 3);
+        assert_eq!(state.cursor_col, 2);
+        assert_eq!(state.sel_anchor, Some((3, 2)), "el ancla debe coincidir con el cursor");
+        assert_eq!(state.preferred_col, None);
+        assert!(
+            selection_range(&state).is_none(),
+            "clic sin arrastre no debe dejar selección transitoria"
+        );
+    }
+
+    #[test]
+    fn test_mouse_click_without_drag_clears_prior_selection() {
+        // Aunque el ancla apunte a otra línea, un clic simple la reemplaza por
+        // la posición clickeada, colapsando la selección anterior al instante.
+        let mut state = EditorState {
+            cursor_line: 0,
+            cursor_col: 0,
+            sel_anchor: Some((7, 9)),
+            ..Default::default()
+        };
+
+        place_cursor_like_click(&mut state, (2, 5), false, false, false);
+
+        assert_eq!(state.sel_anchor, Some((2, 5)));
+        assert_eq!(state.cursor_line, 2);
+        assert_eq!(state.cursor_col, 5);
+        assert!(selection_range(&state).is_none());
+    }
+
+    #[test]
+    fn test_mouse_drag_preserves_selection_anchor() {
+        let mut state = EditorState {
+            cursor_line: 0,
+            cursor_col: 2,
+            sel_anchor: Some((0, 2)),
+            ..Default::default()
+        };
+
+        place_cursor_like_click(&mut state, (0, 8), false, true, false);
+
+        assert_eq!(state.sel_anchor, Some((0, 2)), "arrastrar no colapsa la selección");
+        assert_eq!(state.cursor_col, 8);
+        assert_eq!(selection_range(&state), Some(((0, 2), (0, 8))));
+    }
+
+    #[test]
+    fn test_mouse_drag_stopped_preserves_selection_anchor() {
+        let mut state = EditorState {
+            cursor_line: 0,
+            cursor_col: 2,
+            sel_anchor: Some((0, 2)),
+            ..Default::default()
+        };
+
+        place_cursor_like_click(&mut state, (0, 8), false, false, true);
+
+        assert_eq!(state.sel_anchor, Some((0, 2)), "soltar el arrastre conserva el ancla");
+        assert_eq!(selection_range(&state), Some(((0, 2), (0, 8))));
+    }
+
+    #[test]
+    fn test_shift_click_seeds_anchor_from_old_cursor_when_none() {
+        let mut state = EditorState {
+            cursor_line: 1,
+            cursor_col: 3,
+            sel_anchor: None,
+            ..Default::default()
+        };
+
+        place_cursor_like_click(&mut state, (4, 6), true, false, false);
+
+        assert_eq!(state.sel_anchor, Some((1, 3)), "Shift+clic ancla en el cursor previo");
+        assert_eq!(selection_range(&state), Some(((1, 3), (4, 6))));
+    }
+
+    #[test]
+    fn test_shift_click_keeps_existing_anchor() {
+        let mut state = EditorState {
+            cursor_line: 0,
+            cursor_col: 2,
+            sel_anchor: Some((0, 2)),
+            ..Default::default()
+        };
+
+        place_cursor_like_click(&mut state, (2, 5), true, false, false);
+
+        assert_eq!(state.sel_anchor, Some((0, 2)), "Shift+clic extiende la selección existente");
+        assert_eq!(selection_range(&state), Some(((0, 2), (2, 5))));
     }
 }
