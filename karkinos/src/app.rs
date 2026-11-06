@@ -746,6 +746,12 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
         category: "View",
         shortcut: Some("Ctrl+0"),
     },
+    PaletteCommand {
+        id: "editor:toggle_smear_cursor",
+        title: "Editor: Toggle Smear Cursor Animation",
+        category: "Editor",
+        shortcut: None,
+    },
 ];
 
 /// v0.2.42: estado de la pestaña Source Control.
@@ -2149,6 +2155,19 @@ impl EditorApp {
         }
     }
 
+    /// S11: alterna la animación fluida tipo smear del cursor.
+    pub fn toggle_smear_cursor(&mut self) {
+        let enabled = !self.editor_state.smear_enabled;
+        self.editor_state.smear_enabled = enabled;
+        for tab in &mut self.doc.tabs {
+            tab.editor_state.smear_enabled = enabled;
+        }
+        if let Some(split) = self.split.as_mut() {
+            split.secondary.smear_enabled = enabled;
+        }
+        self.doc.status = format!("Smear cursor: {}", if enabled { "Enabled" } else { "Disabled" });
+    }
+
     /// v0.2.40: abre el Command Palette con la búsqueda limpia. Si ya está
     /// abierto no reinicia el query: F1 de nuevo no debe borrar lo escrito.
     pub fn open_command_palette(&mut self) {
@@ -2226,6 +2245,7 @@ impl EditorApp {
                 }
             }
             "editor:toggle_minimap" => self.toggle_minimap(),
+            "editor:toggle_smear_cursor" => self.toggle_smear_cursor(),
             "sidebar:explorer" => self.toggle_explorer(),
             "sidebar:search" => self.open_workspace_search(),
             "search:replace_in_workspace" => self.open_workspace_replace(),
@@ -5662,6 +5682,25 @@ mod tests {
         assert!(!app.split.as_ref().unwrap().secondary.show_minimap);
     }
 
+    #[test]
+    fn toggle_smear_cursor_flips_primary_tabs_and_split() {
+        let mut app = EditorApp::default();
+        assert!(app.editor_state.smear_enabled, "arranca encendido por defecto");
+
+        app.toggle_split(SplitDirection::Vertical);
+        assert!(app.split.as_ref().unwrap().secondary.smear_enabled);
+
+        app.toggle_smear_cursor();
+        assert!(!app.editor_state.smear_enabled);
+        assert!(!app.split.as_ref().unwrap().secondary.smear_enabled);
+        assert!(app.doc.status.contains("Disabled"));
+
+        app.toggle_smear_cursor();
+        assert!(app.editor_state.smear_enabled);
+        assert!(app.split.as_ref().unwrap().secondary.smear_enabled);
+        assert!(app.doc.status.contains("Enabled"));
+    }
+
     // Barra lateral unificada (v0.2.39): pestañas compartidas y alternancia limpia.
 
     #[test]
@@ -5722,13 +5761,14 @@ mod tests {
         ids.sort_unstable();
         ids.dedup();
         assert_eq!(ids.len(), total, "cada id del catálogo es único");
-        assert_eq!(total, 37, "el catálogo de v0.2.58 tiene 37 comandos");
+        assert_eq!(total, 38, "el catálogo de v0.2.59 tiene 38 comandos");
 
         for expected in [
             "layout:split_vertical",
             "layout:split_horizontal",
             "layout:close_split",
             "editor:toggle_minimap",
+            "editor:toggle_smear_cursor",
             "sidebar:explorer",
             "sidebar:search",
             "search:replace_in_workspace",

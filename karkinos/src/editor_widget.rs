@@ -37,6 +37,63 @@ pub fn smooth_scroll_step(scroll: f32, target: f32) -> (f32, bool) {
     }
 }
 
+/// S11: Parámetros del cursor smear (animación fluida con estela deformable).
+pub const SMEAR_HEAD_EASING: f32 = 0.55;
+pub const SMEAR_TAIL_EASING: f32 = 0.28;
+pub const SMEAR_MAX_DISTANCE: f32 = 300.0;
+
+/// Paso de interpolación para el cursor smear: acerca `current` hacia `target`.
+/// Retorna la nueva posición y si la animación continúa activa.
+pub fn smear_step(current: egui::Pos2, target: egui::Pos2, easing: f32) -> (egui::Pos2, bool) {
+    let diff = target - current;
+    let dist_sq = diff.length_sq();
+    if dist_sq > 0.25 {
+        (current + diff * easing, true)
+    } else {
+        (target, false)
+    }
+}
+
+/// Producto vectorial 2D para orientación de giros en el cálculo del convex hull.
+fn cross_2d(o: egui::Pos2, a: egui::Pos2, b: egui::Pos2) -> f32 {
+    (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x)
+}
+
+/// Calcula la envolvente convexa (convex hull) de un conjunto pequeño de puntos
+/// (algoritmo Monotone Chain de Andrew) para generar la malla de la estela deformada.
+pub fn convex_hull(mut pts: Vec<egui::Pos2>) -> Vec<egui::Pos2> {
+    pts.sort_by(|a, b| {
+        a.x.partial_cmp(&b.x)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.y.partial_cmp(&b.y).unwrap_or(std::cmp::Ordering::Equal))
+    });
+    pts.dedup_by(|a, b| (a.x - b.x).abs() < 0.01 && (a.y - b.y).abs() < 0.01);
+    if pts.len() <= 2 {
+        return pts;
+    }
+
+    let mut lower = Vec::with_capacity(pts.len());
+    for &p in &pts {
+        while lower.len() >= 2 && cross_2d(lower[lower.len() - 2], lower[lower.len() - 1], p) <= 0.0 {
+            lower.pop();
+        }
+        lower.push(p);
+    }
+
+    let mut upper = Vec::with_capacity(pts.len());
+    for &p in pts.iter().rev() {
+        while upper.len() >= 2 && cross_2d(upper[upper.len() - 2], upper[upper.len() - 1], p) <= 0.0 {
+            upper.pop();
+        }
+        upper.push(p);
+    }
+
+    lower.pop();
+    upper.pop();
+    lower.extend(upper);
+    lower
+}
+
 /// F3 (Roadmap v0.2.29): cursor adicional. El primario sigue siendo
 /// `cursor_line`/`cursor_col`/`sel_anchor` del estado; estos son los extra,
 /// así la edición de un solo cursor no cambia de comportamiento.
@@ -235,6 +292,11 @@ pub struct EditorState {
     // Puntero del atlas de texturas de epaint: si epaint recrea el atlas
     // (por overflow o fill_ratio > 0.8), se invalidan todos los galleys cacheados.
     pub last_texture_atlas_ptr: usize,
+    // S11: Estado de la animación del cursor smear (en espacio de documento)
+    pub smear_head: Option<egui::Pos2>,
+    pub smear_tail: Option<egui::Pos2>,
+    pub smear_last_target: Option<(usize, usize)>,
+    pub smear_enabled: bool,
 }
 
 impl Default for EditorState {
@@ -279,6 +341,10 @@ impl Default for EditorState {
             last_activity_time: 0.0,
             last_pixels_per_point: 0.0,
             last_texture_atlas_ptr: 0,
+            smear_head: None,
+            smear_tail: None,
+            smear_last_target: None,
+            smear_enabled: true,
         }
     }
 }
@@ -326,6 +392,8 @@ impl EditorState {
             self.font_size = new_size;
             self.layout_cache.clear();
             self.hint_galleys.clear();
+            self.smear_head = None;
+            self.smear_tail = None;
             self.request_autoscroll();
         }
     }
@@ -2309,20 +2377,7 @@ pub fn show(
                 }
             }
 
-            if has_focus
-                && caret_on
-                && i == state.cursor_line
-                && state.cursor_col >= start
-                && (state.cursor_col < end || (state.cursor_col == end && sub == rows_here - 1))
-            {
-                let vcol = visual_col_at(line, state.cursor_col, DEFAULT_TAB_SIZE);
-                let vstart = visual_col_at(line, start, DEFAULT_TAB_SIZE);
-                let caret_x = text_left + (vcol.saturating_sub(vstart)) as f32 * char_width;
-                painter.line_segment(
-                    [egui::pos2(caret_x, y), egui::pos2(caret_x, y + row_height)],
-                    egui::Stroke::new(1.5_f32, theme.caret),
-                );
-            }
+            // S11: El cursor primario ahora se dibuja con animación fluida smear al final del pase de líneas.
         }
 
         // F4 (Roadmap v0.2.30): si la línea está plegada, dibujamos una píldora "..." compacta
@@ -2366,6 +2421,115 @@ pub fn show(
         }
 
         visual_row += rows_here;
+    }
+
+    // S11: Renderizado y animación fluida del cursor smear
+    if has_focus {
+        let wrap_c = wrap_chars.max(1);
+        let cursor_line = state.cursor_line.min(lines.len().saturating_sub(1));
+        let line_str = lines.get(cursor_line).map(|s| s.as_str()).unwrap_or("");
+        let sub = state.cursor_col / wrap_c;
+        let start = sub * wrap_c;
+        let vcol = visual_col_at(line_str, state.cursor_col, DEFAULT_TAB_SIZE);
+        let vstart = visual_col_at(line_str, start, DEFAULT_TAB_SIZE);
+        let caret_doc_x = gutter_w + PAD_X + (vcol.saturating_sub(vstart)) as f32 * char_width;
+
+        let visual_row = visual_row_of(&state.cum_rows, cursor_line, state.cursor_col, wrap_chars);
+        let caret_doc_y = PAD_Y + visual_row as f32 * row_height;
+        let target = egui::pos2(caret_doc_x, caret_doc_y);
+
+        let (next_head, next_tail, is_animating_smear) = if state.smear_enabled {
+            let cursor_pos_key = (state.cursor_line, state.cursor_col);
+            let just_moved = state.smear_last_target != Some(cursor_pos_key);
+            if just_moved {
+                state.smear_last_target = Some(cursor_pos_key);
+            }
+
+            let (head, tail) = match (state.smear_head, state.smear_tail) {
+                (Some(h), Some(t)) => {
+                    let dist = (target - h).length();
+                    if dist > SMEAR_MAX_DISTANCE {
+                        // Salto muy grande (cambio de archivo, salto de página):
+                        // Acotamos el tail para que no cruce toda la pantalla.
+                        let dir = (h - target).normalized();
+                        (target, target + dir * (SMEAR_MAX_DISTANCE * 0.5))
+                    } else {
+                        (h, t)
+                    }
+                }
+                _ => (target, target),
+            };
+
+            let (nh, anim_h) = smear_step(head, target, SMEAR_HEAD_EASING);
+            let (nt, anim_t) = smear_step(tail, nh, SMEAR_TAIL_EASING);
+            state.smear_head = Some(nh);
+            state.smear_tail = Some(nt);
+            (nh, nt, anim_h || anim_t)
+        } else {
+            state.smear_head = Some(target);
+            state.smear_tail = Some(target);
+            (target, target, false)
+        };
+
+        if is_animating_smear {
+            ui.ctx().request_repaint();
+        }
+
+        let screen_head = egui::pos2(rect.left() + next_head.x, rect.top() + next_head.y - state.scroll);
+        let screen_tail = egui::pos2(rect.left() + next_tail.x, rect.top() + next_tail.y - state.scroll);
+        let caret_w = 2.0_f32;
+        let head_rect = egui::Rect::from_min_size(screen_head, egui::vec2(caret_w, row_height));
+        let tail_rect = egui::Rect::from_min_size(screen_tail, egui::vec2(caret_w, row_height));
+
+        if head_rect.intersects(clip_rect) || tail_rect.intersects(clip_rect) {
+            let dir = screen_head.to_vec2() - screen_tail.to_vec2();
+            let dist_sq = dir.length_sq();
+
+            if state.smear_enabled && dist_sq > 1.0 {
+                let pts = vec![
+                    tail_rect.left_top(),
+                    tail_rect.right_top(),
+                    tail_rect.right_bottom(),
+                    tail_rect.left_bottom(),
+                    head_rect.left_top(),
+                    head_rect.right_top(),
+                    head_rect.right_bottom(),
+                    head_rect.left_bottom(),
+                ];
+                let hull = convex_hull(pts);
+                if hull.len() >= 3 {
+                    let mut mesh = egui::Mesh::default();
+                    let tail_center = tail_rect.center();
+                    let head_center = head_rect.center();
+                    let d = head_center.to_vec2() - tail_center.to_vec2();
+                    let d_sq = d.length_sq().max(1.0);
+
+                    for p in &hull {
+                        let t = ((p.to_vec2() - tail_center.to_vec2()).dot(d) / d_sq).clamp(0.0, 1.0);
+                        let alpha = (t.powf(1.4) * 0.55 + 0.12).clamp(0.0, 0.75);
+                        let color = theme.caret.gamma_multiply(alpha);
+                        mesh.vertices.push(egui::epaint::Vertex {
+                            pos: *p,
+                            uv: egui::epaint::WHITE_UV,
+                            color,
+                        });
+                    }
+
+                    for i in 1..(hull.len().saturating_sub(1)) {
+                        mesh.indices.push(0);
+                        mesh.indices.push(i as u32);
+                        mesh.indices.push((i + 1) as u32);
+                    }
+
+                    painter.add(egui::Shape::Mesh(mesh));
+                }
+            }
+
+            // Dibuja el cursor principal sólido: si está animando siempre visible, si está quieto respeta blink
+            if is_animating_smear || caret_on {
+                painter.rect_filled(head_rect, 1.0_f32, theme.caret);
+            }
+        }
     }
 
     // F2 (Roadmap v0.2.28): sticky scroll. El contenedor (impl, fn, struct…)
@@ -3375,5 +3539,41 @@ mod tests {
         let outcome = handle_delimiter_char(&mut lines, &mut state, '"');
         // Debe auto-cerrar o tratarse como apertura, NO saltar sobre la comilla existente
         assert_ne!(outcome, DelimiterOutcome::CursorMoved);
+    }
+
+    #[test]
+    fn test_smear_step_converges_and_settles() {
+        let start = egui::pos2(10.0, 20.0);
+        let target = egui::pos2(50.0, 80.0);
+        let mut current = start;
+        let mut steps = 0;
+        loop {
+            let (next, animating) = smear_step(current, target, SMEAR_HEAD_EASING);
+            current = next;
+            steps += 1;
+            if !animating {
+                break;
+            }
+            assert!(steps < 50, "smear_step debe converger");
+        }
+        assert_eq!(current, target);
+        assert!(steps > 1, "no debe saltar en un solo paso");
+    }
+
+    #[test]
+    fn test_convex_hull_corners_and_collinear() {
+        let pts = vec![
+            egui::pos2(0.0, 0.0),
+            egui::pos2(10.0, 0.0),
+            egui::pos2(10.0, 20.0),
+            egui::pos2(0.0, 20.0),
+            egui::pos2(5.0, 5.0),
+        ];
+        let hull = convex_hull(pts);
+        assert_eq!(hull.len(), 4, "los 4 vértices exteriores forman el hull");
+        assert!(hull.contains(&egui::pos2(0.0, 0.0)));
+        assert!(hull.contains(&egui::pos2(10.0, 0.0)));
+        assert!(hull.contains(&egui::pos2(10.0, 20.0)));
+        assert!(hull.contains(&egui::pos2(0.0, 20.0)));
     }
 }
