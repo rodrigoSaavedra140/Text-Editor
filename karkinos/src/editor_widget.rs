@@ -1295,6 +1295,29 @@ fn wrap_chars_for(usable_width: f32, char_width: f32) -> usize {
     ((usable_width / char_width).floor() as usize).max(1)
 }
 
+/// x (relativa al inicio del texto) del borde izquierdo de la columna
+/// visual `col`, según el galley que realmente se dibuja. egui redondea
+/// la posición de cada glifo a píxeles físicos, así que multiplicar la
+/// columna por el ancho nominal de la fuente acumula un desfase de
+/// fracciones de píxel por carácter. Esta es la única fuente de verdad
+/// para caret, selección y clics.
+fn x_for_col(galley: &egui::Galley, col: usize) -> f32 {
+    galley
+        .pos_from_ccursor(egui::text::CCursor::new(col))
+        .min
+        .x
+}
+
+/// Columna visual más cercana a `x` según el galley (para clics y
+/// arrastre). Egui ya redondea a la frontera de carácter más próxima,
+/// así que un clic en la mitad izquierda de un glifo cae en su columna.
+fn col_for_x(galley: &egui::Galley, x: f32) -> usize {
+    match galley.rows.first() {
+        Some(row) => row.char_at(x),
+        None => 0,
+    }
+}
+
 fn row_count_for_len(len: usize, wrap_chars: usize) -> usize {
     if len == 0 {
         1
@@ -1589,9 +1612,33 @@ pub fn show(
                     }
                 } else {
                     let rel_x = (pos.x - text_left).max(0.0);
-                    let target_vcol = (rel_x / char_width).round() as usize;
                     let target_line = lines.get_line(clicked_line);
-                    let vstart = visual_col_at(&target_line, sub_row * wrap_chars, DEFAULT_TAB_SIZE);
+                    // T4 (S3): la columna se resuelve con el MISMO layout
+                    // que se dibuja (tabs expandidos incluidos), no con
+                    // `rel_x / char_width`: el redondeo a píxeles de cada
+                    // glifo hace que la fórmula fija se corra una columna.
+                    let start = sub_row * wrap_chars;
+                    let end = (start + wrap_chars).min(line_char_count(&target_line));
+                    let sb = if target_line.is_ascii() {
+                        start
+                    } else {
+                        char_to_byte(&target_line, start)
+                    };
+                    let eb = if target_line.is_ascii() {
+                        end
+                    } else {
+                        char_to_byte(&target_line, end)
+                    };
+                    let vstart = visual_col_at(&target_line, start, DEFAULT_TAB_SIZE);
+                    let chunk = &target_line[sb.min(eb)..eb];
+                    let galley = ui.fonts(|f| {
+                        f.layout_no_wrap(
+                            crate::syntax::expand_tabs(chunk, vstart, DEFAULT_TAB_SIZE),
+                            font_id.clone(),
+                            text_color,
+                        )
+                    });
+                    let target_vcol = col_for_x(&galley, rel_x);
                     let clicked_col = col_from_visual_col(
                         &target_line,
                         vstart + target_vcol,
@@ -2396,12 +2443,17 @@ pub fn show(
     // regeneró el árbol, acá se vacía la cache de una sola vez.
     state.layout_cache.sync_ast(state.ast_rev);
     let mut visual_row = state.cum_rows[start_line];
+    // T4 (S3): x del caret capturada del galley real de su fila visual, y
+    // layout de la última fila dibujada (para píldora de fold y blame).
+    let mut caret_rel_x: Option<f32> = None;
+    let mut last_row_layout: Option<(std::sync::Arc<egui::Galley>, usize, usize)>;
     for i in start_line..lines.line_count() {
         let line = lines.get_line(i);
         let rows_here = state.row_counts.get(i).copied().unwrap_or(1);
         if rows_here == 0 {
             continue;
         }
+        last_row_layout = None;
         let line_top_y = rect.top() + PAD_Y + visual_row as f32 * row_height - state.scroll;
 
         if line_top_y > rect.bottom() {
@@ -2422,33 +2474,6 @@ pub fn show(
                 egui::pos2(gutter_rect.right(), line_top_y + rows_here as f32 * row_height),
             );
             gutter_painter.rect_filled(gutter_indicator, 0.0, theme.border_focus);
-        }
-
-        // F3 (Roadmap v0.2.29): selección y cursor de los cursores extra que
-        // caen en esta línea. Se pinta antes del texto para no taparlo.
-        for caret in &state.extra_carets {
-            if caret.line != i {
-                continue;
-            }
-            if let Some((start_pos, end_pos)) = caret.range() {
-                let vs = visual_col_at(&line, start_pos.1, DEFAULT_TAB_SIZE);
-                let ve = visual_col_at(&line, end_pos.1, DEFAULT_TAB_SIZE);
-                let sx = text_left + vs as f32 * char_width;
-                let ex = text_left + ve as f32 * char_width;
-                painter.rect_filled(
-                    egui::Rect::from_min_max(
-                        egui::pos2(sx, line_top_y),
-                        egui::pos2(ex.max(sx + 1.0), line_top_y + row_height),
-                    ),
-                    0.0,
-                    theme.selection,
-                );
-            }
-            let cx = text_left + visual_col_at(&line, caret.col, DEFAULT_TAB_SIZE) as f32 * char_width;
-            painter.line_segment(
-                [egui::pos2(cx, line_top_y), egui::pos2(cx, line_top_y + row_height)],
-                egui::Stroke::new(1.5_f32, theme.caret),
-            );
         }
 
         // F1 (Roadmap v0.2.27): marca de estado git en el borde izquierdo del
@@ -2585,6 +2610,87 @@ pub fn show(
             let sb = if is_pure_ascii { start } else { char_to_byte(&line, start) };
             let eb = if is_pure_ascii { end } else { char_to_byte(&line, end) };
             let chunk = &line[sb..eb];
+            // T4 (S3): columna visual donde arranca este fragmento. Los
+            // tabs se expanden contra esta base, no contra el inicio del
+            // chunk (una línea puede partirse en medio de una parada).
+            let vstart = visual_col_at(&line, start, DEFAULT_TAB_SIZE);
+            let vend = visual_col_at(&line, end, DEFAULT_TAB_SIZE);
+
+            // S1 (Roadmap v0.2.9) + T4 (S3): el galley sale del cache si
+            // este fragmento ya se tipografió (mismo texto/lenguaje/tema/
+            // fuente/fase de tab). Se obtiene ANTES de pintar los fondos
+            // porque caret, selección y overlays se miden con él: egui
+            // redondea cada glifo a píxeles físicos, así que la aritmética
+            // de ancho fijo acumulaba desfase.
+            let galley = if chunk.is_empty() {
+                None
+            } else {
+                let tab_phase = if chunk.contains('\t') {
+                    vstart % DEFAULT_TAB_SIZE
+                } else {
+                    0
+                };
+                let key = if tab_phase == 0 {
+                    crate::syntax::line_layout_key(chunk, language, state.font_size)
+                } else {
+                    crate::syntax::line_layout_key_with_tab_phase(
+                        chunk,
+                        language,
+                        state.font_size,
+                        tab_phase,
+                    )
+                };
+                Some(state.layout_cache.get_or_insert(key, theme.mode, || {
+                    let tokens = line_tokens.get_or_insert_with(|| {
+                        if language == crate::syntax::Language::PlainText {
+                            Vec::new()
+                        } else {
+                            crate::syntax::tokenize_line_semantic(
+                                &line,
+                                i,
+                                language,
+                                Some(state.ast_spans.as_slice()),
+                            )
+                        }
+                    });
+                    if language == crate::syntax::Language::PlainText {
+                        ui.fonts(|f| {
+                            f.layout_no_wrap(
+                                crate::syntax::expand_tabs(chunk, vstart, DEFAULT_TAB_SIZE),
+                                font_id.clone(),
+                                text_color,
+                            )
+                        })
+                    } else {
+                        let job = crate::syntax::build_layout_job(
+                            chunk,
+                            sb,
+                            tokens,
+                            theme,
+                            font_id.clone(),
+                            vstart,
+                        );
+                        ui.fonts(|f| f.layout_job(job))
+                    }
+                }))
+            };
+            // Captura la x real del cursor primario en su fila visual. Si
+            // la línea está fuera de pantalla queda `None` y el bloque del
+            // caret usa la aproximación nominal (no se dibuja igual).
+            let cursor_sub = (state.cursor_col / wrap_chars.max(1)).min(rows_here - 1);
+            if i == state.cursor_line && sub == cursor_sub {
+                caret_rel_x = Some(match galley.as_ref() {
+                    Some(g) => x_for_col(
+                        g,
+                        visual_col_at(&line, state.cursor_col, DEFAULT_TAB_SIZE)
+                            .saturating_sub(vstart),
+                    ),
+                    None => 0.0,
+                });
+            }
+            if let Some(ref g) = galley {
+                last_row_layout = Some((g.clone(), vstart, vend));
+            }
 
             // S4 (Rust IDE): Resaltado de fondo para la línea activa en depuración
             if state.stopped_line == Some(i) {
@@ -2606,8 +2712,14 @@ pub fn show(
                     let ov_start = mc.max(start);
                     let ov_end = match_end.min(end);
                     if ov_start < ov_end {
-                        let x0 = text_left + (ov_start - start) as f32 * char_width;
-                        let x1 = text_left + (ov_end - start) as f32 * char_width;
+                        let vs0 = visual_col_at(&line, ov_start, DEFAULT_TAB_SIZE)
+                            .saturating_sub(vstart);
+                        let vs1 = visual_col_at(&line, ov_end, DEFAULT_TAB_SIZE)
+                            .saturating_sub(vstart);
+                        let x0 = text_left
+                            + galley.as_ref().map_or(0.0, |g| x_for_col(g, vs0));
+                        let x1 = text_left
+                            + galley.as_ref().map_or(0.0, |g| x_for_col(g, vs1));
                         let match_rect = egui::Rect::from_min_max(
                             egui::pos2(x0, y),
                             egui::pos2(x1, y + row_height),
@@ -2630,49 +2742,71 @@ pub fn show(
                     let row_start = line_start_col.max(start);
                     let row_end = line_end_col.min(end);
                     if row_start < row_end || (line_start_col == line_end_col && start == 0 && sub == 0) {
-                        let vs_start = visual_col_at(&line, row_start, DEFAULT_TAB_SIZE);
-                        let vs_end = visual_col_at(&line, row_end, DEFAULT_TAB_SIZE);
-                        let vs_sub = visual_col_at(&line, start, DEFAULT_TAB_SIZE);
-                        let x0 = text_left + (vs_start.saturating_sub(vs_sub)) as f32 * char_width;
-                        let x1 =
-                            text_left + (vs_end.saturating_sub(vs_sub)).max(vs_start.saturating_sub(vs_sub) + 1) as f32 * char_width;
-                        let sel_rect =
-                            egui::Rect::from_min_max(egui::pos2(x0, y), egui::pos2(x1, y + row_height));
+                        let vs_start = visual_col_at(&line, row_start, DEFAULT_TAB_SIZE)
+                            .saturating_sub(vstart);
+                        let vs_end = visual_col_at(&line, row_end, DEFAULT_TAB_SIZE)
+                            .saturating_sub(vstart);
+                        let (rx0, rx1) = match galley.as_ref() {
+                            Some(g) => {
+                                let x0 = x_for_col(g, vs_start);
+                                (x0, x_for_col(g, vs_end).max(x0 + 1.0))
+                            }
+                            None => (0.0, 1.0),
+                        };
+                        let sel_rect = egui::Rect::from_min_max(
+                            egui::pos2(text_left + rx0, y),
+                            egui::pos2(text_left + rx1, y + row_height),
+                        );
                         painter.rect_filled(sel_rect, 0.0, sel_color.gamma_multiply(0.5));
                     }
                 }
             }
 
-            if !chunk.is_empty() {
-                // S1 (Roadmap v0.2.9): el galley sale del cache si este
-                // fragmento ya se tipografió (mismo texto/lenguaje/tema/
-                // fuente). Solo en cache miss se arma el LayoutJob, se
-                // tokeniza la línea y egui hace el layout.
-                let key = crate::syntax::line_layout_key(chunk, language, state.font_size);
-                let galley = state.layout_cache.get_or_insert(key, theme.mode, || {
-                    let tokens = line_tokens.get_or_insert_with(|| {
-                        if language == crate::syntax::Language::PlainText {
-                            Vec::new()
-                        } else {
-                        crate::syntax::tokenize_line_semantic(
-                            &line,
-                            i,
-                            language,
-                            Some(state.ast_spans.as_slice()),
-                        )
+            // F3 (Roadmap v0.2.29): selección y cursor de los cursores extra
+            // que caen en esta fila visual. Se pintan antes del texto para
+            // no taparlo y su x sale del galley, igual que el primario.
+            for caret in &state.extra_carets {
+                if caret.line != i {
+                    continue;
+                }
+                if let Some((start_pos, end_pos)) = caret.range() {
+                    if start_pos.0 == i && end_pos.0 == i {
+                        let row_start = start_pos.1.max(start);
+                        let row_end = end_pos.1.min(end);
+                        if row_start < row_end {
+                            let vs = visual_col_at(&line, row_start, DEFAULT_TAB_SIZE)
+                                .saturating_sub(vstart);
+                            let ve = visual_col_at(&line, row_end, DEFAULT_TAB_SIZE)
+                                .saturating_sub(vstart);
+                            let sx = text_left
+                                + galley.as_ref().map_or(0.0, |g| x_for_col(g, vs));
+                            let ex = text_left
+                                + galley.as_ref().map_or(0.0, |g| x_for_col(g, ve));
+                            painter.rect_filled(
+                                egui::Rect::from_min_max(
+                                    egui::pos2(sx, y),
+                                    egui::pos2(ex.max(sx + 1.0), y + row_height),
+                                ),
+                                0.0,
+                                theme.selection,
+                            );
                         }
-                    });
-                    if language == crate::syntax::Language::PlainText {
-                        ui.fonts(|f| {
-                            f.layout_no_wrap(chunk.to_string(), font_id.clone(), text_color)
-                        })
-                    } else {
-                        let job =
-                            crate::syntax::build_layout_job(chunk, sb, tokens, theme, font_id.clone());
-                        ui.fonts(|f| f.layout_job(job))
                     }
-                });
-                painter.galley(egui::pos2(text_left, y), galley, text_color);
+                }
+                if caret.col / wrap_chars.max(1) == sub {
+                    let cv = visual_col_at(&line, caret.col, DEFAULT_TAB_SIZE)
+                        .saturating_sub(vstart);
+                    let cx = text_left
+                        + galley.as_ref().map_or(0.0, |g| x_for_col(g, cv));
+                    painter.line_segment(
+                        [egui::pos2(cx, y), egui::pos2(cx, y + row_height)],
+                        egui::Stroke::new(1.5_f32, theme.caret),
+                    );
+                }
+            }
+
+            if let Some(ref galley) = galley {
+                painter.galley(egui::pos2(text_left, y), galley.clone(), text_color);
             }
 
             // S2 (Rust IDE): Render Inlay Hints (types, parameter names)
@@ -2681,7 +2815,10 @@ pub fn show(
                     && hint.position.character >= start
                     && hint.position.character <= end
                 {
-                    let hx = text_left + (hint.position.character - start) as f32 * char_width;
+                    let hint_vcol = visual_col_at(&line, hint.position.character, DEFAULT_TAB_SIZE)
+                        .saturating_sub(vstart);
+                    let hx = text_left
+                        + galley.as_ref().map_or(0.0, |g| x_for_col(g, hint_vcol));
                     let hint_font_size = state.font_size * 0.78;
                     let hint_color = egui::Color32::from_rgb(130, 155, 195);
                     let hint_bg = egui::Color32::from_rgba_unmultiplied(35, 45, 65, 140);
@@ -2730,10 +2867,18 @@ pub fn show(
 
                 if is_origin || is_partner {
                     let col = if is_origin { bm.origin.1 } else { bm.partner.unwrap().1 };
-                    let bx0 = text_left + (col - start) as f32 * char_width;
+                    let col_visual =
+                        visual_col_at(&line, col, DEFAULT_TAB_SIZE).saturating_sub(vstart);
+                    let (bx0, bw) = match galley.as_ref() {
+                        Some(g) => {
+                            let x0 = x_for_col(g, col_visual);
+                            (x0, (x_for_col(g, col_visual + 1) - x0).max(1.0))
+                        }
+                        None => (0.0, char_width),
+                    };
                     let b_rect = egui::Rect::from_min_size(
-                        egui::pos2(bx0, y),
-                        egui::vec2(char_width, row_height),
+                        egui::pos2(text_left + bx0, y),
+                        egui::vec2(bw, row_height),
                     );
                     if bm.partner.is_some() {
                         painter.rect_filled(
@@ -2764,9 +2909,16 @@ pub fn show(
             // S11: El cursor primario ahora se dibuja con animación fluida smear al final del pase de líneas.
         }
 
+        // T4 (S3): fin visual de la línea según el último galley dibujado
+        // (la píldora de fold y el blame se anclan ahí, no a `char_width`).
+        let line_end_x = match last_row_layout.as_ref() {
+            Some((g, vs, ve)) => x_for_col(g, ve.saturating_sub(*vs)),
+            None => visual_col_at(&line, char_len, DEFAULT_TAB_SIZE) as f32 * char_width,
+        };
+
         // F4 (Roadmap v0.2.30): si la línea está plegada, dibujamos una píldora "..." compacta
         if state.collapsed_folds.contains(&i) {
-            let badge_x = text_left + char_len as f32 * char_width + 8.0;
+            let badge_x = text_left + line_end_x + 8.0;
             let badge_rect = egui::Rect::from_min_size(
                 egui::pos2(badge_x, line_top_y + 2.0),
                 egui::vec2(24.0, row_height - 4.0),
@@ -2788,12 +2940,7 @@ pub fn show(
         // F8 (Roadmap v0.2.35): ghost text de blame al final de la línea activa.
         if i == state.cursor_line {
             if let Some(blame) = state.blame_text.as_deref() {
-                let line_len = state
-                    .char_lens
-                    .get(i)
-                    .copied()
-                    .unwrap_or_else(|| line_char_count(&line));
-                let gx = text_left + line_len as f32 * char_width + 16.0;
+                let gx = text_left + line_end_x + 16.0;
                 painter.text(
                     egui::pos2(gx.min(clip_rect.right() - 4.0), line_top_y),
                     egui::Align2::LEFT_TOP,
@@ -2812,11 +2959,17 @@ pub fn show(
         let wrap_c = wrap_chars.max(1);
         let cursor_line = state.cursor_line.min(lines.line_count().saturating_sub(1));
         let line_str = lines.get_line(cursor_line);
-        let sub = state.cursor_col / wrap_c;
+        let rows_here = state.row_counts.get(cursor_line).copied().unwrap_or(1).max(1);
+        let sub = (state.cursor_col / wrap_c).min(rows_here - 1);
         let start = sub * wrap_c;
         let vcol = visual_col_at(&line_str, state.cursor_col, DEFAULT_TAB_SIZE);
         let vstart = visual_col_at(&line_str, start, DEFAULT_TAB_SIZE);
-        let caret_doc_x = gutter_w + PAD_X + (vcol.saturating_sub(vstart)) as f32 * char_width;
+        // T4 (S3): la x real sale del galley de la fila del cursor. El
+        // fallback nominal solo aplica si la línea quedó fuera del
+        // viewport (en ese caso el caret ni se dibuja).
+        let caret_rel = caret_rel_x
+            .unwrap_or_else(|| vcol.saturating_sub(vstart) as f32 * char_width);
+        let caret_doc_x = gutter_w + PAD_X + caret_rel;
 
         let visual_row = visual_row_of(&state.cum_rows, cursor_line, state.cursor_col, wrap_chars);
         let caret_doc_y = PAD_Y + visual_row as f32 * row_height;
@@ -3093,7 +3246,8 @@ pub fn show(
     if state.show_completions && !state.completions.is_empty() {
         let cursor_vrow = visual_row_of(&state.cum_rows, state.cursor_line, state.cursor_col, wrap_chars);
         let cur_y = rect.top() + PAD_Y + cursor_vrow as f32 * row_height - state.scroll + row_height;
-        let cur_x = text_left + (state.cursor_col % wrap_chars.max(1)) as f32 * char_width;
+        let cur_x = text_left
+            + caret_rel_x.unwrap_or((state.cursor_col % wrap_chars.max(1)) as f32 * char_width);
 
         let popup_w = 260.0_f32;
         let item_h = 22.0_f32;
@@ -3149,7 +3303,8 @@ pub fn show(
         if let Some(ref text) = state.hover_text {
             let cursor_vrow = visual_row_of(&state.cum_rows, state.cursor_line, state.cursor_col, wrap_chars);
             let cur_y = rect.top() + PAD_Y + cursor_vrow as f32 * row_height - state.scroll + row_height;
-            let cur_x = text_left + (state.cursor_col % wrap_chars.max(1)) as f32 * char_width;
+            let cur_x = text_left
+            + caret_rel_x.unwrap_or((state.cursor_col % wrap_chars.max(1)) as f32 * char_width);
 
             let sample_lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).take(6).collect();
             let display_text = sample_lines.join("\n");
@@ -3191,6 +3346,106 @@ pub fn show(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // T4 (S3): el caret se posiciona con el galley real que se dibuja.
+    // La fórmula vieja (`col * glyph_width(' ')`) acumulaba el redondeo
+    // a píxeles que egui aplica glifo a glifo: con Geist Mono a 12 px el
+    // desfase llegaba a ~20 px en una línea de 54 columnas. Este test
+    // deja constancia de esa medición y exige que el mapeo del render
+    // (`x_for_col`) coincida con el galley en todos los tamaños.
+    #[test]
+    fn caret_x_coincide_con_el_galley() {
+        let ctx = egui::Context::default();
+        crate::fonts::install_fonts(&ctx);
+        let line = "let mut resultado = calcular(a, b) + 42; // comentario";
+        let cols = line.chars().count();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            for size in [12.0_f32, 14.0, 16.0, 20.0] {
+                let font_id = egui::FontId::monospace(size);
+                let galley = ctx.fonts(|f| {
+                    f.layout_no_wrap(line.to_owned(), font_id.clone(), egui::Color32::WHITE)
+                });
+                let char_width = ctx.fonts(|f| f.glyph_width(&font_id, ' '));
+                let mut max_diff_fija = 0.0_f32;
+                let mut max_diff_real = 0.0_f32;
+                for col in 0..=cols {
+                    let x_fija = col as f32 * char_width;
+                    let x_galley = galley
+                        .pos_from_ccursor(egui::text::CCursor::new(col))
+                        .min
+                        .x;
+                    max_diff_fija = max_diff_fija.max((x_fija - x_galley).abs());
+                    max_diff_real = max_diff_real.max((x_for_col(&galley, col) - x_galley).abs());
+                }
+                println!(
+                    "T4: size={size} char_width={char_width:.4} desfase_formula_vieja={max_diff_fija:.3}px desfase_real={max_diff_real:.3}px"
+                );
+                assert!(
+                    max_diff_real < 0.5,
+                    "size {size}: el caret se desvía {max_diff_real:.3}px del galley"
+                );
+            }
+        });
+    }
+
+    // T4 (S3): el clic también se resuelve con el galley. Un clic dentro
+    // del 40% izquierdo del glifo de la columna `n` deja el cursor en `n`
+    // (el redondeo de frontera más cercana no se adelanta una columna).
+    #[test]
+    fn clic_en_columna_n_deja_el_cursor_en_n() {
+        let ctx = egui::Context::default();
+        crate::fonts::install_fonts(&ctx);
+        let line = "let mut resultado = calcular(a, b) + 42; // comentario";
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            let font_id = egui::FontId::monospace(14.0);
+            let galley = ctx.fonts(|f| {
+                f.layout_no_wrap(line.to_owned(), font_id, egui::Color32::WHITE)
+            });
+            for col in [0usize, 1, 10, 40] {
+                let x0 = x_for_col(&galley, col);
+                let x1 = x_for_col(&galley, col + 1);
+                let x_izq40 = x0 + (x1 - x0) * 0.4;
+                assert_eq!(
+                    col_for_x(&galley, x_izq40),
+                    col,
+                    "col {col}: un clic al 40% del glifo cayó en otra columna"
+                );
+            }
+        });
+    }
+
+    // T4 (S3): un tab inicial se expande a espacios antes de tipografiar,
+    // así que el caret de la columna lógica 1 (columna visual 4) cae
+    // exactamente sobre el glifo 'l', no sobre el tab de reemplazo.
+    #[test]
+    fn caret_alineado_con_tab_inicial() {
+        let ctx = egui::Context::default();
+        crate::fonts::install_fonts(&ctx);
+        let line = "\tlet x = 1;";
+        let expanded = crate::syntax::expand_tabs(line, 0, DEFAULT_TAB_SIZE);
+        assert_eq!(expanded, "    let x = 1;");
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            let font_id = egui::FontId::monospace(14.0);
+            let galley = ctx.fonts(|f| {
+                f.layout_no_wrap(expanded.clone(), font_id, egui::Color32::WHITE)
+            });
+            let caret_x = x_for_col(&galley, visual_col_at(line, 1, DEFAULT_TAB_SIZE));
+            let glyph_l_x = galley.rows[0].glyphs[4].pos.x;
+            assert!(
+                (caret_x - glyph_l_x).abs() < 0.01,
+                "el caret del primer carácter tras el tab ({caret_x}) no coincide con el glifo 'l' ({glyph_l_x})"
+            );
+        });
+    }
+
+    // T4: la expansión de tabs respeta la parada visual de arranque: un
+    // fragmento que empieza en la columna 2 expande el tab con 2 espacios.
+    #[test]
+    fn expand_tabs_respeta_la_fase_de_arranque() {
+        assert_eq!(crate::syntax::expand_tabs("\tx", 0, 4), "    x");
+        assert_eq!(crate::syntax::expand_tabs("\tx", 1, 4), "   x");
+        assert_eq!(crate::syntax::expand_tabs("a\tb", 0, 4), "a   b");
+    }
 
     // S2 (Roadmap v0.2.9): fase del parpadeo del caret — funciones puras.
 

@@ -1778,6 +1778,30 @@ fn is_pascal_case(w: &str) -> bool {
 // LayoutJob Builder
 // -----------------------------------------------------------------------------
 
+/// Expande los tabs de `text` a espacios con paradas cada `tab_size`
+/// columnas visuales, empezando en `start_vcol`. El layout de egui NO
+/// expande tabs (los dibuja como un glifo de reemplazo del ancho de un
+/// solo carácter), así que el editor los expande antes de tipografiar
+/// para que la x de cada glifo coincida con la columna visual del caret.
+pub fn expand_tabs(text: &str, start_vcol: usize, tab_size: usize) -> String {
+    let tab_size = tab_size.max(1);
+    let mut out = String::with_capacity(text.len());
+    let mut vcol = start_vcol;
+    for c in text.chars() {
+        if c == '\t' {
+            let spaces = tab_size - (vcol % tab_size);
+            for _ in 0..spaces {
+                out.push(' ');
+            }
+            vcol += spaces;
+        } else {
+            out.push(c);
+            vcol += 1;
+        }
+    }
+    out
+}
+
 /// Construye un `LayoutJob` con formato coloreado para un fragmento (`chunk`) de una línea,
 /// a partir de los tokens de la línea completa.
 pub fn build_layout_job(
@@ -1786,10 +1810,19 @@ pub fn build_layout_job(
     line_tokens: &[(Range<usize>, TokenType)],
     theme: &crate::theme::Theme,
     font_id: egui::FontId,
+    start_vcol: usize,
 ) -> egui::text::LayoutJob {
     let mut job = egui::text::LayoutJob::default();
     let chunk_byte_end = chunk_byte_start + chunk.len();
     let mut cursor = chunk_byte_start;
+    // Columna visual acumulada del texto ya appendeado: las paradas de
+    // tab dependen de la posición absoluta, no del inicio del fragmento.
+    let mut vcol = start_vcol;
+    let mut push = |job: &mut egui::text::LayoutJob, slice: &str, format: egui::TextFormat| {
+        let expanded = expand_tabs(slice, vcol, karkinos_core::text_ops::DEFAULT_TAB_SIZE);
+        vcol += expanded.chars().count();
+        job.append(&expanded, 0.0, format);
+    };
 
     for (range, token_type) in line_tokens {
         if range.end <= cursor || range.start >= chunk_byte_end {
@@ -1802,9 +1835,9 @@ pub fn build_layout_job(
         // Espacio o texto sin token específico antes del token actual
         if token_start > cursor {
             let slice = &chunk[(cursor - chunk_byte_start)..(token_start - chunk_byte_start)];
-            job.append(
+            push(
+                &mut job,
                 slice,
-                0.0,
                 egui::TextFormat {
                     font_id: font_id.clone(),
                     color: theme.text,
@@ -1814,9 +1847,9 @@ pub fn build_layout_job(
         }
 
         let slice = &chunk[(token_start - chunk_byte_start)..(token_end - chunk_byte_start)];
-        job.append(
+        push(
+            &mut job,
             slice,
-            0.0,
             egui::TextFormat {
                 font_id: font_id.clone(),
                 color: token_type.color(theme),
@@ -1829,9 +1862,9 @@ pub fn build_layout_job(
     // Resto del chunk posterior al último token
     if cursor < chunk_byte_end {
         let slice = &chunk[(cursor - chunk_byte_start)..];
-        job.append(
+        push(
+            &mut job,
             slice,
-            0.0,
             egui::TextFormat {
                 font_id,
                 color: theme.text,
@@ -1975,10 +2008,24 @@ impl<V> std::fmt::Debug for LineLayoutCache<V> {
 /// lenguaje y tamaño de fuente (el modo de tema viaja aparte, como
 /// segunda mitad de la clave del HashMap).
 pub fn line_layout_key(chunk: &str, lang: Language, font_size: f32) -> u64 {
+    line_layout_key_with_tab_phase(chunk, lang, font_size, 0)
+}
+
+/// Igual que `line_layout_key`, pero incluye la fase del tab (`vcol %
+/// tab_size`): dos fragmentos con el mismo texto pueden expandir sus
+/// tabs a distinta cantidad de espacios si arrancan en otra columna
+/// visual, así que no pueden compartir galley.
+pub fn line_layout_key_with_tab_phase(
+    chunk: &str,
+    lang: Language,
+    font_size: f32,
+    tab_phase: usize,
+) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     std::hash::Hash::hash(&chunk.as_bytes(), &mut hasher);
     std::hash::Hash::hash(&(lang as u32), &mut hasher);
     std::hash::Hash::hash(&font_size.to_bits(), &mut hasher);
+    std::hash::Hash::hash(&tab_phase, &mut hasher);
     hasher.finish()
 }
 
@@ -2122,12 +2169,12 @@ mod tests {
         let theme = crate::theme::ThemeMode::Dark.theme();
         let font_id = egui::FontId::monospace(14.0);
 
-        let job = build_layout_job(line, 0, &tokens, &theme, font_id.clone());
+        let job = build_layout_job(line, 0, &tokens, &theme, font_id.clone(), 0);
         assert_eq!(job.text, line);
         assert!(job.sections.len() >= 3);
 
         let chunk = &line[4..];
-        let sub_job = build_layout_job(chunk, 4, &tokens, &theme, font_id);
+        let sub_job = build_layout_job(chunk, 4, &tokens, &theme, font_id, 0);
         assert_eq!(sub_job.text, chunk);
         assert!(!sub_job.sections.is_empty());
     }
