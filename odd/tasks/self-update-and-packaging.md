@@ -30,8 +30,8 @@ Pedido original (verbatim): "ahora quiero que la app tenga un boton que este ocu
 
 | ID | Specs | Riesgo | Estado | Commit |
 |----|-------|--------|--------|--------|
-| T1 | S5, S2 | Alto: item 5 (release/CI) | hecha | `ci(release): publish raw binaries and SHA256SUMS` |
-| T2 | S3 | Alto: item 5 (dependencia de build) | pendiente | `build(windows): embed the app icon in karkinos.exe` |
+| T1 | S5, S2 | Alto: item 5 (release/CI) | hecha | `1f7b8fc` ci(release): publish raw binaries and SHA256SUMS |
+| T2 | S3 | Alto: item 5 (dependencia de build) | hecha | `build(windows): embed the app icon in karkinos.exe` |
 | T3 | S1 | Bajo | pendiente | `feat(update): show an update button when a new release exists` |
 | T4 | S2, S5 | Alto: items 1, 2 (reemplaza el ejecutable, descarga código) | pendiente | `feat(update): download, verify and install updates in place` |
 | T5 | S4 | Medio | pendiente | `feat(update): update package-managed installs through yay or paru` |
@@ -110,3 +110,5 @@ Mientras descarga, el botón muestra un spinner y no se puede volver a apretar.
 - **L3** (preferencia del usuario): "quiero que toda la implementacion lo haga deepseek" — cada tarea la implementa `gentle-ai-worker` (opencode-go/deepseek-v4.1-flash); Opus solo orquesta.
 - **L4** (exploración, v0.2.84): los releases no publican checksums; los archivos contienen solo el binario; no existe `build.rs` ni ícono `.ico`; no hay paquete AUR (`scripts/PKGBUILD` compila desde el checkout); single-instance IPC en `karkinos/src/ipc.rs`.
 - **L5** (T1, DeepSeek): `release.yml` publica `karkinos-linux-x86_64` y `karkinos-windows-x86_64.exe` sueltos y un job `checksums` (`needs: build`, solo en tags `v*`) sube `SHA256SUMS` con las 4 líneas. Verificación estructural: YAML parsea (Ruby Psych; no hay PyYAML/actionlint), `bash -n` de los bloques `run:`, `scripts/release-workflow.yml` idéntico (`diff` vacío). Revisión del orquestador: nombres y formato coinciden con S5/T4. Pendiente: se ejercita de verdad en el primer tag.
+- **L6** (T2, DeepSeek): `karkinos/assets/karkinos.ico` (7 resoluciones 16-256, desde `assets/karkinos.png`) y `karkinos/build.rs` que lo embebe con `winresource` 0.1.34 solo si `CARGO_CFG_TARGET_OS == "windows"`. Build Linux, suite (266 + 2 ignored, 149) y clippy en verde. Sin RED posible: el recurso PE solo existe en el build de Windows; se confirma en el job de Windows del próximo release.
+- **L7** (decisión del orquestador): la versión se sube una sola vez, en el último commit de la feature (no por tarea), porque los commits de la rama no se taggean.

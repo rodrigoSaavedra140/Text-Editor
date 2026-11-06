@@ -7,6 +7,9 @@ edition = "2021"
 name = "karkinos"
 path = "src/main.rs"
 
+[build-dependencies]
+winresource = "0.1"
+
 [dependencies]
 karkinos-core = { path = "../crates/karkinos-core" }
 image = { version = "0.24", default-features = false, features = ["png"] }
