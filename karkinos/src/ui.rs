@@ -374,7 +374,7 @@ impl EditorApp {
                 self.switch_tab(idx);
             }
             self.doc.tab_close_after_save = Some(idx);
-            self.doc.try_save();
+            self.save_document();
         } else if discard {
             self.doc.tab_close_pending = None;
             if idx == self.doc.active_tab {
@@ -2841,6 +2841,13 @@ impl eframe::App for EditorApp {
         if let Some(remaining) = self.doc.chunk_tracker.remaining_time(now) {
             ctx.request_repaint_after(remaining);
         }
+        // T2 (S1): AST y LSP diferidos. Mientras haya una edición
+        // pendiente se pide un repintado a tiempo para que se apliquen
+        // aunque el usuario no vuelva a tocar nada (mismo patrón que el
+        // chunk_tracker de arriba).
+        if let Some(remaining) = self.poll_full_text_sync(now) {
+            ctx.request_repaint_after(remaining);
+        }
 
         // Atajos de teclado globales
         let (
@@ -2905,10 +2912,10 @@ impl eframe::App for EditorApp {
             }
         }
         if want_save {
-            self.doc.try_save();
+            self.save_document();
         }
         if want_save_as {
-            self.doc.save_as();
+            self.save_document_as();
         }
         if want_undo {
             self.undo();
@@ -3237,7 +3244,7 @@ impl eframe::App for EditorApp {
                     self.picker_button_rect = Some(open_picker_btn.interact_rect);
 
                     if ui.button("💾 Save (Ctrl+S)").clicked() {
-                        self.doc.try_save();
+                        self.save_document();
                     }
                     ui.add_space(6.0);
 
@@ -3623,8 +3630,16 @@ impl eframe::App for EditorApp {
                     // Una vez por edición real (no por frame): refresca
                     // el tamaño de la barra de estado.
                     self.doc.recalc_view_bytes();
-                    self.update_ast();
-                    self.update_lsp();
+                    // T2 (S1): el AST y el LSP necesitan el texto completo;
+                    // recalcularlos en cada tecla trababa el editor. Se
+                    // difieren y el bucle por frame los aplica tras 120 ms
+                    // de calma (o al guardar / cambiar de pestaña / LSP).
+                    self.mark_full_text_sync_pending();
+                    // El debounce se revisa al principio de cada frame,
+                    // así que hay que asegurar el frame siguiente desde
+                    // acá: sin esto, al dejar de teclear no habría más
+                    // eventos y el AST/LSP quedaría viejo.
+                    ctx.request_repaint_after(crate::app::FULL_TEXT_SYNC_DEBOUNCE);
                     if self.find_open {
                         self.find_update_matches();
                     }

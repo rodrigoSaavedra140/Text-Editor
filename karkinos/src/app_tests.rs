@@ -1,7 +1,7 @@
     use super::*;
     // Nombres que la T5a movió a document_service.rs / karkinos-core:
     use std::sync::{Arc, Mutex};
-    use std::time::{Duration, SystemTime};
+    use std::time::{Duration, Instant, SystemTime};
     use crate::document_service::{mtime_is_stale, SaveProgress};
     use karkinos_core::{default_new_file_path, detect_line_ending, serialize_line_ending};
 
@@ -725,6 +725,66 @@
                 "{LLAMADAS} sincronizaciones tardaron {transcurrido:?}"
             );
         }
+    }
+
+    // ---- T2: AST y LSP diferidos tras cada tecla ----
+
+    #[test]
+    fn editar_no_dispara_ast_ni_lsp_hasta_el_debounce() {
+        let mut app = EditorApp::default();
+        // Documento sin ruta => PlainText: `update_lsp` no toca el
+        // servidor y `update_ast` no despierta al worker (rama no-Rust).
+        // Solo importa la revisión del pedido, que es lo que la UI mira.
+        app.set_text("fn main() {}");
+        let rev_antes = app.ast_request_rev;
+
+        // Lo mismo que hace ui.rs dentro de `if response.changed`.
+        app.mark_full_text_sync_pending();
+        assert!(app.pending_full_text_sync.is_some());
+        assert_eq!(
+            app.ast_request_rev, rev_antes,
+            "una tecla no debe pedir el AST completo"
+        );
+
+        // Antes de los 120 ms sigue pendiente y el frame sabe cuánto falta.
+        let restante = app.poll_full_text_sync(Instant::now());
+        assert!(restante.is_some(), "todavía no pasó el debounce");
+        assert!(app.pending_full_text_sync.is_some());
+
+        // Pasado el debounce se aplica una sola vez y queda limpio.
+        let despues = Instant::now() + FULL_TEXT_SYNC_DEBOUNCE;
+        assert!(app.poll_full_text_sync(despues).is_none());
+        assert!(app.pending_full_text_sync.is_none());
+        assert_eq!(app.ast_request_rev, rev_antes + 1);
+    }
+
+    #[test]
+    fn flush_full_text_sync_antes_de_guardar() -> std::io::Result<()> {
+        let dir = std::env::temp_dir()
+            .join(format!("karkinos_flush_save_{}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join("doc.txt");
+        let _ = std::fs::remove_file(&path);
+
+        let mut app = EditorApp::default();
+        app.doc.current_file = Some(path.clone());
+        app.set_text("contenido a guardar");
+        app.mark_full_text_sync_pending();
+        let rev_antes = app.ast_request_rev;
+
+        app.save_document();
+        wait_for_save_done(&app);
+        assert!(app.doc.finish_save());
+        assert!(
+            app.pending_full_text_sync.is_none(),
+            "guardar aplica el AST/LSP que estaba diferido"
+        );
+        assert_eq!(app.ast_request_rev, rev_antes + 1);
+        assert_eq!(std::fs::read_to_string(&path)?, "contenido a guardar");
+
+        std::fs::remove_file(&path)?;
+        std::fs::remove_dir_all(&dir)?;
+        Ok(())
     }
 
     // ---- Guardado de archivo sin nombre con diálogo modal ----

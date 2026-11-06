@@ -20,6 +20,11 @@ pub const ZOOM_MIN: f32 = 8.0;
 pub const ZOOM_MAX: f32 = 32.0;
 pub const ZOOM_STEP: f32 = 1.0;
 
+/// T2 (S1): ventana de calma tras la última tecla antes de recalcular el
+/// texto completo para el AST y el LSP. Antes se recalculaban en cada
+/// tecla y eso era lo que trababa el editor en documentos grandes.
+pub const FULL_TEXT_SYNC_DEBOUNCE: Duration = Duration::from_millis(120);
+
 /// Helper del selector de archivos (popup propio): puede quedarse
 /// abierto o cerrar si el click completo de este frame NO cayó ni
 /// adentro del popup ni sobre el botón que lo togglea. Sin rects
@@ -166,6 +171,14 @@ pub struct EditorApp {
     // Última revisión del worker aplicada al estado — evita revivir
     // resultados viejos si llegan después de un parseo posterior.
     pub ast_applied_rev: u64,
+    // T2 (S1): el AST y el LSP necesitan el texto completo; recalcularlos
+    // en cada tecla era la causa del lag. Acá se guarda el instante del
+    // último cambio y el bucle por frame los aplica tras 120 ms de calma.
+    pub pending_full_text_sync: Option<Instant>,
+    // T2 (S1): lenguaje detectado de la ruta activa. Solo se recalcula
+    // cuando cambia la ruta (extensión/filename); sin ruta no se cachea
+    // porque ahí la detección depende del contenido y cambia al escribir.
+    current_language_cache: std::cell::RefCell<Option<(PathBuf, crate::syntax::Language)>>,
     // F1 (Roadmap v0.2.27): worker de diff contra HEAD. El pedido se
     // dispara al abrir y al guardar (archivo limpio), nunca mientras se
     // escribe, para no correr `git` en cada tecla.
@@ -807,6 +820,8 @@ impl Default for EditorApp {
             ast_worker: crate::ast_worker::AstWorker::spawn(),
             ast_request_rev: 0,
             ast_applied_rev: 0,
+            pending_full_text_sync: None,
+            current_language_cache: std::cell::RefCell::new(None),
             git_diff_worker: crate::git_diff_worker::GitDiffWorker::spawn(),
             git_diff_requested_path: None,
             git_diff_was_dirty: false,
@@ -1081,6 +1096,12 @@ impl EditorApp {
     }
 
     /// S6 (Etapa 2): Retorna el lenguaje detectado para el documento actual (autodetecta por extensión y contenido).
+    ///
+    /// T2 (S1): cuando hay ruta, el resultado se cachea por ruta — la
+    /// extensión/filename no cambia mientras se escribe, así que no hace
+    /// falta recalcularlo en cada tecla. Sin ruta la detección depende
+    /// del contenido, así que no se cachea (y la muestra se arma con las
+    /// primeras 100 líneas, sin materializar el documento entero).
     pub fn current_language(&self) -> crate::syntax::Language {
         let path = self.doc.current_file.as_deref().or_else(|| {
             if self.doc.file_path_input.is_empty() {
@@ -1090,17 +1111,34 @@ impl EditorApp {
             }
         });
 
-        let line_count = self.doc.line_count();
-        let sample = if line_count <= 100 {
-            self.doc.text()
-        } else {
-            (0..100)
-                .map(|i| self.doc.line(i).into_owned())
-                .collect::<Vec<_>>()
-                .join("\n")
+        let Some(path) = path else {
+            return crate::syntax::Language::detect(None, &self.language_sample());
         };
 
-        crate::syntax::Language::detect(path, &sample)
+        if let Some((cached_path, language)) = self.current_language_cache.borrow().as_ref() {
+            if cached_path == path {
+                return *language;
+            }
+        }
+
+        let language = crate::syntax::Language::detect(Some(path), &self.language_sample());
+        *self.current_language_cache.borrow_mut() = Some((path.to_path_buf(), language));
+        language
+    }
+
+    /// T2 (S1): muestra de como mucho 100 líneas para la detección por
+    /// contenido, armada con `line()` para no reconstruir el `Rope`
+    /// completo en un `String`.
+    fn language_sample(&self) -> String {
+        let line_count = self.doc.line_count().min(100);
+        let mut sample = String::new();
+        for i in 0..line_count {
+            if i > 0 {
+                sample.push('\n');
+            }
+            sample.push_str(&self.doc.line(i));
+        }
+        sample
     }
 
     /// S8 (Etapa 2): Guarda el estado actual del editor en la pestaña activa.
@@ -1140,6 +1178,52 @@ impl EditorApp {
         }
     }
 
+    /// T2 (S1): marca que el AST y el LSP quedaron desactualizados por una
+    /// edición. El bucle por frame los aplica cuando pasan 120 ms sin
+    /// teclas nuevas, en una sola pasada, en vez de en cada tecla.
+    pub fn mark_full_text_sync_pending(&mut self) {
+        self.pending_full_text_sync = Some(Instant::now());
+    }
+
+    /// T2 (S1): aplica ya la sincronización diferida. Guardar, cambiar de
+    /// pestaña, ir a definición, pedir hover o formatear no pueden esperar
+    /// a que el usuario deje de escribir.
+    pub fn flush_full_text_sync(&mut self) {
+        if self.pending_full_text_sync.take().is_some() {
+            self.update_ast();
+            self.update_lsp();
+        }
+    }
+
+    /// T2 (S1): avanza el debounce del texto completo. Devuelve el tiempo
+    /// que falta para aplicarlo, o `None` si ya se aplicó (o no hay nada
+    /// pendiente); el frame usa ese `Some` para pedir el repintado.
+    pub fn poll_full_text_sync(&mut self, now: Instant) -> Option<Duration> {
+        let since = self.pending_full_text_sync?;
+        let elapsed = now.saturating_duration_since(since);
+        if elapsed >= FULL_TEXT_SYNC_DEBOUNCE {
+            self.pending_full_text_sync = None;
+            self.update_ast();
+            self.update_lsp();
+            None
+        } else {
+            Some(FULL_TEXT_SYNC_DEBOUNCE - elapsed)
+        }
+    }
+
+    /// T2 (S1): guarda el documento activo, aplicando primero el AST/LSP
+    /// diferido para que el guardado no deje atrás un estado viejo.
+    pub fn save_document(&mut self) {
+        self.flush_full_text_sync();
+        self.doc.try_save();
+    }
+
+    /// T2 (S1): "Guardar como…" con la misma sincronización previa.
+    pub fn save_document_as(&mut self) {
+        self.flush_full_text_sync();
+        self.doc.save_as();
+    }
+
     /// S4: Avanza a la siguiente pestaña de manera cíclica.
     pub fn next_tab(&mut self) {
         if self.doc.tabs.len() > 1 {
@@ -1162,6 +1246,9 @@ impl EditorApp {
 
     /// S8 (Etapa 2): Carga los datos de la pestaña `idx` en el estado activo del editor.
     pub fn load_tab(&mut self, idx: usize) {
+        // T2 (S1): el AST/LSP diferido es del documento que se está
+        // dejando atrás; se aplica antes de cambiar el buffer activo.
+        self.flush_full_text_sync();
         if idx < self.doc.tabs.len() {
             // T1: camino inverso, también compartiendo el `Rope`
             // (clon O(1)) en lugar de pasar por un `String`.
@@ -1294,6 +1381,9 @@ impl EditorApp {
         self.doc.recalc_view_bytes();
         self.update_ast();
         self.update_lsp();
+        // T2 (S1): acá ya se aplicó el texto completo, así que no queda
+        // nada diferido que hacer.
+        self.pending_full_text_sync = None;
     }
 
 
@@ -1931,6 +2021,9 @@ impl EditorApp {
     pub fn format_document(&mut self) {
         use std::io::Write;
 
+        // T2 (S1): rustfmt trabaja sobre el texto actual; el AST/LSP
+        // diferido se aplica antes de reemplazar el buffer.
+        self.flush_full_text_sync();
         if self.current_language() != crate::syntax::Language::Rust {
             self.doc.status = "Format: rustfmt only supports Rust files".to_string();
             return;
@@ -2297,12 +2390,14 @@ impl EditorApp {
 
     /// S2 (Rust IDE): Solicita saltar a la definición del símbolo bajo el cursor (F12)
     pub fn goto_definition(&mut self) {
+        self.flush_full_text_sync();
         let is_rust = self.current_language() == crate::syntax::Language::Rust;
         self.lsp.goto_definition(&self.editor_state, &mut self.doc, is_rust);
     }
 
     /// S2 (Rust IDE): Solicita información de hover / documentación para el símbolo bajo el cursor
     pub fn request_hover(&mut self) {
+        self.flush_full_text_sync();
         let is_rust = self.current_language() == crate::syntax::Language::Rust;
         self.lsp.request_hover(&self.editor_state, &self.doc, is_rust);
     }
