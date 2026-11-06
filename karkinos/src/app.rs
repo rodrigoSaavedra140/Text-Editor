@@ -1105,9 +1105,12 @@ impl EditorApp {
 
     /// S8 (Etapa 2): Guarda el estado actual del editor en la pestaña activa.
     pub fn sync_active_to_tab(&mut self) {
-        let text = self.doc.text();
+        // T1: se comparte el `Rope` (clon O(1)) en lugar de materializar
+        // el texto completo y reconstruir el buffer de la pestaña en
+        // cada tecla.
+        let buffer = self.doc.buffer().clone();
         if let Some(tab) = self.doc.tabs.get_mut(self.doc.active_tab) {
-            tab.set_text(&text);
+            tab.set_buffer(buffer);
             tab.editor_state = self.editor_state.clone();
             tab.last_snapshot = self.doc.last_snapshot.clone();
             tab.undo_stack = self.doc.undo_stack.clone();
@@ -1160,9 +1163,11 @@ impl EditorApp {
     /// S8 (Etapa 2): Carga los datos de la pestaña `idx` en el estado activo del editor.
     pub fn load_tab(&mut self, idx: usize) {
         if idx < self.doc.tabs.len() {
-            let text = self.doc.tabs[idx].text();
+            // T1: camino inverso, también compartiendo el `Rope`
+            // (clon O(1)) en lugar de pasar por un `String`.
+            let buffer = self.doc.tabs[idx].buffer().clone();
             self.doc.active_tab = idx;
-            self.doc.set_text(&text);
+            self.doc.set_buffer(buffer);
             self.editor_state = self.doc.tabs[idx].editor_state.clone();
             self.doc.last_snapshot = self.doc.tabs[idx].last_snapshot.clone();
             self.doc.undo_stack = self.doc.tabs[idx].undo_stack.clone();

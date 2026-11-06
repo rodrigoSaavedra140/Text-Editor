@@ -119,8 +119,22 @@ impl TabDocument {
         self.buffer.to_string()
     }
 
+    /// T1: acceso al `TextBuffer` para compartir el `Rope` (clon O(1)).
+    pub fn buffer(&self) -> &TextBuffer {
+        &self.buffer
+    }
+
     pub fn set_text(&mut self, text: &str) {
         self.buffer.set_text(text);
+    }
+
+    /// T1: reemplaza el contenido por otro `TextBuffer` ya construido.
+    /// Clonar un `Rope` es O(1): los nodos se comparten con `Arc`, así
+    /// que sincronizar la pestaña con el documento activo deja de
+    /// reconstruir el texto completo.
+    pub fn set_buffer(&mut self, buffer: TextBuffer) {
+        self.buffer = buffer;
+        self.recalc_view_bytes();
     }
 
     pub fn insert(&mut self, char_idx: usize, text: &str) {
@@ -371,6 +385,19 @@ impl DocumentService {
     /// S8 (T7): reemplaza el contenido completo del buffer.
     pub fn set_text(&mut self, text: &str) {
         self.buffer.set_text(text);
+    }
+
+    /// T1: reemplaza el buffer activo por otro ya construido. Clonar un
+    /// `Rope` es O(1) (los nodos se comparten vía `Arc`), así que cargar
+    /// una pestaña no reconstruye el texto desde un `String`.
+    pub fn set_buffer(&mut self, buffer: TextBuffer) {
+        self.buffer = buffer;
+    }
+
+    /// T1: acceso de solo lectura al `Rope` activo para compartirlo con
+    /// la pestaña (`TextBuffer::clone` es O(1)).
+    pub fn buffer(&self) -> &TextBuffer {
+        &self.buffer
     }
 
     /// S8 (T7): acceso mutable al Rope para el widget del editor, que

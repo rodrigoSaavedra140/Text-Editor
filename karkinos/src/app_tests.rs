@@ -647,6 +647,86 @@
         Ok(())
     }
 
+    // ---- T1: el `Rope` se comparte al sincronizar la pestaña activa ----
+
+    #[test]
+    fn sync_active_to_tab_conserva_el_texto_exacto() {
+        let mut app = EditorApp::default();
+        // Tildes, emoji y CRLF (que `set_text` normaliza a '\n').
+        app.set_text("línea con tildes\r\nsegundo 😀 renglón\r\ntercero");
+        app.sync_active_to_tab();
+
+        let esperado = app.doc.text();
+        let pestaña = &app.doc.tabs[app.doc.active_tab];
+        assert_eq!(pestaña.text(), esperado);
+        assert!(esperado.contains("tildes"));
+        assert!(esperado.contains("😀"));
+        assert!(!esperado.contains('\r'));
+    }
+
+    #[test]
+    fn cambiar_de_pestana_y_volver_conserva_texto_y_cursor() {
+        let mut app = EditorApp::default();
+        app.set_text("primera pestaña\ncon dos líneas");
+        app.doc.dirty = true;
+        app.editor_state.cursor_line = 1;
+        app.editor_state.cursor_col = 3;
+
+        app.new_tab();
+        app.set_text("segunda pestaña");
+        assert_eq!(app.doc.tabs.len(), 2);
+
+        app.switch_tab(0);
+        assert_eq!(app.doc.current_text(), "primera pestaña\ncon dos líneas");
+        assert_eq!(app.editor_state.cursor_line, 1);
+        assert_eq!(app.editor_state.cursor_col, 3);
+
+        app.switch_tab(1);
+        assert_eq!(app.doc.current_text(), "segunda pestaña");
+
+        app.switch_tab(0);
+        assert_eq!(app.doc.current_text(), "primera pestaña\ncon dos líneas");
+        assert_eq!(app.editor_state.cursor_line, 1);
+        assert_eq!(app.editor_state.cursor_col, 3);
+    }
+
+    /// Rendimiento: correr a mano con
+    /// `cargo test --release -p karkinos -- --ignored sync_active_to_tab_es_barato`.
+    /// Antes de T1 cada llamada reconstruía el `Rope` completo desde un
+    /// `String`; ahora es un clon O(1) del `Rope` compartido.
+    #[test]
+    #[ignore = "rendimiento: correr a mano con --release -- --ignored"]
+    fn sync_active_to_tab_es_barato_con_documento_grande() {
+        const LINEAS: usize = 200_000;
+        const LLAMADAS: usize = 200;
+
+        let mut texto = String::with_capacity(LINEAS * 20);
+        for i in 0..LINEAS {
+            texto.push_str("línea de prueba ");
+            texto.push_str(&i.to_string());
+            texto.push('\n');
+        }
+
+        let mut app = EditorApp::default();
+        app.set_text(&texto);
+
+        let inicio = std::time::Instant::now();
+        for _ in 0..LLAMADAS {
+            app.sync_active_to_tab();
+        }
+        let transcurrido = inicio.elapsed();
+        eprintln!("{LLAMADAS} sync_active_to_tab sobre {LINEAS} líneas: {transcurrido:?}");
+
+        // El umbral solo tiene sentido en release (en debug el motor de
+        // tests no aplica las optimizaciones que se están midiendo).
+        if !cfg!(debug_assertions) {
+            assert!(
+                transcurrido < Duration::from_millis(50),
+                "{LLAMADAS} sincronizaciones tardaron {transcurrido:?}"
+            );
+        }
+    }
+
     // ---- Guardado de archivo sin nombre con diálogo modal ----
 
     #[test]

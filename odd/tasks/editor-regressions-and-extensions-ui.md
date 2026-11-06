@@ -27,7 +27,7 @@
 
 | ID | Specs | Riesgo | Estado | Commit sugerido |
 |----|-------|--------|--------|-----------------|
-| T1 | S1 | Medio | pendiente | `perf(tabs): share the rope when syncing the active tab` |
+| T1 | S1 | Medio | hecha | `perf(tabs): share the rope when syncing the active tab` |
 | T2 | S1 | Medio | pendiente | `perf(editor): debounce full-text consumers after each keystroke` |
 | T3 | S2 | Medio | pendiente | `perf(editor): rebuild row caches without per-line allocations` |
 | T4 | S3 | Medio | pendiente | `fix(editor): align caret, selection and clicks with rendered glyphs` |
@@ -195,3 +195,4 @@ Escribí un test `caret_x_coincide_con_el_galley` en `editor_widget.rs`:
 
 - **L1 (2026-11-06)** — Pedido original: "ahora crea un roadmap para resolver estos errores, el cursor se desplazaa 1 a la izquierda, tiene menos rendiiento, parece lagueado y mejorar el aaspecto de laparte de extenciones por algo mas moderno tiene que pensar que lo va a implementar opencode".
 - **L2 (2026-11-06)** — Análisis previo (v0.2.72): (a) `sync_active_to_tab` hace `doc.text()` + `tab.set_text()` en cada tecla, reconstruyendo el `Rope` desde un `String` (antes de T7 era un clon O(1)); (b) `update_ast` y `update_lsp` materializan el texto completo en cada tecla; (c) `rebuild_row_counts`/`rebuild_char_lens` crean un `String` por línea vía `get_line`; (d) el caret usa `col * glyph_width(' ')` mientras el texto se dibuja con galleys de egui (posible desfase acumulado con Geist Mono). La causa (d) NO está confirmada: T4 empieza por un test de diagnóstico.
+- **L3 (2026-11-06) — T1 hecha (v0.2.73).** Tests nuevos en `app_tests.rs`: `sync_active_to_tab_conserva_el_texto_exacto` y `cambiar_de_pestana_y_volver_conserva_texto_y_cursor` (GREEN; preservan comportamiento) y el perf `#[ignore]` `sync_active_to_tab_es_barato_con_documento_grande` (200 000 líneas, 200 sincronizaciones). **RED medido antes del cambio** (release): `1.439211827s` (≈7,2 ms por tecla) → fallaba el umbral de 50 ms. **GREEN después** (release): `30.548µs` para las 200 llamadas. Cambios: `DocumentService::buffer()`/`set_buffer()` y `TabDocument::buffer()`/`set_buffer()` (con `recalc_view_bytes`); `sync_active_to_tab` y `load_tab` comparten `TextBuffer` clonado (clon de `Rope` O(1)) en lugar de `doc.text()` + `set_text(&text)`. Suite: `cargo test --workspace` → 238 passed + 1 ignored (karkinos) y 149 passed (core); `cargo clippy --workspace --all-targets -- -D warnings` en verde. Nota: `tab.undo_stack = self.doc.undo_stack.clone()` sigue clonando el stack completo en cada sincronización; queda como posible mejora futura (fuera de alcance por la tarea).
