@@ -9,6 +9,7 @@
 //! `app.rs`, que ahora coordina servicios en vez de concentrar todo.
 
 use std::fs;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -35,6 +36,25 @@ pub struct SaveProgress {
     pub total: usize,
     pub done: bool,
     pub error: Option<String>,
+    // S2: hash del texto que se está escribiendo, para saber al
+    // terminar si el buffer cambió mientras tanto.
+    pub saved_text_hash: u64,
+    // Ruta destino de este guardado (informativo; el cierre usa
+    // `previous_file` para restaurar si falla).
+    #[allow(dead_code)]
+    pub target: PathBuf,
+    // S3: `current_file` que había antes de arrancar, para volver
+    // atrás si la escritura falla.
+    pub previous_file: Option<PathBuf>,
+}
+
+/// Hash del texto tal como se va a escribir en disco (S2). Solo
+/// necesita ser consistente dentro del proceso: sirve para comparar
+/// el buffer actual contra lo que efectivamente se guardó.
+fn text_hash(text: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    text.hash(&mut hasher);
+    hasher.finish()
 }
 
 /// Detecta si el archivo cambió en el disco respecto a lo que
@@ -290,6 +310,13 @@ impl DocumentService {
         serialize_line_ending(&text, self.line_ending)
     }
 
+    /// S2: hash del texto que está en el buffer ahora mismo, con el
+    /// mismo hasher que usa `save`: compararlo contra
+    /// `SaveProgress::saved_text_hash` dice si el disco quedó al día.
+    pub fn current_text_hash(&self) -> u64 {
+        text_hash(&self.current_text_with_ending())
+    }
+
     /// Recalcula el tamaño "en vivo" que muestra la barra de estado.
     /// O(n) en memoria leída (sin alocar el texto entero), y solo se
     /// corre cuando el buffer cambia de verdad: al editar (una vez por
@@ -441,9 +468,20 @@ impl DocumentService {
             return false;
         }
 
-        let data = self.current_text_with_ending().into_bytes();
+        let previous_file = self.current_file.clone();
+        let text = self.current_text_with_ending();
+        let saved_text_hash = text_hash(&text);
+        let data = text.into_bytes();
         let total = data.len();
-        let progress = Arc::new(Mutex::new(SaveProgress { written: 0, total, done: false, error: None }));
+        let progress = Arc::new(Mutex::new(SaveProgress {
+            written: 0,
+            total,
+            done: false,
+            error: None,
+            saved_text_hash,
+            target: path.clone(),
+            previous_file,
+        }));
         self.save_progress = Some(Arc::clone(&progress));
         self.current_file = Some(path.clone());
 
@@ -488,6 +526,59 @@ impl DocumentService {
         } else if let Some(path) = &self.current_file {
             self.last_disk_mtime = fs::metadata(path).ok().and_then(|m| m.modified().ok());
         }
+    }
+
+    /// S2/S3: cierra el guardado en curso cuando el hilo terminó.
+    ///
+    /// - Si hubo error, la pestaña vuelve al `current_file` anterior:
+    ///   un guardado fallido a una ruta nueva no debe quedar
+    ///   apuntando a esa ruta. `dirty` no se toca (el buffer sigue
+    ///   sin guardar).
+    /// - Si salió bien, `dirty` se recalcula comparando el texto
+    ///   actual con el que se escribió: si el usuario tecleó durante
+    ///   el guardado, el documento sigue marcado como modificado.
+    ///
+    /// Devuelve `true` solo si terminó sin error.
+    pub fn finish_save(&mut self) -> bool {
+        let Some(progress) = &self.save_progress else {
+            return false;
+        };
+        let progress = Arc::clone(progress);
+        let (done, error, saved_text_hash, previous_file) = {
+            let p = progress.lock().unwrap();
+            (
+                p.done,
+                p.error.clone(),
+                p.saved_text_hash,
+                p.previous_file.clone(),
+            )
+        };
+        if !done {
+            return false;
+        }
+
+        let ok = match error {
+            Some(e) => {
+                self.current_file = previous_file;
+                self.status = format!("Save error: {}", e);
+                false
+            }
+            None => {
+                self.dirty = self.current_text_hash() != saved_text_hash;
+                self.status = if self.dirty {
+                    "Saved (buffer changed during save)".to_string()
+                } else {
+                    "Saved".to_string()
+                };
+                true
+            }
+        };
+
+        // Refresca el mtime recordado (el disco acaba de cambiar) y,
+        // si hubo error, cancela el "cerrar tras guardar".
+        self.note_save_done();
+        self.save_progress = None;
+        ok
     }
 
     // ---- S1 / S8: confirmación con cambios sin guardar ----

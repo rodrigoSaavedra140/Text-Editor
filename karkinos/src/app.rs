@@ -3787,6 +3787,9 @@ mod tests {
             total: 9,
             done: true,
             error: None,
+            saved_text_hash: 0,
+            target: path.clone(),
+            previous_file: None,
         }));
         app.doc.save_progress = Some(Arc::clone(&progress));
         app.doc.close_after_save = true;
@@ -3946,6 +3949,88 @@ mod tests {
         assert!(contenido.contains("contenido sin nombre"), "el archivo necesita terminar el guardado async");
         std::fs::remove_dir_all(&dir)?;
         Ok(())
+    }
+
+    // ---- T2 (S2/S3): dirty y current_file al cerrar un guardado ----
+
+    /// Espera acotada a que el hilo de guardado marque `done`.
+    fn wait_for_save_done(app: &EditorApp) {
+        for _ in 0..400 {
+            let done = app
+                .doc
+                .save_progress
+                .as_ref()
+                .map(|p| p.lock().unwrap().done)
+                .unwrap_or(false);
+            if done {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        panic!("el guardado asincrónico no terminó");
+    }
+
+    #[test]
+    fn guardar_y_editar_durante_el_guardado_deja_dirty() -> std::io::Result<()> {
+        let dir = std::env::temp_dir()
+            .join(format!("karkinos_dirty_during_save_{}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join("doc.txt");
+        let _ = std::fs::remove_file(&path);
+
+        let mut app = EditorApp::default();
+        app.doc.current_file = Some(path.clone());
+        app.set_text("a");
+        assert!(app.doc.save());
+        // El usuario teclea mientras el hilo de escritura sigue vivo.
+        app.set_text("ab");
+        wait_for_save_done(&app);
+
+        assert!(app.doc.finish_save());
+        assert!(app.doc.dirty, "lo que está en disco ya no coincide con el buffer");
+        assert_eq!(std::fs::read_to_string(&path)?, "a");
+        std::fs::remove_file(&path)?;
+        std::fs::remove_dir_all(&dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn guardar_sin_editar_limpia_dirty() -> std::io::Result<()> {
+        let dir = std::env::temp_dir()
+            .join(format!("karkinos_clean_after_save_{}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join("doc.txt");
+        let _ = std::fs::remove_file(&path);
+
+        let mut app = EditorApp::default();
+        app.doc.current_file = Some(path.clone());
+        app.set_text("a");
+        app.doc.dirty = true;
+        assert!(app.doc.save());
+        wait_for_save_done(&app);
+
+        assert!(app.doc.finish_save());
+        assert!(!app.doc.dirty, "sin ediciones durante el guardado queda limpio");
+        assert_eq!(app.doc.status, "Saved");
+        std::fs::remove_file(&path)?;
+        std::fs::remove_dir_all(&dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn guardado_fallido_restaura_current_file() {
+        let mut app = EditorApp::default();
+        app.doc.current_file = None;
+        app.doc.file_path_input = "/nonexistent_dir_karkinos/x.txt".to_string();
+        app.set_text("x");
+        app.doc.dirty = true;
+        assert!(app.doc.save());
+        wait_for_save_done(&app);
+
+        assert!(!app.doc.finish_save(), "la escritura falló");
+        assert_eq!(app.doc.current_file, None, "no queda apuntando a una ruta que no se guardó");
+        assert!(app.doc.status.starts_with("Save error"), "status: {}", app.doc.status);
+        assert!(app.doc.dirty, "un guardado fallido no limpia dirty");
     }
 
 

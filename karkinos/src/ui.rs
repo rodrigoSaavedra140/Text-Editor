@@ -169,9 +169,9 @@ impl EditorApp {
         let Some(progress) = &self.doc.save_progress else {
             return;
         };
-        let (written, total, done, error) = {
+        let (written, total, done) = {
             let p = progress.lock().unwrap();
-            (p.written, p.total, p.done, p.error.clone())
+            (p.written, p.total, p.done)
         };
 
         let fraction = if total == 0 { 1.0 } else { written as f32 / total as f32 };
@@ -191,24 +191,18 @@ impl EditorApp {
         // hasta que el usuario mueva el mouse o toque algo.
         ctx.request_repaint();
 
+        let mut save_ok = false;
         if done {
-            // S1: un guardado bien hecho refresca el mtime recordado
-            // (¡el disco acaba de cambiar!) y un guardado fallido
-            // cancela el "cerrar tras guardar" para no matar la
-            // ventana encima de un error.
-            self.doc.note_save_done();
-            let had_error = error.is_some();
-            match error {
-                Some(e) => self.doc.status = format!("Save error: {}", e),
-                None => {
-                    self.doc.dirty = false;
-                    self.doc.status = "Saved".to_string();
-                }
-            }
-            self.doc.save_progress = None;
+            // S1/S2/S3: cerrar el guardado — refresca el mtime
+            // recordado (¡el disco acaba de cambiar!), recalcula
+            // `dirty` comparando el buffer con lo que se escribió y,
+            // si falló, restaura el `current_file` anterior. Un
+            // guardado fallido cancela además el "cerrar tras
+            // guardar" para no matar la ventana encima de un error.
+            save_ok = self.doc.finish_save();
             // v0.2.51: al guardar, el journal de esa pestaña deja de
             // ser necesario. Se borra apenas termina la escritura.
-            if !had_error {
+            if save_ok {
                 self.cleanup_recovery_for_active_tab();
             }
         } else {
@@ -217,13 +211,17 @@ impl EditorApp {
 
         // S1: si el usuario pidió guardar-Y-cerrar desde el diálogo y
         // el guardado terminó bien, se revisa si quedan pestañas sucias antes de cerrar.
+        // S2: si el buffer cambió durante el guardado el documento
+        // sigue sucio, así que tampoco se cierra (se perdería esa edición).
         if self.doc.close_after_save && self.doc.save_progress.is_none() {
             self.doc.close_after_save = false;
-            if let Some(next_dirty) = self.doc.first_dirty_tab_index() {
-                self.switch_tab(next_dirty);
-                self.doc.close_pending = true;
-            } else {
-                request_close(ctx, &mut self.doc.closing_since);
+            if save_ok && !self.doc.dirty {
+                if let Some(next_dirty) = self.doc.first_dirty_tab_index() {
+                    self.switch_tab(next_dirty);
+                    self.doc.close_pending = true;
+                } else {
+                    request_close(ctx, &mut self.doc.closing_since);
+                }
             }
         }
         // S3: si se pidió guardar y cerrar una pestaña puntual
