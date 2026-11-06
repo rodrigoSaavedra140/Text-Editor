@@ -97,7 +97,21 @@ pub(crate) fn is_valid_explorer_item_name(name: &str) -> bool {
     ) && components.next().is_none()
 }
 
-
+/// T2 (S4): acciones del menú File de la barra de pestañas. Se extraen a
+/// un enum para ejecutarlas después del closure de egui (que ya presta
+/// `self`) y para poder testearlas sin un contexto gráfico.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileMenuAction {
+    NewTab,
+    OpenFile,
+    OpenFolder,
+    Save,
+    SaveAs,
+    SearchFiles,
+    SearchInWorkspace,
+    CloseTab,
+    Exit,
+}
 
 pub struct EditorApp {
     // S5a (Roadmap v0.2.9): servicio de documento (buffer, pestañas,
@@ -1222,6 +1236,32 @@ impl EditorApp {
     pub fn save_document_as(&mut self) {
         self.flush_full_text_sync();
         self.doc.save_as();
+    }
+
+    /// T2 (S4): ejecuta una acción del menú File. El `ctx` solo hace falta
+    /// para `Exit`, que delega en `try_close` (diálogo de cambios sin
+    /// guardar); el resto son acciones de estado sin UI.
+    pub fn apply_file_menu_action(&mut self, action: FileMenuAction, ctx: Option<&egui::Context>) {
+        match action {
+            FileMenuAction::NewTab => self.new_tab(),
+            FileMenuAction::OpenFile => self.picker_open = true,
+            FileMenuAction::OpenFolder => self.prompt_open_folder(),
+            FileMenuAction::Save => self.save_document(),
+            FileMenuAction::SaveAs => self.save_document_as(),
+            FileMenuAction::SearchFiles => self
+                .quick_open
+                .request_open(&self.doc.browse_dir, &mut self.quick_open_services),
+            FileMenuAction::SearchInWorkspace => self.open_workspace_search(),
+            FileMenuAction::CloseTab => {
+                let idx = self.doc.active_tab;
+                self.try_close_tab(idx);
+            }
+            FileMenuAction::Exit => {
+                if let Some(ctx) = ctx {
+                    self.try_close(ctx);
+                }
+            }
+        }
     }
 
     /// S4: Avanza a la siguiente pestaña de manera cíclica.

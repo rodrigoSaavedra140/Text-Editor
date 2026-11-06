@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use eframe::egui;
 
-use crate::app::{picker_should_stay_open, EditorApp, PickerNewItemKind};
+use crate::app::{picker_should_stay_open, EditorApp, FileMenuAction, PickerNewItemKind};
 use crate::title_bar::{draw_resize_handles, icon_close_button, icon_triangle_down_button, title_bar_icon_button, TitleBarIcon};
 use crate::util::{format_size, request_close};
 use crate::LOGO_BYTES;
@@ -631,7 +631,9 @@ impl EditorApp {
     /// en pleno vuelo, NO cierra nada — planta el diálogo S1 y, si el cierre
     /// vino del sistema (X/Alt+F4 del WM), lo cancela para que la ventana
     /// siga viva mientras el usuario decide. Sin cambios: cierre de toda la vida.
-    fn try_close(&mut self, ctx: &egui::Context) {
+    /// T2 (S4): `pub(crate)` para que el menú File (app.rs) pueda cerrar
+    /// la ventana con las mismas puertas de datos.
+    pub(crate) fn try_close(&mut self, ctx: &egui::Context) {
         self.sync_active_to_tab();
 
         // Si el archivo está vacío o todas las pestañas sucias están vacías, salimos de inmediato sin diálogo
@@ -3107,9 +3109,10 @@ impl eframe::App for EditorApp {
         // estaba la barra nativa del sistema operativo — con nuestro
         // logo, "Karkinos", y los mismos botones de siempre.
         // UI-2 (v0.2.20): Tier 1 — barra de título unificada (36 px). Logo y
-        // nombre, pill de búsqueda y acciones de Cargo a la izquierda; tema,
-        // extensiones, consola y controles de ventana a la derecha. Toda la
-        // barra arrastra la ventana y el doble clic la maximiza.
+        // nombre a la izquierda; a la derecha las acciones de Cargo (Run …
+        // Clippy) y los controles de ventana. El menú File, la búsqueda y los
+        // temas viven en la franja de pestañas. Toda la barra arrastra la
+        // ventana y el doble clic la maximiza.
         egui::TopBottomPanel::top("custom_title_bar")
             .exact_height(crate::title_bar::TITLE_BAR_HEIGHT)
             .frame(egui::Frame::none().fill(theme.surface_bg))
@@ -3138,60 +3141,6 @@ impl eframe::App for EditorApp {
                         egui::FontId::proportional(14.0),
                         egui::Sense::hover(),
                     );
-                    ui.add_space(12.0);
-
-                    // Pill de búsqueda: abre Quick Open (Ctrl+P).
-                    let search_pill = ui.add_sized(
-                        [260.0, 26.0],
-                        egui::Button::new(
-                            egui::RichText::new("🔍 Search files... (Ctrl+P)")
-                                .color(theme.text_muted)
-                                .size(12.0),
-                        )
-                        .fill(theme.surface_bg)
-                        .rounding(egui::Rounding::same(6.0))
-                        .stroke(egui::Stroke::new(1.0_f32, theme.border_subtle)),
-                    );
-                    if search_pill.clicked() {
-                        self.quick_open
-                            .request_open(&self.doc.browse_dir, &mut self.quick_open_services);
-                    }
-                    // F6 (Roadmap v0.2.32): búsqueda global del workspace.
-                    if ui
-                        .button("🔎")
-                        .on_hover_text("Search in Workspace (Ctrl+Shift+F)")
-                        .clicked()
-                    {
-                        self.open_workspace_search();
-                    }
-                    // UI-7 (v0.2.38): toggle del minimap.
-                    if ui
-                        .button("🗺")
-                        .on_hover_text("Toggle Minimap (Ctrl+Shift+M)")
-                        .clicked()
-                    {
-                        self.toggle_minimap();
-                    }
-                    ui.add_space(8.0);
-
-                    // Acciones de Cargo, compactas, a la derecha de la pill.
-                    if ui.button("▶ Run").on_hover_text("Run cargo run (F5)").clicked() {
-                        self.run_cargo(karkinos_core::cargo::CargoAction::Run);
-                    }
-                    if ui.button("🐞 Debug").on_hover_text("Start / Resume Debugger (F5)").clicked() {
-                        self.cargo.panel_open = true;
-                        self.cargo.active_tab = 2;
-                        self.start_debugging();
-                    }
-                    if ui.button("Check").on_hover_text("Run cargo check (F7)").clicked() {
-                        self.run_cargo(karkinos_core::cargo::CargoAction::Check);
-                    }
-                    if ui.button("Test").on_hover_text("Run cargo test").clicked() {
-                        self.run_cargo(karkinos_core::cargo::CargoAction::Test);
-                    }
-                    if ui.button("Clippy").on_hover_text("Run cargo clippy").clicked() {
-                        self.run_cargo(karkinos_core::cargo::CargoAction::Clippy);
-                    }
 
                     // Lado derecho: lo primero agregado queda más a la derecha.
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -3208,16 +3157,26 @@ impl eframe::App for EditorApp {
                         }
                         ui.add_space(6.0);
 
-                        // Selector de temas visuales.
-                        egui::ComboBox::from_id_source("theme_picker")
-                            .selected_text(format!("🎨 {}", self.theme_mode.name()))
-                            .show_ui(ui, |ui| {
-                                for mode in crate::theme::ThemeMode::ALL {
-                                    if ui.selectable_label(self.theme_mode == mode, mode.name()).clicked() {
-                                        self.theme_mode = mode;
-                                    }
-                                }
-                            });
+                        // S5: acciones de Cargo a la izquierda de los controles
+                        // de ventana. Como el layout va de derecha a izquierda,
+                        // se agregan al revés para que se vean Run … Clippy.
+                        if ui.button("Clippy").on_hover_text("Run cargo clippy").clicked() {
+                            self.run_cargo(karkinos_core::cargo::CargoAction::Clippy);
+                        }
+                        if ui.button("Test").on_hover_text("Run cargo test").clicked() {
+                            self.run_cargo(karkinos_core::cargo::CargoAction::Test);
+                        }
+                        if ui.button("Check").on_hover_text("Run cargo check (F7)").clicked() {
+                            self.run_cargo(karkinos_core::cargo::CargoAction::Check);
+                        }
+                        if ui.button("🐞 Debug").on_hover_text("Start / Resume Debugger (F5)").clicked() {
+                            self.cargo.panel_open = true;
+                            self.cargo.active_tab = 2;
+                            self.start_debugging();
+                        }
+                        if ui.button("▶ Run").on_hover_text("Run cargo run (F5)").clicked() {
+                            self.run_cargo(karkinos_core::cargo::CargoAction::Run);
+                        }
                     });
                 });
             });
@@ -3225,9 +3184,10 @@ impl eframe::App for EditorApp {
         draw_resize_handles(ctx);
 
         // UI-2 (v0.2.20): Tier 2 — franja de pestañas y breadcrumb (30 px).
-        // Abrir y guardar a la izquierda; breadcrumb del archivo activo a la
-        // derecha. Pestaña activa: fondo del canvas, acento inferior de 2 px y
-        // nombre en negrita; las inactivas quedan transparentes y en gris.
+        // Menú File a la izquierda (abrir/guardar, búsqueda y temas);
+        // breadcrumb del archivo activo a la derecha. Pestaña activa: fondo
+        // del canvas, acento inferior de 2 px y nombre en negrita; las
+        // inactivas quedan transparentes y en gris.
         egui::TopBottomPanel::top("tab_bar")
             .exact_height(crate::title_bar::TAB_STRIP_HEIGHT)
             .frame(egui::Frame::none().fill(theme.surface_bg))
@@ -3246,15 +3206,83 @@ impl eframe::App for EditorApp {
                     ui.spacing_mut().item_spacing.x = 2.0;
                     ui.add_space(6.0);
 
-                    // Selector de archivos (su popup se ancla a este botón).
-                    let open_picker_btn = ui.button("📂 Open…");
-                    if open_picker_btn.clicked() {
-                        self.picker_open = !self.picker_open;
-                    }
-                    self.picker_button_rect = Some(open_picker_btn.interact_rect);
-
-                    if ui.button("💾 Save (Ctrl+S)").clicked() {
-                        self.save_document();
+                    // T2 (S4): menú File — abrir/guardar, búsqueda y temas en
+                    // un solo desplegable. La acción elegida se acumula y se
+                    // aplica después del closure (que ya presta `self`), igual
+                    // que switch_to/close_target. El popup del selector de
+                    // archivos se sigue anclando a este botón.
+                    let mut file_action: Option<FileMenuAction> = None;
+                    let file_menu = egui::menu::menu_button(ui, "📂 File", |ui| {
+                        if ui
+                            .add(egui::Button::new("New Tab").shortcut_text("Ctrl+T"))
+                            .clicked()
+                        {
+                            file_action = Some(FileMenuAction::NewTab);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Open File…")).clicked() {
+                            file_action = Some(FileMenuAction::OpenFile);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Open Folder…")).clicked() {
+                            file_action = Some(FileMenuAction::OpenFolder);
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if ui
+                            .add(egui::Button::new("Save").shortcut_text("Ctrl+S"))
+                            .clicked()
+                        {
+                            file_action = Some(FileMenuAction::Save);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Save As…")).clicked() {
+                            file_action = Some(FileMenuAction::SaveAs);
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if ui
+                            .add(egui::Button::new("Search Files…").shortcut_text("Ctrl+P"))
+                            .clicked()
+                        {
+                            file_action = Some(FileMenuAction::SearchFiles);
+                            ui.close_menu();
+                        }
+                        if ui
+                            .add(
+                                egui::Button::new("Search in Workspace…")
+                                    .shortcut_text("Ctrl+Shift+F"),
+                            )
+                            .clicked()
+                        {
+                            file_action = Some(FileMenuAction::SearchInWorkspace);
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        ui.menu_button("🎨 Theme", |ui| {
+                            for mode in crate::theme::ThemeMode::ALL {
+                                if ui.radio(self.theme_mode == mode, mode.name()).clicked() {
+                                    self.theme_mode = mode;
+                                    ui.close_menu();
+                                }
+                            }
+                        });
+                        ui.separator();
+                        if ui
+                            .add(egui::Button::new("Close Tab").shortcut_text("Ctrl+W"))
+                            .clicked()
+                        {
+                            file_action = Some(FileMenuAction::CloseTab);
+                            ui.close_menu();
+                        }
+                        if ui.add(egui::Button::new("Exit")).clicked() {
+                            file_action = Some(FileMenuAction::Exit);
+                            ui.close_menu();
+                        }
+                    });
+                    self.picker_button_rect = Some(file_menu.response.interact_rect);
+                    if let Some(action) = file_action {
+                        self.apply_file_menu_action(action, Some(ctx));
                     }
                     ui.add_space(6.0);
 

@@ -2819,3 +2819,41 @@
         assert_eq!(format_recovery_age_at(now - 7_200, now), "hace 2 h");
         assert_eq!(format_recovery_age_at(now - 172_800, now), "hace 2 días");
     }
+
+    // ---- T2 (S4): menú File de la barra de pestañas ----
+
+    #[test]
+    fn file_menu_acciones_basicas() {
+        // El menú File solo junta acciones que ya existían; el test fija
+        // el mapeo acción → método para que el cableado de egui no lo
+        // cambie sin querer.
+        let mut app = EditorApp::default();
+
+        // Open File… abre el selector anclado a la barra de pestañas.
+        assert!(!app.picker_open);
+        app.apply_file_menu_action(FileMenuAction::OpenFile, None);
+        assert!(app.picker_open, "Open File… debe abrir el selector");
+
+        // Open Folder… abre el modal con la ruta actual prellenada.
+        assert!(app.open_folder_modal.is_none());
+        app.apply_file_menu_action(FileMenuAction::OpenFolder, None);
+        assert!(
+            app.open_folder_modal.is_some(),
+            "Open Folder… debe abrir el modal"
+        );
+
+        // New Tab suma una pestaña en blanco.
+        let tabs = app.doc.tabs.len();
+        app.apply_file_menu_action(FileMenuAction::NewTab, None);
+        assert_eq!(app.doc.tabs.len(), tabs + 1, "New Tab suma una pestaña");
+
+        // Search Files… abre Quick Open sobre el browse_dir actual. Se usa
+        // una carpeta temporal única para no escanear el repo real.
+        let root = cli_temp_dir("file_menu_search");
+        app.doc.browse_dir = root.clone();
+        assert!(!app.quick_open.open);
+        app.apply_file_menu_action(FileMenuAction::SearchFiles, None);
+        assert!(app.quick_open.open, "Search Files… debe abrir Quick Open");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
