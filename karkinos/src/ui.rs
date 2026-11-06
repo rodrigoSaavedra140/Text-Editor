@@ -2847,6 +2847,7 @@ impl EditorApp {
                                                 self.open_path(path.clone());
                                                 self.editor_state.cursor_line = frame.line;
                                                 self.editor_state.cursor_col = frame.column;
+                                                self.editor_state.preferred_col = None;
                                                 self.editor_state.needs_autoscroll = true;
                                             }
                                         }
@@ -3166,6 +3167,7 @@ impl EditorApp {
                 Some(idx) => {
                     self.editor_state.cursor_line = idx;
                     self.editor_state.cursor_col = 0;
+                    self.editor_state.preferred_col = None;
                     self.editor_state.sel_anchor = Some((idx, 0));
                     self.editor_state.request_autoscroll();
                     self.doc.status = format!("Line {}", idx + 1);

@@ -196,6 +196,8 @@ fn dedup_extra_carets(state: &mut EditorState) {
 pub struct EditorState {
     pub cursor_line: usize,
     pub cursor_col: usize, // índice de CARÁCTER (no byte) dentro de la línea LÓGICA
+    // S12: Columna preferida / fija al navegar verticalmente entre líneas de distinta longitud
+    pub preferred_col: Option<usize>,
     pub sel_anchor: Option<(usize, usize)>,
     // F3 (Roadmap v0.2.29): cursores extra de Ctrl+D / Alt+Click. El
     // primario son los tres campos de arriba; esto son solo los adicionales.
@@ -304,6 +306,7 @@ impl Default for EditorState {
         Self {
             cursor_line: 0,
             cursor_col: 0,
+            preferred_col: None,
             sel_anchor: None,
             extra_carets: Vec::new(),
             scroll: 0.0,
@@ -495,6 +498,44 @@ fn caret_blink_next_wake(now: f64, last_activity: f64) -> f32 {
 
 fn clamp_col(lines: &[String], line: usize, col: usize) -> usize {
     col.min(line_char_count(&lines[line]))
+}
+
+/// S12: Desplaza el cursor una línea hacia arriba, respetando líneas plegadas
+/// y manteniendo la columna preferida a través de líneas vacías o más cortas.
+pub fn move_cursor_up(lines: &[String], state: &mut EditorState, shift: bool) {
+    if state.cursor_line > 0 {
+        let mut target_line = state.cursor_line - 1;
+        while target_line > 0 && state.is_line_folded(target_line) {
+            target_line -= 1;
+        }
+        if !state.is_line_folded(target_line) {
+            state.cursor_line = target_line;
+            let pref = *state.preferred_col.get_or_insert(state.cursor_col);
+            state.cursor_col = clamp_col(lines, state.cursor_line, pref);
+        }
+    }
+    if !shift {
+        state.sel_anchor = Some((state.cursor_line, state.cursor_col));
+    }
+}
+
+/// S12: Desplaza el cursor una línea hacia abajo, respetando líneas plegadas
+/// y manteniendo la columna preferida a través de líneas vacías o más cortas.
+pub fn move_cursor_down(lines: &[String], state: &mut EditorState, shift: bool) {
+    if state.cursor_line + 1 < lines.len() {
+        let mut target_line = state.cursor_line + 1;
+        while target_line + 1 < lines.len() && state.is_line_folded(target_line) {
+            target_line += 1;
+        }
+        if !state.is_line_folded(target_line) {
+            state.cursor_line = target_line;
+            let pref = *state.preferred_col.get_or_insert(state.cursor_col);
+            state.cursor_col = clamp_col(lines, state.cursor_line, pref);
+        }
+    }
+    if !shift {
+        state.sel_anchor = Some((state.cursor_line, state.cursor_col));
+    }
 }
 
 fn selection_range(state: &EditorState) -> Option<((usize, usize), (usize, usize))> {
@@ -1244,6 +1285,7 @@ pub fn show(
                         state.sel_anchor = Some((clicked_line, 0));
                         state.cursor_line = clicked_line;
                         state.cursor_col = line_end;
+                        state.preferred_col = None;
                     }
                 } else {
                     let rel_x = (pos.x - text_left).max(0.0);
@@ -1269,17 +1311,20 @@ pub fn show(
                         state.sel_anchor = Some((clicked_line, 0));
                         state.cursor_line = clicked_line;
                         state.cursor_col = line_char_count(&lines[clicked_line]);
+                        state.preferred_col = None;
                     } else if response.double_clicked() {
                         let (ws, we) = word_range_at(&lines[clicked_line], clicked_col);
                         state.sel_anchor = Some((clicked_line, ws));
                         state.cursor_line = clicked_line;
                         state.cursor_col = we;
+                        state.preferred_col = None;
                     } else {
                         if (response.clicked() && !response.dragged()) || response.drag_started() {
                             state.sel_anchor = Some((clicked_line, clicked_col));
                         }
                         state.cursor_line = clicked_line;
                         state.cursor_col = clicked_col;
+                        state.preferred_col = None;
                     }
                 }
                 cursor_moved = true;
@@ -1341,9 +1386,9 @@ pub fn show(
                 },
             )
         });
+        let cursor_before = (state.cursor_line, state.cursor_col);
         let has_events = ui.input(|i| !i.events.is_empty());
         if has_events {
-            cursor_moved = true;
             let events = ui.input(|i| i.events.clone());
             if events.iter().any(|e| matches!(e, egui::Event::Key { .. } | egui::Event::Text(_) | egui::Event::PointerButton { .. })) {
                 state.hover_text = None;
@@ -1351,6 +1396,8 @@ pub fn show(
             for event in events {
             match event {
                 egui::Event::Text(t) => {
+                    cursor_moved = true;
+                    state.preferred_col = None;
                     // F3 (Roadmap v0.2.29): el texto entra en el cursor
                     // primario y en todos los extra; si alguno tiene
                     // selección, primero se descarta en bloque.
@@ -1430,6 +1477,8 @@ pub fn show(
                     }
                 }
                 egui::Event::Paste(t) => {
+                    cursor_moved = true;
+                    state.preferred_col = None;
                     pre_break_snapshot = Some(lines.join("\n"));
                     if let Some((s, e)) = selection_range(state) {
                         delete_range(lines, s, e);
@@ -1446,6 +1495,8 @@ pub fn show(
                 }
                 egui::Event::Key { key, pressed: true, modifiers, .. } => match key {
                     egui::Key::Tab if !(modifiers.ctrl || modifiers.command || modifiers.alt) => {
+                        cursor_moved = true;
+                        state.preferred_col = None;
                         let sel = selection_range(state);
                         let multiline = sel.and_then(|(s, e)| {
                             let last_l = if e.1 == 0 && e.0 > s.0 { e.0 - 1 } else { e.0 };
@@ -1533,6 +1584,8 @@ pub fn show(
                         }
                     }
                     egui::Key::Enter => {
+                        cursor_moved = true;
+                        state.preferred_col = None;
                         pre_break_snapshot = Some(lines.join("\n"));
                         if let Some((s, e)) = selection_range(state) {
                             delete_range(lines, s, e);
@@ -1567,6 +1620,8 @@ pub fn show(
                         }
                     }
                     egui::Key::Backspace => {
+                        cursor_moved = true;
+                        state.preferred_col = None;
                         // F3: borra la selección, o el carácter anterior, en cada cursor.
                         let primary_range = selection_range(state);
 
@@ -1649,6 +1704,8 @@ pub fn show(
                         resync_rows!();
                     }
                     egui::Key::Delete => {
+                        cursor_moved = true;
+                        state.preferred_col = None;
                         // F3: borra la selección, o el carácter siguiente, en cada cursor.
                         let mut ranges = Vec::new();
                         let mut single_positions = Vec::new();
@@ -1698,6 +1755,8 @@ pub fn show(
                         resync_rows!();
                     }
                     egui::Key::ArrowLeft => {
+                        cursor_moved = true;
+                        state.preferred_col = None;
                         if modifiers.ctrl || modifiers.command {
                             let (nl, nc) = prev_word_pos(lines, state.cursor_line, state.cursor_col);
                             state.cursor_line = nl;
@@ -1713,6 +1772,8 @@ pub fn show(
                         }
                     }
                     egui::Key::ArrowRight => {
+                        cursor_moved = true;
+                        state.preferred_col = None;
                         if modifiers.ctrl || modifiers.command {
                             let (nl, nc) = next_word_pos(lines, state.cursor_line, state.cursor_col);
                             state.cursor_line = nl;
@@ -1728,6 +1789,7 @@ pub fn show(
                         }
                     }
                     egui::Key::PageUp => {
+                        cursor_moved = true;
                         let page_rows = ((rect.height() / row_height).floor() as usize).max(1);
                         let total_rows = *state.cum_rows.last().unwrap_or(&1);
                         let cur_row = visual_row_of(&state.cum_rows, state.cursor_line, state.cursor_col, wrap_chars);
@@ -1735,12 +1797,14 @@ pub fn show(
                         let target_line = line_at_visual_row(&state.cum_rows, target_row);
                         let sub_row = target_row.saturating_sub(state.cum_rows[target_line]);
                         state.cursor_line = target_line;
-                        state.cursor_col = clamp_col(lines, target_line, sub_row * wrap_chars + (state.cursor_col % wrap_chars));
+                        let pref = *state.preferred_col.get_or_insert(state.cursor_col);
+                        state.cursor_col = clamp_col(lines, target_line, sub_row * wrap_chars + (pref % wrap_chars.max(1)));
                         if !modifiers.shift {
                             state.sel_anchor = Some((state.cursor_line, state.cursor_col));
                         }
                     }
                     egui::Key::PageDown => {
+                        cursor_moved = true;
                         let page_rows = ((rect.height() / row_height).floor() as usize).max(1);
                         let total_rows = *state.cum_rows.last().unwrap_or(&1);
                         let cur_row = visual_row_of(&state.cum_rows, state.cursor_line, state.cursor_col, wrap_chars);
@@ -1748,42 +1812,39 @@ pub fn show(
                         let target_line = line_at_visual_row(&state.cum_rows, target_row);
                         let sub_row = target_row.saturating_sub(state.cum_rows[target_line]);
                         state.cursor_line = target_line;
-                        state.cursor_col = clamp_col(lines, target_line, sub_row * wrap_chars + (state.cursor_col % wrap_chars));
+                        let pref = *state.preferred_col.get_or_insert(state.cursor_col);
+                        state.cursor_col = clamp_col(lines, target_line, sub_row * wrap_chars + (pref % wrap_chars.max(1)));
                         if !modifiers.shift {
                             state.sel_anchor = Some((state.cursor_line, state.cursor_col));
                         }
                     }
                     egui::Key::ArrowUp => {
-                        if state.cursor_line > 0 {
-                            state.cursor_line -= 1;
-                            state.cursor_col = clamp_col(lines, state.cursor_line, state.cursor_col);
-                        }
-                        if !modifiers.shift {
-                            state.sel_anchor = Some((state.cursor_line, state.cursor_col));
-                        }
+                        cursor_moved = true;
+                        move_cursor_up(lines, state, modifiers.shift);
                     }
                     egui::Key::ArrowDown => {
-                        if state.cursor_line + 1 < lines.len() {
-                            state.cursor_line += 1;
-                            state.cursor_col = clamp_col(lines, state.cursor_line, state.cursor_col);
-                        }
-                        if !modifiers.shift {
-                            state.sel_anchor = Some((state.cursor_line, state.cursor_col));
-                        }
+                        cursor_moved = true;
+                        move_cursor_down(lines, state, modifiers.shift);
                     }
                     egui::Key::Home => {
+                        cursor_moved = true;
+                        state.preferred_col = None;
                         state.cursor_col = 0;
                         if !modifiers.shift {
                             state.sel_anchor = Some((state.cursor_line, state.cursor_col));
                         }
                     }
                     egui::Key::End => {
+                        cursor_moved = true;
+                        state.preferred_col = None;
                         state.cursor_col = line_char_count(&lines[state.cursor_line]);
                         if !modifiers.shift {
                             state.sel_anchor = Some((state.cursor_line, state.cursor_col));
                         }
                     }
                     egui::Key::A if modifiers.command || modifiers.ctrl => {
+                        cursor_moved = true;
+                        state.preferred_col = None;
                         state.sel_anchor = Some((0, 0));
                         state.cursor_line = lines.len() - 1;
                         state.cursor_col = line_char_count(&lines[state.cursor_line]);
@@ -1793,6 +1854,7 @@ pub fn show(
                         state.extra_carets.clear();
                     }
                     egui::Key::D if (modifiers.command || modifiers.ctrl) && modifiers.shift => {
+                        state.preferred_col = None;
                         // S7 (movido en F3): Duplicar línea o bloque seleccionado
                         let sel = selection_range(state);
                         if let Some((s, e)) = sel {
@@ -1819,6 +1881,7 @@ pub fn show(
                         state.cum_rows = build_cum_rows(&state.row_counts);
                     }
                     egui::Key::D if modifiers.command || modifiers.ctrl => {
+                        state.preferred_col = None;
                         // F3 (Roadmap v0.2.29): Ctrl+D selecciona la palabra
                         // bajo el cursor; las pulsaciones siguientes agregan la
                         // próxima aparición del texto seleccionado como cursor
@@ -1845,6 +1908,7 @@ pub fn show(
                         }
                     }
                     egui::Key::Slash if modifiers.command || modifiers.ctrl => {
+                        state.preferred_col = None;
                         // S6: Comentar / Descomentar
                         if let Some(prefix) = language.line_comment_prefix() {
                             let sel = selection_range(state);
@@ -1878,6 +1942,8 @@ pub fn show(
                 // Cortar = copiar y borrar la selección; sin selección
                 // corta la línea entera bajo el cursor.
                 egui::Event::Cut => {
+                    cursor_moved = true;
+                    state.preferred_col = None;
                     let sel = selection_range(state);
                     let text = copy_text(lines, sel, state.cursor_line);
                     ui.output_mut(|o| o.copied_text = text);
@@ -1892,6 +1958,9 @@ pub fn show(
                 }
                 _ => {}
             }
+        }
+        if (state.cursor_line, state.cursor_col) != cursor_before {
+            cursor_moved = true;
         }
         }
     }
@@ -2438,7 +2507,9 @@ pub fn show(
         let caret_doc_y = PAD_Y + visual_row as f32 * row_height;
         let target = egui::pos2(caret_doc_x, caret_doc_y);
 
-        let (next_head, next_tail, is_animating_smear) = if state.smear_enabled {
+        let has_selection = selection_range(state).is_some() || response.dragged();
+
+        let (next_head, next_tail, is_animating_smear) = if state.smear_enabled && !has_selection {
             let cursor_pos_key = (state.cursor_line, state.cursor_col);
             let just_moved = state.smear_last_target != Some(cursor_pos_key);
             if just_moved {
@@ -2468,6 +2539,7 @@ pub fn show(
         } else {
             state.smear_head = Some(target);
             state.smear_tail = Some(target);
+            state.smear_last_target = Some((state.cursor_line, state.cursor_col));
             (target, target, false)
         };
 
@@ -2485,7 +2557,7 @@ pub fn show(
             let dir = screen_head.to_vec2() - screen_tail.to_vec2();
             let dist_sq = dir.length_sq();
 
-            if state.smear_enabled && dist_sq > 1.0 {
+            if state.smear_enabled && !has_selection && dist_sq > 1.0 {
                 let pts = vec![
                     tail_rect.left_top(),
                     tail_rect.right_top(),
@@ -2568,6 +2640,7 @@ pub fn show(
             if response.clicked() {
                 state.cursor_line = (*scope_line).min(lines.len().saturating_sub(1));
                 state.cursor_col = 0;
+                state.preferred_col = None;
                 state.sel_anchor = None;
                 let row = state.cum_rows.get(*scope_line).copied().unwrap_or(0);
                 state.scroll = row as f32 * row_height;
@@ -3575,5 +3648,155 @@ mod tests {
         assert!(hull.contains(&egui::pos2(10.0, 0.0)));
         assert!(hull.contains(&egui::pos2(10.0, 20.0)));
         assert!(hull.contains(&egui::pos2(0.0, 20.0)));
+    }
+
+    #[test]
+    fn test_preferred_col_preserves_position_across_empty_line() {
+        let lines = vec![
+            "0123456789012345678901234".to_string(), // len 25
+            "".to_string(),                          // empty, len 0
+            "012345678901234567890123456789".to_string(), // len 30
+        ];
+        let mut state = EditorState {
+            cursor_line: 0,
+            cursor_col: 25,
+            ..Default::default()
+        };
+
+        // Move down into the empty line: cursor lands on col 0, preferred_col is Some(25)
+        move_cursor_down(&lines, &mut state, false);
+        assert_eq!(state.cursor_line, 1);
+        assert_eq!(state.cursor_col, 0);
+        assert_eq!(state.preferred_col, Some(25));
+
+        // Move down into the third line: cursor restores to col 25
+        move_cursor_down(&lines, &mut state, false);
+        assert_eq!(state.cursor_line, 2);
+        assert_eq!(state.cursor_col, 25);
+        assert_eq!(state.preferred_col, Some(25));
+
+        // Move up back into empty line: cursor clamps to col 0
+        move_cursor_up(&lines, &mut state, false);
+        assert_eq!(state.cursor_line, 1);
+        assert_eq!(state.cursor_col, 0);
+        assert_eq!(state.preferred_col, Some(25));
+
+        // Move up back to first line: cursor restores to col 25
+        move_cursor_up(&lines, &mut state, false);
+        assert_eq!(state.cursor_line, 0);
+        assert_eq!(state.cursor_col, 25);
+        assert_eq!(state.preferred_col, Some(25));
+    }
+
+    #[test]
+    fn test_preferred_col_preserves_across_shorter_line() {
+        let lines = vec![
+            "0123456789".to_string(),          // len 10
+            "ab".to_string(),                  // len 2
+            "0123456789abcdef".to_string(),    // len 16
+        ];
+        let mut state = EditorState {
+            cursor_line: 0,
+            cursor_col: 8,
+            ..Default::default()
+        };
+
+        // Move down to short line: cursor clamped to 2, preferred_col is Some(8)
+        move_cursor_down(&lines, &mut state, false);
+        assert_eq!(state.cursor_line, 1);
+        assert_eq!(state.cursor_col, 2);
+        assert_eq!(state.preferred_col, Some(8));
+
+        // Move down to longer line: cursor restored to 8
+        move_cursor_down(&lines, &mut state, false);
+        assert_eq!(state.cursor_line, 2);
+        assert_eq!(state.cursor_col, 8);
+        assert_eq!(state.preferred_col, Some(8));
+    }
+
+    #[test]
+    fn test_preferred_col_across_multiple_empty_lines() {
+        let lines = vec![
+            "abcdefghij".to_string(), // len 10
+            "".to_string(),
+            "".to_string(),
+            "".to_string(),
+            "012345678901234".to_string(), // len 15
+        ];
+        let mut state = EditorState {
+            cursor_line: 0,
+            cursor_col: 7,
+            ..Default::default()
+        };
+
+        for expected_line in 1..=3 {
+            move_cursor_down(&lines, &mut state, false);
+            assert_eq!(state.cursor_line, expected_line);
+            assert_eq!(state.cursor_col, 0);
+            assert_eq!(state.preferred_col, Some(7));
+        }
+
+        move_cursor_down(&lines, &mut state, false);
+        assert_eq!(state.cursor_line, 4);
+        assert_eq!(state.cursor_col, 7);
+        assert_eq!(state.preferred_col, Some(7));
+
+        for expected_line in (1..=3).rev() {
+            move_cursor_up(&lines, &mut state, false);
+            assert_eq!(state.cursor_line, expected_line);
+            assert_eq!(state.cursor_col, 0);
+            assert_eq!(state.preferred_col, Some(7));
+        }
+
+        move_cursor_up(&lines, &mut state, false);
+        assert_eq!(state.cursor_line, 0);
+        assert_eq!(state.cursor_col, 7);
+        assert_eq!(state.preferred_col, Some(7));
+    }
+
+    #[test]
+    fn test_preferred_col_resets_on_horizontal_movement() {
+        let lines = vec![
+            "0123456789".to_string(),
+            "".to_string(),
+            "0123456789".to_string(),
+        ];
+        let mut state = EditorState {
+            cursor_line: 0,
+            cursor_col: 5,
+            ..Default::default()
+        };
+
+        move_cursor_down(&lines, &mut state, false);
+        assert_eq!(state.cursor_line, 1);
+        assert_eq!(state.cursor_col, 0);
+        assert_eq!(state.preferred_col, Some(5));
+
+        // Horizontal movement clears preferred_col
+        state.preferred_col = None;
+        state.cursor_col = 0;
+
+        // Next vertical down should now capture col 0 as preferred
+        move_cursor_down(&lines, &mut state, false);
+        assert_eq!(state.cursor_line, 2);
+        assert_eq!(state.cursor_col, 0);
+        assert_eq!(state.preferred_col, Some(0));
+    }
+
+    #[test]
+    fn test_selection_range_detects_active_selection_for_smear_suppression() {
+        let mut state = EditorState {
+            cursor_line: 0,
+            cursor_col: 5,
+            sel_anchor: None,
+            ..Default::default()
+        };
+        assert!(selection_range(&state).is_none(), "sin anchor no hay seleccion");
+
+        state.sel_anchor = Some((0, 5));
+        assert!(selection_range(&state).is_none(), "cursor == anchor no cuenta como seleccion");
+
+        state.sel_anchor = Some((0, 0));
+        assert!(selection_range(&state).is_some(), "rango activo detectado para suprimir smear");
     }
 }

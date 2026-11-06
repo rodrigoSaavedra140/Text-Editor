@@ -1136,6 +1136,7 @@ impl EditorApp {
             tab.external_changed = self.doc.external_changed;
             tab.editor_state.cursor_line = self.editor_state.cursor_line;
             tab.editor_state.cursor_col = self.editor_state.cursor_col;
+            tab.editor_state.preferred_col = self.editor_state.preferred_col;
             tab.editor_state.scroll = self.editor_state.scroll;
         }
     }
@@ -1290,6 +1291,7 @@ impl EditorApp {
         };
         self.editor_state.cursor_line = 0;
         self.editor_state.cursor_col = 0;
+        self.editor_state.preferred_col = None;
         self.editor_state.sel_anchor = None;
         self.editor_state.scroll = 0.0;
         self.doc.chunk_tracker.reset();
@@ -2140,6 +2142,7 @@ impl EditorApp {
         let line = symbol.line.min(self.doc.lines.len().saturating_sub(1));
         self.editor_state.cursor_line = line;
         self.editor_state.cursor_col = symbol.character;
+        self.editor_state.preferred_col = None;
         self.editor_state.sel_anchor = Some((line, symbol.character));
         self.editor_state.request_autoscroll();
         self.symbol_picker.open = false;
@@ -2586,6 +2589,7 @@ impl EditorApp {
             .min(self.doc.lines.len().saturating_sub(1));
         self.editor_state.cursor_line = line;
         self.editor_state.cursor_col = m.col_start;
+        self.editor_state.preferred_col = None;
         self.editor_state.sel_anchor = Some((line, m.col_end));
         self.editor_state.request_autoscroll();
     }
@@ -2681,6 +2685,7 @@ impl EditorApp {
             self.open_path(full_path);
             self.editor_state.cursor_line = diag.line;
             self.editor_state.cursor_col = diag.col;
+            self.editor_state.preferred_col = None;
             self.editor_state.needs_autoscroll = true;
             self.doc.status = format!("Jumped to {}: line {}", diag.level, diag.line + 1);
         }

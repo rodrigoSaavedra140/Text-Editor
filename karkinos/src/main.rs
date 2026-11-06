@@ -106,6 +106,23 @@ fn main() -> eframe::Result<()> {
 
     let options = eframe::NativeOptions { viewport, ..Default::default() };
     eframe::run_native("Karkinos", options, Box::new(move |cc| {
+        // Configura Geist Mono como la fuente principal para todo el texto monoespaciado (editor, terminal, logs)
+        let mut fonts = egui::FontDefinitions::default();
+        fonts.font_data.insert(
+            "GeistMono-Regular".to_owned(),
+            egui::FontData::from_static(include_bytes!("../assets/fonts/GeistMono-Regular.ttf")),
+        );
+        fonts.font_data.insert(
+            "GeistMono-Bold".to_owned(),
+            egui::FontData::from_static(include_bytes!("../assets/fonts/GeistMono-Bold.ttf")),
+        );
+        fonts
+            .families
+            .entry(egui::FontFamily::Monospace)
+            .or_default()
+            .insert(0, "GeistMono-Regular".to_owned());
+        cc.egui_ctx.set_fonts(fonts);
+
         // Desactivamos el zoom global con teclado de egui para evitar que Ctrl+=/-
         // escale la ventana completa y corrompa el atlas de fuentes del editor.
         // El zoom del editor se controla directamente sobre el tamaño de fuente.
