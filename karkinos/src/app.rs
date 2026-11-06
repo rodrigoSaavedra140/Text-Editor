@@ -3114,6 +3114,25 @@ impl EditorApp {
             .join("extensions")
     }
 
+    /// Resuelve la ruta de un `.vsix` dentro de `extensions_dir`, rechazando
+    /// nombres con separadores, `..`, vacíos o sin extensión `.vsix`.
+    fn vsix_path(file_name: &str) -> Option<PathBuf> {
+        if file_name.is_empty()
+            || file_name == "."
+            || file_name == ".."
+            || file_name.contains('/')
+            || file_name.contains('\\')
+            || file_name.contains("..")
+            || std::path::Path::new(file_name)
+                .extension()
+                .and_then(|ext| ext.to_str())
+                != Some("vsix")
+        {
+            return None;
+        }
+        Some(Self::extensions_dir().join(file_name))
+    }
+
     /// Lists installed .vsix packages on disk. Returns list of (filename, file_size_bytes).
     pub fn list_installed_vsix() -> Vec<(String, u64)> {
         let dir = Self::extensions_dir();
@@ -3134,13 +3153,18 @@ impl EditorApp {
 
     /// Checks if a .vsix package for an extension exists on disk.
     pub fn is_vsix_installed(&self, ext: &karkinos_core::open_vsx::OpenVsxExtension) -> bool {
-        let file_name = format!("{}-{}.vsix", ext.name, ext.version);
-        Self::extensions_dir().join(&file_name).exists()
+        ext.vsix_file_name()
+            .and_then(|file_name| Self::vsix_path(&file_name))
+            .map(|path| path.exists())
+            .unwrap_or(false)
     }
 
     /// Uninstalls / deletes a downloaded .vsix package by filename.
     pub fn uninstall_vsix(&mut self, filename: &str) -> bool {
-        let path = Self::extensions_dir().join(filename);
+        let Some(path) = Self::vsix_path(filename) else {
+            self.doc.status = "Invalid package name".to_string();
+            return false;
+        };
         if path.exists() {
             if std::fs::remove_file(&path).is_ok() {
                 self.doc.status = format!("Uninstalled .vsix extension: {}", filename);
@@ -3167,8 +3191,16 @@ impl EditorApp {
     /// S3 (Rust IDE): Downloads an extension .vsix package asynchronously
     pub fn download_open_vsx_extension(&mut self, ext: &karkinos_core::open_vsx::OpenVsxExtension) {
         let url = ext.download_url.clone();
-        let file_name = format!("{}-{}.vsix", ext.name, ext.version);
-        let dest = Self::extensions_dir().join(&file_name);
+        let (file_name, dest) = match ext
+            .vsix_file_name()
+            .and_then(|name| Self::vsix_path(&name).map(|path| (name, path)))
+        {
+            Some(target) => target,
+            None => {
+                self.open_vsx_status = Some("Invalid extension name".to_string());
+                return;
+            }
+        };
         let id_name = ext.id();
 
         self.open_vsx_status = Some(format!("Downloading {}...", file_name));
@@ -4620,6 +4652,30 @@ mod tests {
         assert!(uninstalled);
         assert!(!test_vsix.exists());
         assert!(app.doc.status.contains("Uninstalled .vsix extension: test-ext-1.0.0.vsix"));
+    }
+
+    #[test]
+    fn uninstall_vsix_rejects_path_traversal() {
+        let mut app = EditorApp::default();
+        // Ruta a la que resolvería `extensions_dir().join("../../algo")` sin validar.
+        let outside = EditorApp::extensions_dir()
+            .join("..")
+            .join("..")
+            .join("algo");
+        let created = !outside.exists();
+        if created {
+            std::fs::write(&outside, b"testigo").unwrap();
+        }
+
+        let uninstalled = app.uninstall_vsix("../../algo");
+
+        assert!(!uninstalled);
+        assert_eq!(app.doc.status, "Invalid package name");
+        assert!(outside.exists(), "el archivo testigo no debe borrarse");
+
+        if created {
+            let _ = std::fs::remove_file(&outside);
+        }
     }
 
     #[test]

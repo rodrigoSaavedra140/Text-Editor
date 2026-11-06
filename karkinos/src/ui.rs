@@ -3697,10 +3697,10 @@ impl EditorApp {
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
-                                        let vsix_name = format!("{}-{}.vsix", ext.name, ext.version);
+                                        let vsix_name = ext.vsix_file_name();
                                         if self.is_vsix_installed(ext) {
                                             if ui.small_button("🗑 Uninstall").clicked() {
-                                                vsix_to_uninstall = Some(vsix_name);
+                                                vsix_to_uninstall = vsix_name;
                                             }
                                             ui.label(
                                                 egui::RichText::new("● Installed")

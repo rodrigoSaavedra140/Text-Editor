@@ -22,6 +22,12 @@ impl OpenVsxExtension {
     pub fn id(&self) -> String {
         format!("{}.{}", self.namespace, self.name)
     }
+
+    /// Nombre `.vsix` seguro para esta extensión, o `None` si `name`/`version`
+    /// no son válidos como nombre de archivo.
+    pub fn vsix_file_name(&self) -> Option<String> {
+        safe_vsix_file_name(&self.name, &self.version)
+    }
 }
 
 /// Search response summary from Open VSX.
@@ -71,6 +77,9 @@ impl OpenVsxClient {
         if download_url.is_empty() {
             return Err("Extension does not provide a direct download URL".to_string());
         }
+        if !is_safe_download_url(download_url) {
+            return Err("Refusing unsafe download URL".to_string());
+        }
 
         if let Some(parent) = destination.parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -83,9 +92,12 @@ impl OpenVsxClient {
             .arg("-L")
             .arg("--max-time")
             .arg("30")
-            .arg(download_url)
+            .arg("--proto")
+            .arg("=https")
             .arg("-o")
             .arg(destination)
+            .arg("--")
+            .arg(download_url)
             .output()
             .map_err(|e| format!("Failed to execute curl: {}", e))?;
 
@@ -99,6 +111,32 @@ impl OpenVsxClient {
 
         Ok(())
     }
+}
+
+/// Nombre de archivo `.vsix` seguro para una extensión, o `None` si
+/// `name`/`version` traen caracteres fuera de `[A-Za-z0-9._-]`,
+/// están vacíos o son `.`/`..`.
+pub fn safe_vsix_file_name(name: &str, version: &str) -> Option<String> {
+    fn valid(component: &str) -> bool {
+        !component.is_empty()
+            && component != "."
+            && component != ".."
+            && component
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+    }
+
+    if !valid(name) || !valid(version) {
+        return None;
+    }
+    Some(format!("{}-{}.vsix", name, version))
+}
+
+/// `true` solo para URLs `https://` sin espacios ni caracteres de control.
+pub fn is_safe_download_url(url: &str) -> bool {
+    url.starts_with("https://")
+        && url.len() > "https://".len()
+        && !url.chars().any(|c| c.is_whitespace() || c.is_control())
 }
 
 /// Parses the JSON payload from Open VSX search API.
@@ -224,6 +262,28 @@ mod tests {
         let ext2 = &result.extensions[1];
         assert_eq!(ext2.id(), "dustypomerleau.rust-syntax");
         assert_eq!(ext2.download_url, "https://open-vsx.org/api/dustypomerleau/rust-syntax/0.5.2/file/rust-syntax.vsix");
+    }
+
+    #[test]
+    fn test_safe_vsix_file_name() {
+        assert_eq!(
+            safe_vsix_file_name("rust-analyzer", "0.3.2").as_deref(),
+            Some("rust-analyzer-0.3.2.vsix")
+        );
+        assert_eq!(safe_vsix_file_name("../x", "1"), None);
+        assert_eq!(safe_vsix_file_name("a/b", "1"), None);
+        assert_eq!(safe_vsix_file_name("x", ".."), None);
+        assert_eq!(safe_vsix_file_name("", "1"), None);
+        assert_eq!(safe_vsix_file_name("x", "1 2"), None);
+    }
+
+    #[test]
+    fn test_is_safe_download_url() {
+        assert!(is_safe_download_url("https://open-vsx.org/x.vsix"));
+        assert!(!is_safe_download_url("http://open-vsx.org/x.vsix"));
+        assert!(!is_safe_download_url("-K/etc/passwd"));
+        assert!(!is_safe_download_url("file:///etc/passwd"));
+        assert!(!is_safe_download_url(""));
     }
 
     #[test]
