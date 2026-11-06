@@ -21,14 +21,56 @@ fn temp_path(path: &Path) -> io::Result<PathBuf> {
     Ok(dir.join(format!(".{file_name}.karkinos-tmp")))
 }
 
+/// Si `path` es un symlink, devuelve el archivo real al que apunta:
+/// el `rename` tiene que reemplazar ESE archivo y no el enlace (p. ej.
+/// dotfiles gestionados con stow). Un enlace roto se deja tal cual.
+fn resolve_symlink(path: &Path) -> PathBuf {
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+        }
+        _ => path.to_path_buf(),
+    }
+}
+
+/// `true` si el archivo tiene más de un hard link: reemplazarlo con
+/// `rename` lo separaría de los demás nombres.
+#[cfg(unix)]
+fn has_other_hard_links(path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    fs::metadata(path).map(|meta| meta.nlink() > 1).unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn has_other_hard_links(_path: &Path) -> bool {
+    false
+}
+
+/// Escritura en el lugar, solo para archivos con varios hard links,
+/// donde el `rename` rompería el vínculo. No es atómica.
+fn write_in_place(path: &Path, data: &[u8], mut on_progress: impl FnMut(usize)) -> io::Result<()> {
+    let mut file = fs::File::create(path)?;
+    file.write_all(data)?;
+    file.sync_all()?;
+    on_progress(data.len());
+    Ok(())
+}
+
 /// Escribe `data` en `path` de forma atómica: primero a un archivo
 /// temporal hermano, `sync_all`, y después `rename` sobre el destino.
+/// Los symlinks se siguen hasta el archivo real; un archivo con varios
+/// hard links se escribe en el lugar para no romper el vínculo.
 /// `on_progress(written)` se llama después de cada pedazo escrito.
 pub fn write_atomic(
     path: &Path,
     data: &[u8],
     mut on_progress: impl FnMut(usize),
 ) -> io::Result<()> {
+    let resolved = resolve_symlink(path);
+    let path = resolved.as_path();
+    if has_other_hard_links(path) {
+        return write_in_place(path, data, on_progress);
+    }
     let tmp_path = temp_path(path)?;
     let file_name = path.file_name().and_then(|name| name.to_str()).unwrap_or("");
     let old_path = path
@@ -199,6 +241,35 @@ mod tests {
 
         let mode = fs::metadata(&target).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o755);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn write_atomic_sigue_symlinks_y_escribe_el_archivo_real() {
+        let dir = TestDir::new();
+        let real = dir.path().join("real.txt");
+        let link = dir.path().join("link.txt");
+        fs::write(&real, "viejo").unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        write_atomic(&link, b"nuevo", |_| {}).unwrap();
+
+        assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        assert_eq!(fs::read_to_string(&real).unwrap(), "nuevo");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn write_atomic_conserva_hard_links() {
+        let dir = TestDir::new();
+        let original = dir.path().join("original.txt");
+        let enlace = dir.path().join("enlace.txt");
+        fs::write(&original, "viejo").unwrap();
+        fs::hard_link(&original, &enlace).unwrap();
+
+        write_atomic(&original, b"nuevo", |_| {}).unwrap();
+
+        assert_eq!(fs::read_to_string(&enlace).unwrap(), "nuevo");
     }
 
     #[test]
