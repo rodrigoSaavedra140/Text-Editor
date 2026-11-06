@@ -30,35 +30,39 @@ impl EditorApp {
         let mut plugin_to_uninstall: Option<String> = None;
         let mut cmd_to_execute: Option<String> = None;
 
-        // Encabezado: título fuerte + contador gris a la derecha y cierre.
+        // T3 (S3): encabezado con el mismo lenguaje visual que Explorer,
+        // Search y Source Control: título en versalitas y cierre a la derecha.
         ui.horizontal(|ui| {
             ui.label(
-                egui::RichText::new("Extensions")
-                    .size(15.0)
-                    .strong()
-                    .color(theme.text),
+                egui::RichText::new("EXTENSIONS")
+                    .color(theme.text_muted)
+                    .size(10.0)
+                    .strong(),
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if icon_close_button(ui, "Close", theme).clicked() {
                     *close_panel = true;
                 }
-                let counter = match self.extensions_tab {
-                    0 => format!(
-                        "{} installed",
-                        self.plugin_manager.len()
-                            + ExtensionsService::list_installed_vsix().len()
-                    ),
-                    2 => format!("{} results", self.extensions.open_vsx_results.len()),
-                    _ => "4 curated".to_string(),
-                };
-                ui.label(
-                    egui::RichText::new(counter)
-                        .size(10.5)
-                        .color(theme.text_muted),
-                );
             });
         });
-        ui.add_space(8.0);
+        ui.add_space(2.0);
+
+        // Línea de contexto debajo del título, como el nombre del workspace
+        // en el Explorer; el contador deja de competir con el cierre.
+        let counter = match self.extensions_tab {
+            0 => format!(
+                "{} installed",
+                self.plugin_manager.len() + ExtensionsService::list_installed_vsix().len()
+            ),
+            2 => format!("{} results", self.extensions.open_vsx_results.len()),
+            _ => "4 curated".to_string(),
+        };
+        ui.label(
+            egui::RichText::new(counter)
+                .size(11.0)
+                .color(theme.text_muted),
+        );
+        ui.add_space(4.0);
 
         // Control segmentado. Los índices de `extensions_tab` se mantienen
         // (0 = Installed, 2 = Marketplace, 1 = Showcase) y el mapeo queda acá.
@@ -90,8 +94,6 @@ impl EditorApp {
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                ui.spacing_mut().item_spacing.y = 8.0;
-
                 match self.extensions_tab {
                     0 => {
                         let plugins = self.plugin_manager.installed_plugins();
@@ -365,6 +367,70 @@ mod tests {
                 download_count: 812,
             },
         ]
+    }
+
+    /// Recorre las formas pintadas y junta las de texto, para poder inspeccionar
+    /// lo que egui realmente dibujó (texto, tamaño y color).
+    fn collect_text<'a>(
+        shapes: &'a [egui::epaint::ClippedShape],
+        out: &mut Vec<&'a egui::epaint::TextShape>,
+    ) {
+        for clipped in shapes {
+            collect_text_from_shape(&clipped.shape, out);
+        }
+    }
+
+    fn collect_text_from_shape<'a>(
+        shape: &'a egui::epaint::Shape,
+        out: &mut Vec<&'a egui::epaint::TextShape>,
+    ) {
+        match shape {
+            egui::epaint::Shape::Text(text) => out.push(text),
+            egui::epaint::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    collect_text_from_shape(shape, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// T3 (S3): el encabezado usa el mismo lenguaje visual que "EXPLORER":
+    /// mayúsculas, 10 px, fuerte y `text_muted`.
+    #[test]
+    fn encabezado_extensions_usa_el_estilo_del_explorer() {
+        let theme = ThemeMode::Dark.theme();
+        let ctx = egui::Context::default();
+        let mut app = EditorApp::default();
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(320.0, 800.0),
+            )),
+            ..Default::default()
+        };
+        let mut closed = false;
+        let output = ctx.run(raw, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                app.render_extensions_tab(ui, &theme, &mut closed);
+            });
+        });
+
+        let mut texts = Vec::new();
+        collect_text(&output.shapes, &mut texts);
+        let header = texts
+            .iter()
+            .find(|text| text.galley.text() == "EXTENSIONS")
+            .unwrap_or_else(|| {
+                let painted: Vec<_> = texts.iter().map(|t| t.galley.text()).collect();
+                panic!("no se pintó el encabezado EXTENSIONS; textos pintados: {painted:?}")
+            });
+        let format = &header.galley.job.sections[0].format;
+        assert_eq!(format.font_id.size, 10.0, "el encabezado debe medir 10 px");
+        assert_eq!(
+            format.color, theme.text_muted,
+            "el encabezado debe usar theme.text_muted"
+        );
     }
 
     /// T5 (S4): el panel se renderiza sin pánico en las 3 pestañas y en todos

@@ -12,7 +12,7 @@ use crate::theme::{lerp_color, Theme};
 /// como color "Danger" mientras no exista un token de error en la paleta.
 pub const ERROR_COLOR: egui::Color32 = egui::Color32::from_rgb(255, 90, 90);
 
-const CARD_RADIUS: f32 = 8.0;
+const CARD_RADIUS: f32 = 6.0;
 const BUTTON_RADIUS: f32 = 6.0;
 const CARD_PAD: f32 = 10.0;
 
@@ -70,22 +70,6 @@ pub fn format_count(n: u64) -> String {
 fn scale_tenths(value: f64, suffix: &str) -> String {
     let rounded = (value * 10.0).round() / 10.0;
     format!("{rounded:.1}{suffix}")
-}
-
-/// Color estable derivado del nombre: mezcla el acento del tema con un tono
-/// que sale de un hash FNV-1a del propio nombre.
-pub fn avatar_color(theme: &Theme, name: &str) -> egui::Color32 {
-    let mut hash: u32 = 2_166_136_261;
-    for byte in name.bytes() {
-        hash ^= u32::from(byte);
-        hash = hash.wrapping_mul(16_777_619);
-    }
-    let tone = egui::Color32::from_rgb(
-        (hash & 0xff) as u8,
-        ((hash >> 8) & 0xff) as u8,
-        ((hash >> 16) & 0xff) as u8,
-    );
-    lerp_color(theme.accent, tone, 0.55)
 }
 
 fn text_size(ui: &egui::Ui, text: &str, font: egui::FontId) -> egui::Vec2 {
@@ -218,24 +202,19 @@ pub fn search_field(
     response
 }
 
-/// Círculo con la inicial del nombre y un color estable derivado de él.
-pub fn avatar(ui: &mut egui::Ui, theme: &Theme, name: &str, size: f32) {
+/// Ícono neutro de extensión: caja `badge_bg` con el glifo en `accent`.
+/// Reemplaza a los antiguos avatares de color para que las tarjetas usen el
+/// mismo lenguaje visual que el resto de la app.
+pub fn extension_icon(ui: &mut egui::Ui, theme: &Theme, size: f32) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
-    let color = avatar_color(theme, name);
-    ui.painter().circle_filled(rect.center(), size * 0.5, color);
-    let initial = name
-        .chars()
-        .find(|c| c.is_alphanumeric())
-        .unwrap_or('?')
-        .to_uppercase()
-        .next()
-        .unwrap_or('?');
+    ui.painter()
+        .rect_filled(rect, egui::Rounding::same(CARD_RADIUS), theme.badge_bg);
     ui.painter().text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
-        initial,
-        egui::FontId::proportional(size * 0.45),
-        readable_text(theme, color),
+        "🧩",
+        egui::FontId::proportional(size * 0.5),
+        theme.accent,
     );
 }
 
@@ -315,7 +294,7 @@ fn chip(ui: &mut egui::Ui, label: &str, color: egui::Color32) {
 pub fn section_label(ui: &mut egui::Ui, theme: &Theme, label: &str) {
     ui.label(
         egui::RichText::new(label)
-            .size(9.5)
+            .size(10.0)
             .strong()
             .color(theme.text_muted),
     );
@@ -332,7 +311,7 @@ pub fn extension_card(ui: &mut egui::Ui, theme: &Theme, card: &ExtensionCard) ->
         .ctx()
         .animate_bool_with_time(response.id, response.hovered(), 0.12);
 
-    let fill = lerp_color(theme.surface_bg, theme.selection, 0.35 * hover_t);
+    let fill = lerp_color(theme.badge_bg, theme.text, 0.10 * hover_t);
     let border = lerp_color(theme.border_subtle, theme.border_focus, hover_t);
     ui.painter()
         .rect_filled(rect, egui::Rounding::same(CARD_RADIUS), fill);
@@ -357,7 +336,7 @@ pub fn extension_card(ui: &mut egui::Ui, theme: &Theme, card: &ExtensionCard) ->
     let title_w = (content.available_width() - 36.0 - 12.0 - controls_w).max(40.0);
 
     content.horizontal(|ui| {
-        avatar(ui, theme, &card.title, 36.0);
+        extension_icon(ui, theme, 36.0);
         ui.add_space(2.0);
         ui.allocate_ui_with_layout(
             egui::vec2(title_w, 36.0),
@@ -377,7 +356,7 @@ pub fn extension_card(ui: &mut egui::Ui, theme: &Theme, card: &ExtensionCard) ->
                 ui.add(
                     egui::Label::new(
                         egui::RichText::new(format!("{} · v{}", card.publisher, card.version))
-                            .size(10.5)
+                            .size(11.0)
                             .color(theme.text_muted),
                     )
                     .truncate(true),
@@ -496,7 +475,7 @@ pub fn compact_card(ui: &mut egui::Ui, theme: &Theme, title: &str, subtitle: &st
     ui.painter().rect_filled(
         rect,
         egui::Rounding::same(CARD_RADIUS),
-        lerp_color(theme.surface_bg, theme.selection, 0.35 * hover_t),
+        lerp_color(theme.badge_bg, theme.text, 0.10 * hover_t),
     );
     ui.painter().rect_stroke(
         rect,
@@ -517,7 +496,7 @@ pub fn compact_card(ui: &mut egui::Ui, theme: &Theme, title: &str, subtitle: &st
             ui.add(
                 egui::Label::new(
                     egui::RichText::new(title)
-                        .size(11.5)
+                        .size(13.0)
                         .strong()
                         .color(theme.text),
                 )
@@ -525,7 +504,7 @@ pub fn compact_card(ui: &mut egui::Ui, theme: &Theme, title: &str, subtitle: &st
             );
             ui.label(
                 egui::RichText::new(subtitle)
-                    .size(10.0)
+                    .size(11.0)
                     .color(theme.text_muted),
             );
         });
@@ -584,7 +563,6 @@ pub fn loading_skeleton(ui: &mut egui::Ui, theme: &Theme, rows: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::theme::ThemeMode;
 
     #[test]
     fn format_count_formatea_descargas() {
@@ -593,20 +571,5 @@ mod tests {
         assert_eq!(format_count(1_250), "1.3K");
         assert_eq!(format_count(34_500), "34.5K");
         assert_eq!(format_count(1_200_000), "1.2M");
-    }
-
-    #[test]
-    fn avatar_color_es_determinista() {
-        let theme = ThemeMode::Dark.theme();
-        assert_eq!(
-            avatar_color(&theme, "rust-analyzer"),
-            avatar_color(&theme, "rust-analyzer"),
-            "el mismo nombre debe dar el mismo color"
-        );
-        assert_ne!(
-            avatar_color(&theme, "rust-analyzer"),
-            avatar_color(&theme, "prettier"),
-            "nombres distintos deben dar colores distintos"
-        );
     }
 }
