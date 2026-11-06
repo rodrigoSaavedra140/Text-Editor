@@ -3092,6 +3092,69 @@
         );
     }
 
+    // ---- S2 (T4b): cierre forzado tras actualizar, sin diálogo previo ----
+
+    /// PRESERVE: sin el flag, cerrar con pestañas sucias sigue plantando el
+    /// diálogo Guardar/Descartar/Cancelar de siempre.
+    #[test]
+    fn try_close_con_pestanas_sucias_pide_confirmacion() {
+        let mut app = EditorApp::default();
+        app.set_text("borrador sin guardar");
+        app.doc.dirty = true;
+        let ctx = egui::Context::default();
+
+        app.try_close(&ctx);
+
+        assert!(
+            app.doc.close_pending,
+            "una pestaña sucia con contenido pide confirmación"
+        );
+        assert!(
+            app.doc.closing_since.is_none(),
+            "con el diálogo abierto la ventana todavía no se cierra"
+        );
+    }
+
+    /// PRESERVE: un cierre sin cambios sin guardar sigue cerrando de
+    /// inmediato, sin diálogo (el camino compartido que tocó T4b).
+    #[test]
+    fn try_close_sin_cambios_cierra_de_inmediato() {
+        let mut app = EditorApp::default();
+        let ctx = egui::Context::default();
+
+        app.try_close(&ctx);
+
+        assert!(!app.doc.close_pending, "no hay nada que preguntar");
+        assert!(
+            app.doc.closing_since.is_some(),
+            "el cierre se pidió de verdad"
+        );
+    }
+
+    /// T4b: al elegir Restart el usuario YA confirmó el cierre; la ventana
+    /// vieja no debe mostrar el diálogo de confirmación aunque haya pestañas
+    /// sucias (se perdía el `process::exit` forzado de ~1 s).
+    #[test]
+    fn cierre_forzado_tras_actualizar_no_deja_el_dialogo_pendiente() {
+        let mut app = EditorApp::default();
+        app.set_text("borrador sin guardar");
+        app.doc.dirty = true;
+        let ctx = egui::Context::default();
+
+        // El reinicio tras actualizar arma el flag antes de cerrar.
+        app.arm_forced_close();
+        app.try_close(&ctx);
+
+        assert!(
+            !app.doc.close_pending,
+            "el cierre forzado no deja pendiente el diálogo de confirmación"
+        );
+        assert!(
+            app.doc.closing_since.is_some(),
+            "el cierre se pidió de verdad"
+        );
+    }
+
     #[test]
     fn file_menu_exit_sin_contexto_no_hace_nada() {
         // Exit necesita el `egui::Context` para pedir el cierre de la

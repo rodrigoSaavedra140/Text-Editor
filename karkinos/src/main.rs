@@ -207,17 +207,24 @@ fn main() -> eframe::Result<()> {
 /// diagnóstico. La condición de espera es el socket: ese es el recurso que
 /// hay que tomar. Pasado el tope se sigue igual — `spawn_on` ya sabe
 /// reemplazar un socket huérfano.
+///
+/// T4b (S2): la espera usa `ping_primary`, un sondeo que la primaria NO
+/// convierte en comando: no encola nada, no despierta su UI y no le pide
+/// foco. Antes se usaba `try_send_to_primary(None)`, que manda `FOCUS` y
+/// hacía que la ventana vieja se robara el foco ~40 veces por segundo
+/// mientras se cerraba.
 fn wait_until_previous_instance_is_gone(previous_pid: Option<u32>) {
     const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
     const POLL: std::time::Duration = std::time::Duration::from_millis(25);
 
     let start = std::time::Instant::now();
     while start.elapsed() < TIMEOUT {
-        match karkinos_core::ipc::try_send_to_primary(None) {
+        if karkinos_core::ipc::ping_primary() {
             // Sigue habiendo una primaria viva: esperamos.
-            Ok(true) => std::thread::sleep(POLL),
-            // Sin primaria (o error al hablarle): el socket está libre.
-            _ => return,
+            std::thread::sleep(POLL);
+        } else {
+            // Sin primaria viva: el socket está libre.
+            return;
         }
     }
     eprintln!(

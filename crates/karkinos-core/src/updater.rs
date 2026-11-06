@@ -702,6 +702,29 @@ mod tests {
         );
     }
 
+    /// T4b: `sha256sum` imprime en minúsculas, pero un `SHA256SUMS`
+    /// generado a mano puede traer mayúsculas: se normaliza al parsear y
+    /// `verify` lo acepta igual.
+    #[test]
+    fn parse_sha256sums_normaliza_mayusculas_y_verify_acepta() {
+        let text = format!(
+            "{}  karkinos-linux-x86_64\n",
+            SHA_ABC.to_uppercase()
+        );
+
+        let sums = parse_sha256sums(&text);
+        assert_eq!(
+            sums.get("karkinos-linux-x86_64"),
+            Some(&SHA_ABC.to_string()),
+            "el hash se guarda en minúsculas"
+        );
+        assert_eq!(
+            verify(b"abc", &text, "karkinos-linux-x86_64"),
+            Ok(()),
+            "un hash en mayúsculas sigue verificando"
+        );
+    }
+
     // ---- S2/S5: reemplazo del ejecutable (destino explícito, sin
     // `current_exe()` ni procesos) ----
 

@@ -699,23 +699,35 @@ impl EditorApp {
     pub(crate) fn try_close(&mut self, ctx: &egui::Context) {
         self.sync_active_to_tab();
 
-        // Si el archivo está vacío o todas las pestañas sucias están vacías, salimos de inmediato sin diálogo
-        if self.doc.all_dirty_tabs_are_empty() && self.doc.save_progress.is_none() {
-            request_close(ctx, &mut self.doc.closing_since);
-            return;
-        }
+        // T4b: un cierre forzado (reinicio tras actualizar, ya confirmado
+        // por el usuario) se salta las puertas de datos: no vuelve a
+        // preguntar por las pestañas sucias.
+        let outcome = crate::util::close_outcome(
+            self.force_close,
+            self.doc.all_dirty_tabs_are_empty(),
+            self.doc.save_progress.is_some(),
+        );
 
-        if let Some(dirty_idx) = self.doc.first_dirty_tab_index() {
-            if dirty_idx != self.doc.active_tab {
-                self.switch_tab(dirty_idx);
+        match outcome {
+            // Sin nada que perder (o con el cierre ya confirmado): salimos
+            // de inmediato sin diálogo.
+            crate::util::CloseOutcome::Close | crate::util::CloseOutcome::ForceClose => {
+                request_close(ctx, &mut self.doc.closing_since);
             }
-            self.doc.close_pending = true;
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-        } else if self.doc.save_progress.is_some() {
-            self.doc.close_pending = true;
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-        } else {
-            request_close(ctx, &mut self.doc.closing_since);
+            crate::util::CloseOutcome::Confirm => {
+                if let Some(dirty_idx) = self.doc.first_dirty_tab_index() {
+                    if dirty_idx != self.doc.active_tab {
+                        self.switch_tab(dirty_idx);
+                    }
+                    self.doc.close_pending = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                } else if self.doc.save_progress.is_some() {
+                    self.doc.close_pending = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                } else {
+                    request_close(ctx, &mut self.doc.closing_since);
+                }
+            }
         }
     }
 

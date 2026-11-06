@@ -7,6 +7,11 @@
 //! [`IpcServer`] that accepts connections in a lightweight background thread
 //! and delivers parsed commands to the UI through an `mpsc` channel.
 //!
+//! A special `PING` command exists only for liveness probing: the server
+//! acknowledges it without enqueuing any [`IpcCommand`] and without waking the
+//! UI, so the post-update restart can ask "is the old instance still holding
+//! the socket?" without stealing its focus ([`ping_primary`]).
+//!
 //! On non-Unix platforms every entry point degrades to a safe no-op that
 //! reports "no primary instance" (`Ok(false)`).
 
@@ -56,6 +61,22 @@ pub fn try_send_to_primary(target: Option<&std::path::Path>) -> Result<bool, Str
 #[cfg(not(unix))]
 pub fn try_send_to_primary(_target: Option<&std::path::Path>) -> Result<bool, String> {
     Ok(false)
+}
+
+/// Sondea si hay una instancia primaria viva en el socket de siempre.
+///
+/// T4b (S2): a diferencia de `try_send_to_primary(None)`, este sondeo NO
+/// genera ningún [`IpcCommand`] en la primaria: no encola nada, no despierta
+/// su UI y no le pide foco. Es lo que necesita el reinicio tras una
+/// actualización, que pregunta "¿ya soltaste el socket?" en un bucle.
+#[cfg(unix)]
+pub fn ping_primary() -> bool {
+    ping_socket(&socket_path())
+}
+
+#[cfg(not(unix))]
+pub fn ping_primary() -> bool {
+    false
 }
 
 #[cfg(unix)]
@@ -142,6 +163,31 @@ mod unix_impl {
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{mpsc, Arc};
+
+    /// T4b: sondeo de vida contra un socket explícito.
+    ///
+    /// Manda `PING`, que el servidor contesta `OK` sin encolar ningún
+    /// [`IpcCommand`] ni llamar al waker (ver `handle_connection`). `true`
+    /// solo si la primaria contestó: un socket huérfano, un connect
+    /// rechazado o un `OK` que no llega cuentan como "no hay primaria",
+    /// que es justo lo que el bucle de espera quiere saber.
+    pub fn ping_socket(socket: &Path) -> bool {
+        let Ok(mut stream) = UnixStream::connect(socket) else {
+            return false;
+        };
+        // El sondeo se repite cada 25 ms: un tope corto evita que una
+        // primaria medio muerta estanque el bucle de espera.
+        let timeout = Some(std::time::Duration::from_millis(500));
+        if stream.set_read_timeout(timeout).is_err() || stream.set_write_timeout(timeout).is_err() {
+            return false;
+        }
+        if writeln!(stream, "PING").is_err() || stream.flush().is_err() {
+            return false;
+        }
+        let mut response = String::new();
+        matches!(BufReader::new(&stream).read_line(&mut response), Ok(n) if n > 0)
+            && response.trim() == "OK"
+    }
 
     /// Core client logic against an explicit socket path (testable without
     /// touching the process-wide well-known path).
@@ -253,6 +299,9 @@ mod unix_impl {
         let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(2)));
         let mut line = String::new();
         let mut success = false;
+        // T4b: `PING` contesta OK pero no encola ni despierta la UI, así que
+        // el ack y el waker se deciden por separado.
+        let mut wake_ui = false;
         {
             let mut reader = BufReader::new(&stream);
             if reader.read_line(&mut line).is_ok() {
@@ -262,17 +311,24 @@ mod unix_impl {
                     if !path.is_empty() {
                         let _ = tx.send(IpcCommand::Open(PathBuf::from(path)));
                         success = true;
+                        wake_ui = true;
                     }
                 } else if trimmed == "FOCUS" {
                     let _ = tx.send(IpcCommand::Focus);
+                    success = true;
+                    wake_ui = true;
+                } else if trimmed == "PING" {
+                    // Sondeo de vida: solo el ack, nada para la UI.
                     success = true;
                 }
             }
         }
         if success {
-            if let Ok(guard) = waker.lock() {
-                if let Some(ref wake) = *guard {
-                    wake();
+            if wake_ui {
+                if let Ok(guard) = waker.lock() {
+                    if let Some(ref wake) = *guard {
+                        wake();
+                    }
                 }
             }
             let _ = stream.write_all(b"OK\n");
@@ -282,6 +338,9 @@ mod unix_impl {
         let _ = stream.flush();
     }
 }
+
+#[cfg(unix)]
+use unix_impl::ping_socket;
 
 #[cfg(unix)]
 use unix_impl::send_to_socket;
@@ -370,6 +429,71 @@ mod tests {
         let result =
             send_to_socket(&socket, Some(std::path::Path::new("/no/such/file"))).expect("send");
         assert!(!result, "no server must yield Ok(false)");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// T4b (S2): el sondeo de vida que usa el reinicio tras actualizar no
+    /// puede dejar NADA en la instancia primaria: ni un `IpcCommand` en el
+    /// canal, ni un despertar de la UI (que le robaba el foco ~40 veces por
+    /// segundo a la ventana que se estaba cerrando).
+    #[cfg(unix)]
+    #[test]
+    fn probe_no_encola_comandos_ni_despierta_la_ui() {
+        let dir = temp_dir("probe");
+        let socket = dir.join("karkinos.sock");
+        let server = spawn_on(socket.clone()).expect("spawn server on temp socket");
+
+        let wakes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        {
+            let counter = std::sync::Arc::clone(&wakes);
+            server.set_waker(move || {
+                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            });
+        }
+
+        for _ in 0..5 {
+            assert!(
+                ping_socket(&socket),
+                "una primaria viva contesta OK al sondeo"
+            );
+        }
+
+        assert!(
+            matches!(
+                server.receiver.try_recv(),
+                Err(std::sync::mpsc::TryRecvError::Empty)
+            ),
+            "el sondeo no puede dejar comandos pendientes en la primaria"
+        );
+        assert_eq!(
+            wakes.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "el sondeo no debe despertar la UI de la primaria"
+        );
+
+        // El reenvío normal de una segunda instancia NO cambia.
+        assert!(send_to_socket(&socket, None).expect("client send focus"));
+        let cmd = server
+            .receiver
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("focus command delivered over mpsc");
+        assert_eq!(cmd, IpcCommand::Focus);
+        assert_eq!(
+            wakes.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "el FOCUS de una segunda instancia sí despierta la UI"
+        );
+
+        drop(server);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Sin primaria escuchando el sondeo dice que no, en vez de colgarse.
+    #[cfg(unix)]
+    #[test]
+    fn probe_sin_servidor_es_falso() {
+        let dir = temp_dir("probe_none");
+        assert!(!ping_socket(&dir.join("missing.sock")));
         std::fs::remove_dir_all(&dir).ok();
     }
 

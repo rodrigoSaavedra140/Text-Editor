@@ -179,6 +179,10 @@ pub struct EditorApp {
     // S1 (auto-actualización): chequeo del último release publicado y
     // estado del botón de update de la barra de título.
     pub updates: crate::update_service::UpdateService,
+    // S2 (T4b): el reinicio tras actualizar ya pidió el cierre, así que la
+    // ventana vieja no vuelve a preguntar por las pestañas sucias (ver
+    // `arm_forced_close` y `try_close`).
+    pub force_close: bool,
     // S1 (Rust IDE): Ejecutor nativo de pipelines de Cargo
     // S4 (Rust IDE): Code Actions, Inlay Hints & Rename
     // S4 (Rust IDE): DAP Native Debugger & Breakpoints
@@ -839,6 +843,7 @@ impl Default for EditorApp {
             extensions_tab: 0,
             extensions: crate::extensions_service::ExtensionsService::default(),
             updates: crate::update_service::UpdateService::default(),
+            force_close: false,
             ast_worker: crate::ast_worker::AstWorker::spawn(),
             ast_request_rev: 0,
             ast_applied_rev: 0,
@@ -3213,6 +3218,14 @@ impl EditorApp {
         self.updates.installing()
     }
 
+    /// S2 (T4b): el usuario ya confirmó el reinicio tras actualizar, así que
+    /// el cierre que viene a continuación NO debe plantar otra vez el
+    /// diálogo de cambios sin guardar. `try_close` (y con él el manejo del
+    /// `Close` del gestor de ventanas) consulta este flag.
+    pub fn arm_forced_close(&mut self) {
+        self.force_close = true;
+    }
+
     /// S2: pregunta del diálogo modal cuando la actualización ya está
     /// instalada, o `None` si no hay nada que preguntar. Si hay pestañas
     /// con cambios sin guardar lo avisa antes de reiniciar, con el mismo
@@ -3256,7 +3269,10 @@ impl EditorApp {
                 // Cierre prolijo: el mismo camino que cerrar la ventana,
                 // que además fuerza la salida del proceso en ~1 s (el
                 // binario nuevo espera justo eso antes de tomar la
-                // instancia única).
+                // instancia única). El cierre va forzado: el usuario ya
+                // confirmó el reinicio, no tiene que volver a decidir qué
+                // hacer con las pestañas sucias (T4b).
+                self.arm_forced_close();
                 crate::util::request_close(ctx, &mut self.doc.closing_since);
             }
             Err(e) => {

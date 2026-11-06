@@ -1,4 +1,4 @@
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use eframe::egui;
 
@@ -38,10 +38,46 @@ pub fn request_close(ctx: &egui::Context, closing_since: &mut Option<Instant>) {
     }
     *closing_since = Some(Instant::now());
     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    arm_force_exit_watchdog();
+}
+
+/// La salvaguarda que mata el proceso al segundo. En los tests no se arma:
+/// mataría el proceso que corre la suite (el cierre se verifica por el
+/// estado, no por el reloj).
+#[cfg(not(test))]
+fn arm_force_exit_watchdog() {
     std::thread::spawn(|| {
-        std::thread::sleep(Duration::from_secs(1));
+        std::thread::sleep(std::time::Duration::from_secs(1));
         std::process::exit(0);
     });
+}
+
+#[cfg(test)]
+fn arm_force_exit_watchdog() {}
+
+/// T4b (S2): qué hacer cuando se pide cerrar la ventana.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloseOutcome {
+    /// No hay nada que perder: cerrar ya.
+    Close,
+    /// El usuario ya confirmó el reinicio tras actualizar: cerrar ya, sin
+    /// volver a preguntar por las pestañas sucias.
+    ForceClose,
+    /// Hay cambios sin guardar (o un guardado en vuelo): plantar el
+    /// diálogo Guardar / Descartar / Cancelar y no cerrar todavía.
+    Confirm,
+}
+
+/// Decide el cierre de la ventana: un cierre normal respeta las puertas de
+/// datos (diálogo si hay algo sucio) y un cierre forzado las salta.
+pub fn close_outcome(force_close: bool, all_dirty_tabs_empty: bool, saving: bool) -> CloseOutcome {
+    if force_close {
+        CloseOutcome::ForceClose
+    } else if all_dirty_tabs_empty && !saving {
+        CloseOutcome::Close
+    } else {
+        CloseOutcome::Confirm
+    }
 }
 
 /// Detecta si estamos corriendo dentro de WSL (y no en Linux nativo).
