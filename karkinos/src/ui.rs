@@ -663,7 +663,8 @@ impl EditorApp {
         let symbols_active = self.sidebar_tab == crate::app::SidebarTab::Symbols;
         let source_control_active =
             self.sidebar_tab == crate::app::SidebarTab::SourceControl;
-        let extensions_active = self.extensions_modal_open;
+        let extensions_active =
+            self.sidebar_tab == crate::app::SidebarTab::Extensions;
         let cargo_active = self.cargo.panel_open && self.cargo.active_tab != 2;
         let debug_active = self.cargo.panel_open && self.cargo.active_tab == 2;
 
@@ -747,11 +748,10 @@ impl EditorApp {
                         self.open_source_control();
                     }
                     if tool(ui, "📦", extensions_active)
-                        .on_hover_text("Extensions")
+                        .on_hover_text("Extensions (Ctrl+Shift+X)")
                         .clicked()
                     {
-                        self.extensions_modal_open = true;
-                        self.extensions_tab = 0;
+                        self.open_extensions();
                     }
                     if tool(ui, "⚡", cargo_active)
                         .on_hover_text("Cargo Console (Ctrl+`)")
@@ -801,6 +801,9 @@ impl EditorApp {
                 }
                 crate::app::SidebarTab::Symbols => {
                     self.render_symbols_tab(ui, theme, &mut close_panel);
+                }
+                crate::app::SidebarTab::Extensions => {
+                    self.render_extensions_tab(ui, theme, &mut close_panel);
                 }
                 crate::app::SidebarTab::None => {}
             });
@@ -3347,90 +3350,122 @@ impl EditorApp {
         }
     }
 
-    /// Diálogo modal para explorar extensiones de la comunidad y plugins instalados.
-    fn show_extensions_dialog(&mut self, ctx: &egui::Context) {
-        if !self.extensions_modal_open {
-            return;
-        }
-
-        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-            self.extensions_modal_open = false;
-            return;
-        }
-
+    /// Pestaña de Extensiones en la barra lateral unificada (v0.2.56):
+    /// gestiona plugins instalados, catálogo Open VSX y sugerencias comunitarias
+    /// en el mismo panel lateral que el explorador de archivos.
+    fn render_extensions_tab(
+        &mut self,
+        ui: &mut egui::Ui,
+        theme: &crate::theme::Theme,
+        close_panel: &mut bool,
+    ) {
+        let mut do_search = false;
+        let mut download_target: Option<karkinos_core::open_vsx::OpenVsxExtension> = None;
+        let mut vsix_to_uninstall: Option<String> = None;
+        let mut plugin_to_uninstall: Option<String> = None;
         let mut cmd_to_execute: Option<String> = None;
-        let mut open = self.extensions_modal_open;
-        let mut close_clicked = false;
 
-        egui::Window::new("📦 Community Extensions & Plugins")
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(false)
-            .default_width(520.0)
-            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    if ui.selectable_label(self.extensions_tab == 0, "📦 Installed Extensions").clicked() {
-                        self.extensions_tab = 0;
-                    }
-                    if ui.selectable_label(self.extensions_tab == 1, "🌐 Community Showcase").clicked() {
-                        self.extensions_tab = 1;
-                    }
-                    if ui.selectable_label(self.extensions_tab == 2, "🌐 Open VSX Registry").clicked() {
-                        self.extensions_tab = 2;
-                        if self.open_vsx_results.is_empty() && !self.open_vsx_searching {
-                            self.search_open_vsx("rust");
-                        }
-                    }
-                });
-                ui.separator();
+        // Cabecera unificada: EXTENSIONS + botón de cerrar
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("EXTENSIONS")
+                    .color(theme.text_muted)
+                    .size(10.0)
+                    .strong(),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if icon_close_button(ui, "Close", theme).clicked() {
+                    *close_panel = true;
+                }
+            });
+        });
+        ui.add_space(4.0);
 
+        // Sub-pestañas compactas
+        ui.horizontal(|ui| {
+            if ui
+                .selectable_label(self.extensions_tab == 0, "Installed")
+                .on_hover_text("Installed Extensions & Plugins")
+                .clicked()
+            {
+                self.extensions_tab = 0;
+            }
+            if ui
+                .selectable_label(self.extensions_tab == 2, "Open VSX")
+                .on_hover_text("Open VSX Registry")
+                .clicked()
+            {
+                self.extensions_tab = 2;
+                if self.open_vsx_results.is_empty() && !self.open_vsx_searching {
+                    self.search_open_vsx("rust");
+                }
+            }
+            if ui
+                .selectable_label(self.extensions_tab == 1, "Showcase")
+                .on_hover_text("Community Showcase")
+                .clicked()
+            {
+                self.extensions_tab = 1;
+            }
+        });
+        ui.separator();
+
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
                 if self.extensions_tab == 0 {
-                    ui.label(egui::RichText::new("Installed Extensions & Active Plugins").strong());
-                    ui.add_space(4.0);
-
-                    let mut plugin_to_uninstall: Option<String> = None;
-                    let mut vsix_to_uninstall: Option<String> = None;
+                    ui.label(egui::RichText::new("Active Plugins").strong());
+                    ui.add_space(2.0);
 
                     let plugins = self.plugin_manager.installed_plugins();
-                    egui::ScrollArea::vertical().max_height(280.0).show(ui, |ui| {
-                        if plugins.is_empty() {
-                            ui.label(
-                                egui::RichText::new("No active plugins registered.")
-                                    .italics()
-                                    .color(egui::Color32::from_gray(140)),
-                            );
-                        }
+                    if plugins.is_empty() {
+                        ui.label(
+                            egui::RichText::new("No active plugins registered.")
+                                .italics()
+                                .color(theme.text_muted)
+                                .small(),
+                        );
+                    } else {
                         for plugin in &plugins {
                             ui.group(|ui| {
-                                ui.horizontal(|ui| {
+                                ui.horizontal_wrapped(|ui| {
                                     ui.label(egui::RichText::new(&plugin.name).strong());
                                     ui.label(
                                         egui::RichText::new(format!("v{}", plugin.version))
-                                            .color(egui::Color32::from_gray(140)),
+                                            .color(theme.text_muted)
+                                            .small(),
                                     );
-                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                        if ui.small_button("🗑 Uninstall").clicked() {
-                                            plugin_to_uninstall = Some(plugin.name.clone());
-                                        }
-                                        ui.label(
-                                            egui::RichText::new("● Active")
-                                                .color(egui::Color32::from_rgb(80, 200, 120)),
-                                        );
-                                    });
                                 });
                                 if !plugin.description.is_empty() {
                                     ui.label(
                                         egui::RichText::new(&plugin.description)
-                                            .color(egui::Color32::from_gray(180)),
+                                            .color(theme.text_muted)
+                                            .small(),
                                     );
                                 }
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        egui::RichText::new("● Active")
+                                            .color(egui::Color32::from_rgb(80, 200, 120))
+                                            .small(),
+                                    );
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            if ui.small_button("🗑 Uninstall").clicked() {
+                                                plugin_to_uninstall = Some(plugin.name.clone());
+                                            }
+                                        },
+                                    );
+                                });
                                 if !plugin.commands.is_empty() {
-                                    ui.add_space(3.0);
+                                    ui.add_space(2.0);
                                     ui.horizontal_wrapped(|ui| {
-                                        ui.label("Commands:");
                                         for cmd in &plugin.commands {
-                                            if ui.small_button(format!("⚡ {}", cmd.title)).clicked() {
+                                            if ui
+                                                .small_button(format!("⚡ {}", cmd.title))
+                                                .clicked()
+                                            {
                                                 cmd_to_execute = Some(cmd.id.clone());
                                             }
                                         }
@@ -3439,53 +3474,52 @@ impl EditorApp {
                             });
                             ui.add_space(4.0);
                         }
+                    }
 
-                        ui.add_space(6.0);
-                        ui.separator();
-                        ui.label(egui::RichText::new("Downloaded .vsix Packages").strong());
-                        ui.add_space(2.0);
+                    ui.add_space(6.0);
+                    ui.separator();
+                    ui.label(egui::RichText::new("Downloaded .vsix Packages").strong());
+                    ui.add_space(2.0);
 
-                        let vsix_list = Self::list_installed_vsix();
-                        if vsix_list.is_empty() {
-                            ui.label(
-                                egui::RichText::new(
-                                    "No .vsix packages downloaded yet. Use the Open VSX Registry tab to find extensions.",
-                                )
-                                .italics()
-                                .color(egui::Color32::from_gray(140)),
-                            );
-                        } else {
-                            for (filename, size) in &vsix_list {
-                                ui.group(|ui| {
-                                    ui.horizontal(|ui| {
-                                        ui.label(egui::RichText::new(filename).strong());
-                                        ui.label(
-                                            egui::RichText::new(format_size(*size as usize))
-                                                .color(egui::Color32::from_gray(140)),
-                                        );
-                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let vsix_list = Self::list_installed_vsix();
+                    if vsix_list.is_empty() {
+                        ui.label(
+                            egui::RichText::new(
+                                "No .vsix downloaded yet. Search Open VSX to install packages.",
+                            )
+                            .italics()
+                            .color(theme.text_muted)
+                            .small(),
+                        );
+                    } else {
+                        for (filename, size) in &vsix_list {
+                            ui.group(|ui| {
+                                ui.label(egui::RichText::new(filename).strong().small());
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        egui::RichText::new(crate::util::format_size(*size as usize))
+                                            .color(theme.text_muted)
+                                            .small(),
+                                    );
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
                                             if ui.small_button("🗑 Uninstall").clicked() {
                                                 vsix_to_uninstall = Some(filename.clone());
                                             }
-                                        });
-                                    });
+                                        },
+                                    );
                                 });
-                                ui.add_space(3.0);
-                            }
+                            });
+                            ui.add_space(3.0);
                         }
-                    });
-
-                    if let Some(name) = plugin_to_uninstall {
-                        self.uninstall_plugin(&name);
-                    }
-                    if let Some(filename) = vsix_to_uninstall {
-                        self.uninstall_vsix(&filename);
                     }
                 } else if self.extensions_tab == 1 {
-                    ui.label(egui::RichText::new("Community Extensions & Contributions").strong());
+                    ui.label(egui::RichText::new("Community Showcase").strong());
                     ui.label(
-                        egui::RichText::new("Discover and contribute community-created extensions for Karkinos.")
-                            .color(egui::Color32::from_gray(160)),
+                        egui::RichText::new("Curated extensions for Karkinos.")
+                            .color(theme.text_muted)
+                            .small(),
                     );
                     ui.add_space(4.0);
 
@@ -3516,59 +3550,55 @@ impl EditorApp {
                         ),
                     ];
 
-                    egui::ScrollArea::vertical().max_height(240.0).show(ui, |ui| {
-                        for (name, ver, desc, author) in &showcase {
-                            ui.group(|ui| {
-                                ui.horizontal(|ui| {
-                                    ui.label(egui::RichText::new(*name).strong());
-                                    ui.label(
-                                        egui::RichText::new(*ver).color(egui::Color32::from_gray(140)),
-                                    );
-                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                        ui.label(
-                                            egui::RichText::new(format!("by {}", author))
-                                                .color(egui::Color32::from_rgb(130, 170, 255)),
-                                        );
-                                    });
-                                });
+                    for (name, ver, desc, author) in &showcase {
+                        ui.group(|ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(egui::RichText::new(*name).strong());
                                 ui.label(
-                                    egui::RichText::new(*desc).color(egui::Color32::from_gray(180)),
-                                );
-                                ui.label(
-                                    egui::RichText::new("Coming Soon / In Review")
-                                        .italics()
-                                        .color(egui::Color32::from_gray(130)),
+                                    egui::RichText::new(*ver)
+                                        .color(theme.text_muted)
+                                        .small(),
                                 );
                             });
-                            ui.add_space(4.0);
-                        }
-                    });
+                            ui.label(
+                                egui::RichText::new(format!("by {}", author))
+                                    .color(egui::Color32::from_rgb(130, 170, 255))
+                                    .small(),
+                            );
+                            ui.label(
+                                egui::RichText::new(*desc)
+                                    .color(theme.text_muted)
+                                    .small(),
+                            );
+                            ui.label(
+                                egui::RichText::new("Coming Soon / In Review")
+                                    .italics()
+                                    .color(theme.text_muted)
+                                    .small(),
+                            );
+                        });
+                        ui.add_space(4.0);
+                    }
 
                     ui.add_space(6.0);
                     ui.separator();
                     ui.label(
                         egui::RichText::new(
-                            "💡 Want to contribute an extension? Implement `karkinos_core::plugin::Plugin` and submit a PR!",
+                            "💡 Implement `karkinos_core::plugin::Plugin` and submit a PR to contribute!",
                         )
                         .italics()
-                        .color(egui::Color32::from_rgb(180, 200, 230)),
+                        .color(egui::Color32::from_rgb(180, 200, 230))
+                        .small(),
                     );
                 } else {
-                    ui.label(egui::RichText::new("🛒 Open VSX Registry (open-vsx.org)").strong());
-                    ui.label(
-                        egui::RichText::new("Search, browse, and download community extensions and themes (.vsix).")
-                            .color(egui::Color32::from_gray(160)),
-                    );
-                    ui.add_space(4.0);
-
-                    let mut do_search = false;
-                    let mut download_target: Option<karkinos_core::open_vsx::OpenVsxExtension> = None;
-                    let mut vsix_to_uninstall_registry: Option<String> = None;
+                    ui.label(egui::RichText::new("Open VSX Registry").strong());
+                    ui.add_space(2.0);
 
                     ui.horizontal(|ui| {
                         let resp = ui.add(
                             egui::TextEdit::singleline(&mut self.open_vsx_query_input)
-                                .hint_text("Search Open VSX (e.g. rust, theme)...")
+                                .hint_text("Search (e.g. rust)...")
+                                .desired_width(120.0),
                         );
                         if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                             do_search = true;
@@ -3576,99 +3606,117 @@ impl EditorApp {
                         if ui.button("Search").clicked() {
                             do_search = true;
                         }
-                        if self.open_vsx_searching {
-                            ui.label(egui::RichText::new("Searching…").italics().color(egui::Color32::from_rgb(255, 190, 60)));
-                        }
                     });
 
+                    if self.open_vsx_searching {
+                        ui.label(
+                            egui::RichText::new("Searching…")
+                                .italics()
+                                .color(egui::Color32::from_rgb(255, 190, 60))
+                                .small(),
+                        );
+                    }
                     if let Some(ref st) = self.open_vsx_status {
-                        ui.label(egui::RichText::new(st).color(egui::Color32::from_rgb(100, 200, 130)).small());
+                        ui.label(
+                            egui::RichText::new(st)
+                                .color(egui::Color32::from_rgb(100, 200, 130))
+                                .small(),
+                        );
                     }
                     if let Some(ref err) = self.open_vsx_error {
-                        ui.label(egui::RichText::new(format!("Error: {}", err)).color(egui::Color32::from_rgb(255, 90, 90)).small());
+                        ui.label(
+                            egui::RichText::new(format!("Error: {}", err))
+                                .color(egui::Color32::from_rgb(255, 90, 90))
+                                .small(),
+                        );
                     }
 
                     ui.add_space(4.0);
-                    egui::ScrollArea::vertical().max_height(240.0).show(ui, |ui| {
-                        if self.open_vsx_results.is_empty() && !self.open_vsx_searching {
-                            ui.label(egui::RichText::new("No extensions found. Try searching for 'rust' or 'theme'.").italics());
-                        }
 
-                        for ext in &self.open_vsx_results {
-                            ui.group(|ui| {
-                                ui.horizontal(|ui| {
-                                    ui.label(egui::RichText::new(&ext.display_name).strong());
-                                    ui.label(egui::RichText::new(format!("v{}", ext.version)).color(egui::Color32::from_gray(140)));
-                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                        ui.label(
-                                            egui::RichText::new(format!("by {}", ext.namespace))
-                                                .color(egui::Color32::from_rgb(130, 170, 255)),
-                                        );
-                                    });
-                                });
+                    if self.open_vsx_results.is_empty() && !self.open_vsx_searching {
+                        ui.label(
+                            egui::RichText::new(
+                                "No extensions found. Try searching for 'rust' or 'theme'.",
+                            )
+                            .italics()
+                            .color(theme.text_muted)
+                            .small(),
+                        );
+                    }
 
-                                if !ext.description.is_empty() {
-                                    ui.label(egui::RichText::new(&ext.description).color(egui::Color32::from_gray(180)));
+                    for ext in &self.open_vsx_results {
+                        ui.group(|ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(egui::RichText::new(&ext.display_name).strong());
+                                ui.label(
+                                    egui::RichText::new(format!("v{}", ext.version))
+                                        .color(theme.text_muted)
+                                        .small(),
+                                );
+                            });
+                            ui.label(
+                                egui::RichText::new(format!("by {}", ext.namespace))
+                                    .color(egui::Color32::from_rgb(130, 170, 255))
+                                    .small(),
+                            );
+                            if !ext.description.is_empty() {
+                                ui.label(
+                                    egui::RichText::new(&ext.description)
+                                        .color(theme.text_muted)
+                                        .small(),
+                                );
+                            }
+                            ui.horizontal(|ui| {
+                                if ext.download_count > 0 {
+                                    ui.label(
+                                        egui::RichText::new(format!("📥 {}", ext.download_count))
+                                            .small()
+                                            .color(theme.text_muted),
+                                    );
                                 }
-
-                                ui.horizontal(|ui| {
-                                    if ext.download_count > 0 {
-                                        ui.label(egui::RichText::new(format!("📥 {} downloads", ext.download_count)).small().color(egui::Color32::from_gray(140)));
-                                    }
-                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
                                         let vsix_name = format!("{}-{}.vsix", ext.name, ext.version);
                                         if self.is_vsix_installed(ext) {
                                             if ui.small_button("🗑 Uninstall").clicked() {
-                                                vsix_to_uninstall_registry = Some(vsix_name);
+                                                vsix_to_uninstall = Some(vsix_name);
                                             }
                                             ui.label(
                                                 egui::RichText::new("● Installed")
                                                     .color(egui::Color32::from_rgb(80, 200, 120))
+                                                    .small()
                                                     .strong(),
                                             );
                                         } else if !ext.download_url.is_empty()
-                                            && ui.small_button("📥 Download .vsix").clicked()
+                                            && ui.small_button("📥 Install").clicked()
                                         {
                                             download_target = Some(ext.clone());
                                         }
-                                    });
-                                });
+                                    },
+                                );
                             });
-                            ui.add_space(4.0);
-                        }
-                    });
-
-                    if do_search {
-                        let q = self.open_vsx_query_input.clone();
-                        self.search_open_vsx(&q);
-                    }
-                    if let Some(target) = download_target {
-                        self.download_open_vsx_extension(&target);
-                    }
-                    if let Some(filename) = vsix_to_uninstall_registry {
-                        self.uninstall_vsix(&filename);
+                        });
+                        ui.add_space(4.0);
                     }
                 }
-
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("Close").clicked() {
-                            close_clicked = true;
-                        }
-                    });
-                });
             });
 
-        if close_clicked {
-            open = false;
+        if do_search {
+            let q = self.open_vsx_query_input.clone();
+            self.search_open_vsx(&q);
         }
-
-        self.extensions_modal_open = open;
-
+        if let Some(target) = download_target {
+            self.download_open_vsx_extension(&target);
+        }
+        if let Some(filename) = vsix_to_uninstall {
+            self.uninstall_vsix(&filename);
+        }
+        if let Some(name) = plugin_to_uninstall {
+            self.uninstall_plugin(&name);
+        }
         if let Some(cmd_id) = cmd_to_execute {
             self.execute_plugin_command(&cmd_id);
-            self.extensions_modal_open = false;
         }
     }
 }
@@ -3965,6 +4013,10 @@ impl eframe::App for EditorApp {
         // UI-7 (v0.2.38): Ctrl+Shift+M alterna el minimap.
         if ctx.input(|i| i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(egui::Key::M)) {
             self.toggle_minimap();
+        }
+        // v0.2.56: Ctrl+Shift+X abre la pestaña Extensions en la barra lateral unificada.
+        if ctx.input(|i| i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(egui::Key::X)) {
+            self.open_extensions();
         }
         if want_goto_def {
             self.goto_definition();
@@ -4625,8 +4677,6 @@ impl eframe::App for EditorApp {
         self.show_quick_open(ctx);
         // Diálogo modal para nombrar archivo al guardar si no tiene nombre.
         self.show_save_name_dialog(ctx);
-        // Diálogo modal para explorar y gestionar extensiones para la comunidad.
-        self.show_extensions_dialog(ctx);
         // S4 (Rust IDE): Quick Fix / Code Actions (Ctrl+.)
         self.show_code_actions_modal(ctx);
         // S4 (Rust IDE): Symbol Rename (Shift+F6)

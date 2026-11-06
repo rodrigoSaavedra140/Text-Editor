@@ -151,7 +151,6 @@ pub struct EditorApp {
     // S4 (Etapa 4): Cliente Language Server Protocol (LSP)
     // S4 (Etapa 5): Gestor de extensiones y plugins
     pub plugin_manager: karkinos_core::plugin::PluginManager,
-    pub extensions_modal_open: bool,
     pub extensions_tab: usize,
     // S3 (Rust IDE): Open VSX Marketplace
     pub open_vsx_query_input: String,
@@ -295,6 +294,7 @@ pub enum SidebarTab {
     Search,
     SourceControl,
     Symbols,
+    Extensions,
 }
 
 /// Barra lateral (v0.2.33): estado del explorador de archivos del proyecto.
@@ -579,6 +579,12 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
         shortcut: Some("Ctrl+Shift+O"),
     },
     PaletteCommand {
+        id: "sidebar:extensions",
+        title: "View: Show Extensions",
+        category: "View",
+        shortcut: Some("Ctrl+Shift+X"),
+    },
+    PaletteCommand {
         id: "terminal:toggle",
         title: "Terminal: Toggle Terminal Dock",
         category: "View",
@@ -773,7 +779,6 @@ impl Default for EditorApp {
             quick_open: crate::quick_open::QuickOpenState::default(),
             quick_open_services: crate::quick_open::QuickOpenServices::default(),
             plugin_manager: karkinos_core::plugin::PluginManager::with_default_plugins(),
-            extensions_modal_open: false,
             extensions_tab: 0,
             open_vsx_query_input: "rust".to_string(),
             open_vsx_results: Vec::new(),
@@ -2080,6 +2085,21 @@ impl EditorApp {
         self.refresh_git_status();
     }
 
+    /// Abre (o cierra) la pestaña Extensions en la barra lateral unificada.
+    pub fn open_extensions(&mut self) {
+        if self.sidebar_tab == SidebarTab::Extensions {
+            self.sidebar_tab = SidebarTab::None;
+        } else {
+            self.sidebar_tab = SidebarTab::Extensions;
+            self.explorer.open = false;
+            self.workspace_search.open = false;
+            self.symbol_picker.open = false;
+            if self.open_vsx_results.is_empty() && !self.open_vsx_searching && self.extensions_tab == 2 {
+                self.search_open_vsx("rust");
+            }
+        }
+    }
+
     /// F7: símbolos filtrados por el texto del selector (sin distinguir
     /// mayúsculas). Sale del AST del worker, no de LSP.
     pub fn filtered_symbols(&self) -> Vec<&karkinos_core::syntax_ast::DocumentSymbol> {
@@ -2195,6 +2215,7 @@ impl EditorApp {
                 self.workspace_search.show_replace = !self.workspace_search.show_replace;
             }
             "sidebar:symbols" => self.open_symbol_picker(),
+            "sidebar:extensions" => self.open_extensions(),
             "git:source_control" => self.open_source_control(),
             "git:refresh" => self.refresh_git_status(),
             "git:stage_all" => {
@@ -5605,6 +5626,16 @@ mod tests {
 
         app.open_source_control();
         assert_eq!(app.sidebar_tab, SidebarTab::None);
+
+        // v0.2.56: Extensions entra en la misma alternancia unificada.
+        app.open_extensions();
+        assert_eq!(app.sidebar_tab, SidebarTab::Extensions);
+        assert!(!app.explorer.open);
+        assert!(!app.workspace_search.open);
+        assert!(!app.symbol_picker.open);
+
+        app.open_extensions();
+        assert_eq!(app.sidebar_tab, SidebarTab::None);
     }
 
     // v0.2.40: Command Palette (Ctrl+Shift+P / F1).
@@ -5616,7 +5647,7 @@ mod tests {
         ids.sort_unstable();
         ids.dedup();
         assert_eq!(ids.len(), total, "cada id del catálogo es único");
-        assert_eq!(total, 33, "el catálogo de v0.2.49 tiene 33 comandos");
+        assert_eq!(total, 34, "el catálogo de v0.2.56 tiene 34 comandos");
 
         for expected in [
             "layout:split_vertical",
@@ -5628,6 +5659,7 @@ mod tests {
             "search:replace_in_workspace",
             "search:toggle_replace",
             "sidebar:symbols",
+            "sidebar:extensions",
             "terminal:toggle",
             "cargo:check",
             "cargo:test",
