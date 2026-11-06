@@ -18,6 +18,13 @@ const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30);
 /// Tamaño máximo aceptado para un `.vsix` (100 MiB).
 const MAX_DOWNLOAD_BYTES: u64 = 100 * 1024 * 1024;
 
+/// Agente HTTP que solo habla `https`, también al seguir redirecciones:
+/// una respuesta que redirija a `http://` se rechaza en vez de bajar el
+/// paquete por un canal sin cifrar.
+fn https_agent() -> ureq::Agent {
+    ureq::AgentBuilder::new().https_only(true).build()
+}
+
 /// Metadata for an extension published on Open VSX.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OpenVsxExtension {
@@ -64,7 +71,8 @@ impl OpenVsxClient {
             size.clamp(1, 50)
         );
 
-        let body = ureq::get(&url)
+        let body = https_agent()
+            .get(&url)
             .timeout(SEARCH_TIMEOUT)
             .call()
             .map_err(|e| format!("Open VSX request failed: {}", e))?
@@ -83,7 +91,8 @@ impl OpenVsxClient {
             return Err("Refusing unsafe download URL".to_string());
         }
 
-        let response = ureq::get(download_url)
+        let response = https_agent()
+            .get(download_url)
             .timeout(DOWNLOAD_TIMEOUT)
             .call()
             .map_err(|e| format!("Download request failed: {}", e))?;
