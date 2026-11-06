@@ -21,10 +21,12 @@ jobs:
             target: x86_64-unknown-linux-gnu
             binary_name: karkinos
             artifact_name: karkinos-linux-x86_64.tar.gz
+            raw_name: karkinos-linux-x86_64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             binary_name: karkinos.exe
             artifact_name: karkinos-windows-x86_64.zip
+            raw_name: karkinos-windows-x86_64.exe
 
     steps:
       - name: Checkout repository
@@ -56,6 +58,21 @@ jobs:
         run: |
           Compress-Archive -Path target/${{ matrix.target }}/release/${{ matrix.binary_name }} -DestinationPath ${{ matrix.artifact_name }}
 
+      # La auto-actualización descarga el binario suelto, así no necesita tar ni
+      # zip: lo publicamos además del paquete de siempre, con el nombre que
+      # espera la app (ver platform_asset_name en karkinos-core).
+      - name: Stage raw Linux binary
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          cp target/${{ matrix.target }}/release/${{ matrix.binary_name }} ${{ matrix.raw_name }}
+          chmod 0755 ${{ matrix.raw_name }}
+
+      - name: Stage raw Windows binary
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          Copy-Item -Path target/${{ matrix.target }}/release/${{ matrix.binary_name }} -Destination ${{ matrix.raw_name }}
+
       - name: Upload Build Artifact
         uses: actions/upload-artifact@v4
         with:
@@ -66,6 +83,52 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ matrix.artifact_name }}
+          files: |
+            ${{ matrix.artifact_name }}
+            ${{ matrix.raw_name }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Job final: las sumas se calculan recién cuando los 4 assets ya están
+  # publicados por los dos jobs de la matriz. Lo corre un solo runner porque
+  # SHA256SUMS es un único archivo con las 4 líneas.
+  checksums:
+    name: Publish SHA256SUMS
+    needs: build
+    # Solo tiene sentido cuando el workflow publicó un release para el tag.
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p assets
+          gh release download "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir assets \
+            --pattern 'karkinos-linux-x86_64' \
+            --pattern 'karkinos-linux-x86_64.tar.gz' \
+            --pattern 'karkinos-windows-x86_64.exe' \
+            --pattern 'karkinos-windows-x86_64.zip'
+
+      # Formato sha256sum: "<hash hex en minúsculas>  <nombre>", una línea por
+      # archivo. La app compara el SHA-256 del binario descargado contra su
+      # línea en este archivo antes de reemplazar el ejecutable.
+      - name: Generate SHA256SUMS
+        run: |
+          cd assets
+          sha256sum \
+            karkinos-linux-x86_64 \
+            karkinos-linux-x86_64.tar.gz \
+            karkinos-windows-x86_64.exe \
+            karkinos-windows-x86_64.zip > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Upload SHA256SUMS
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "$GITHUB_REF_NAME" assets/SHA256SUMS \
+            --clobber \
+            --repo "$GITHUB_REPOSITORY"
