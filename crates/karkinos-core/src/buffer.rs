@@ -65,6 +65,13 @@ impl TextBuffer {
         }
     }
 
+    /// Iterador secuencial sobre las líneas lógicas del Rope. Recorrerlo
+    /// entero es O(n) total, a diferencia de `line(i)`, que navega el
+    /// árbol del Rope en cada llamada.
+    pub fn lines(&self) -> impl Iterator<Item = RopeSlice<'_>> {
+        self.rope.lines()
+    }
+
     /// Returns the line content without trailing line ending (`\n` or `\r\n`).
     pub fn line_without_newline(&self, line_idx: usize) -> String {
         let Some(slice) = self.line(line_idx) else {

@@ -125,6 +125,50 @@ impl Caret {
 pub trait LineBuffer {
     fn line_count(&self) -> usize;
     fn get_line(&self, i: usize) -> String;
+    /// Cantidad de caracteres de la línea `i` sin el salto final,
+    /// sin crear un `String`.
+    fn line_char_len(&self, i: usize) -> usize;
+    /// Indica si la línea `i` contiene algún tab, sin crear un `String`.
+    fn line_has_tab(&self, i: usize) -> bool;
+    /// Recalcula las filas visuales de todas las líneas. El default usa
+    /// `line_char_len`/`line_has_tab`; `TextBuffer` lo sobreescribe para
+    /// recorrer el Rope secuencialmente, sin navegar el árbol por línea.
+    fn rebuild_row_counts(&self, wrap_chars: usize, state: &EditorState) -> Vec<usize> {
+        (0..self.line_count())
+            .map(|i| {
+                if state.is_line_folded(i) {
+                    0
+                } else {
+                    let len = self.line_char_len(i);
+                    if self.line_has_tab(i) {
+                        row_count_for(&self.get_line(i), wrap_chars)
+                    } else {
+                        row_count_for_len(len, wrap_chars)
+                    }
+                }
+            })
+            .collect()
+    }
+    /// Recalcula las largos de carácter de todas las líneas, sin asignar
+    /// un `String` por línea.
+    fn rebuild_char_lens(&self) -> Vec<usize> {
+        (0..self.line_count())
+            .map(|i| self.line_char_len(i))
+            .collect()
+    }
+    /// Recalcula ambas cachés en una sola pasada. El default delega en
+    /// los dos métodos; `TextBuffer` lo sobreescribe para recorrer el
+    /// Rope una única vez (recorrerlo es la parte cara).
+    fn rebuild_caches(
+        &self,
+        wrap_chars: usize,
+        state: &EditorState,
+    ) -> (Vec<usize>, Vec<usize>) {
+        (
+            self.rebuild_row_counts(wrap_chars, state),
+            self.rebuild_char_lens(),
+        )
+    }
     fn full_text(&self) -> String;
     fn set_line(&mut self, i: usize, text: &str);
     fn insert_line(&mut self, i: usize, text: String);
@@ -138,6 +182,14 @@ impl LineBuffer for Vec<String> {
 
     fn get_line(&self, i: usize) -> String {
         self.get(i).cloned().unwrap_or_default()
+    }
+
+    fn line_char_len(&self, i: usize) -> usize {
+        self.get(i).map(|l| l.chars().count()).unwrap_or(0)
+    }
+
+    fn line_has_tab(&self, i: usize) -> bool {
+        self.get(i).is_some_and(|l| l.contains('\t'))
     }
 
     fn full_text(&self) -> String {
@@ -171,6 +223,63 @@ impl LineBuffer for TextBuffer {
 
     fn get_line(&self, i: usize) -> String {
         self.line_without_newline(i)
+    }
+
+    fn line_char_len(&self, i: usize) -> usize {
+        self.line_char_count(i)
+    }
+
+    fn line_has_tab(&self, i: usize) -> bool {
+        self.line(i).is_some_and(|slice| slice.chars().any(|c| c == '\t'))
+    }
+
+    /// Recorre el Rope de punta a punta (O(n) total) en vez de navegar el
+    /// árbol con `line(i)` una vez por caché y por línea.
+    fn rebuild_row_counts(&self, wrap_chars: usize, state: &EditorState) -> Vec<usize> {
+        let mut rows = Vec::with_capacity(self.line_count());
+        for (i, slice) in self.lines().enumerate() {
+            if state.is_line_folded(i) {
+                rows.push(0);
+                continue;
+            }
+            let (len, has_tab) = slice_line_info(slice);
+            rows.push(if has_tab {
+                row_count_for_len(slice_visual_len(slice, len), wrap_chars)
+            } else {
+                row_count_for_len(len, wrap_chars)
+            });
+        }
+        rows
+    }
+
+    fn rebuild_char_lens(&self) -> Vec<usize> {
+        let mut lens = Vec::with_capacity(self.line_count());
+        for slice in self.lines() {
+            lens.push(slice_char_len(slice));
+        }
+        lens
+    }
+
+    /// Una sola pasada sobre el Rope para las dos cachés: recorrerlo es
+    /// la parte cara, el cálculo por línea es O(1) o O(largo de línea).
+    fn rebuild_caches(&self, wrap_chars: usize, state: &EditorState) -> (Vec<usize>, Vec<usize>) {
+        let mut rows = Vec::with_capacity(self.line_count());
+        let mut lens = Vec::with_capacity(self.line_count());
+        for (i, slice) in self.lines().enumerate() {
+            let (len, has_tab) = slice_line_info(slice);
+            lens.push(len);
+            if state.is_line_folded(i) {
+                rows.push(0);
+            } else if has_tab {
+                rows.push(row_count_for_len(
+                    slice_visual_len(slice, len),
+                    wrap_chars,
+                ));
+            } else {
+                rows.push(row_count_for_len(len, wrap_chars));
+            }
+        }
+        (rows, lens)
     }
 
     fn full_text(&self) -> String {
@@ -607,7 +716,7 @@ fn caret_blink_next_wake(now: f64, last_activity: f64) -> f32 {
 }
 
 fn clamp_col(lines: &dyn LineBuffer, line: usize, col: usize) -> usize {
-    col.min(line_char_count(&lines.get_line(line)))
+    col.min(lines.line_char_len(line))
 }
 
 /// S12: Desplaza el cursor una línea hacia arriba, respetando líneas plegadas
@@ -891,7 +1000,7 @@ fn prev_word_pos(lines: &dyn LineBuffer, line: usize, col: usize) -> (usize, usi
     }
     if col == 0 {
         if line > 0 {
-            (line - 1, line_char_count(&lines.get_line(line - 1)))
+            (line - 1, lines.line_char_len(line - 1))
         } else {
             (0, 0)
         }
@@ -1186,8 +1295,7 @@ fn wrap_chars_for(usable_width: f32, char_width: f32) -> usize {
     ((usable_width / char_width).floor() as usize).max(1)
 }
 
-fn row_count_for(line: &str, wrap_chars: usize) -> usize {
-    let len = karkinos_core::text_ops::line_visual_char_count(line, DEFAULT_TAB_SIZE);
+fn row_count_for_len(len: usize, wrap_chars: usize) -> usize {
     if len == 0 {
         1
     } else {
@@ -1195,22 +1303,79 @@ fn row_count_for(line: &str, wrap_chars: usize) -> usize {
     }
 }
 
-fn rebuild_row_counts(lines: &dyn LineBuffer, wrap_chars: usize, state: &EditorState) -> Vec<usize> {
-    (0..lines.line_count())
-        .map(|i| {
-            if state.is_line_folded(i) {
-                0
-            } else {
-                row_count_for(&lines.get_line(i), wrap_chars)
-            }
-        })
-        .collect()
+fn row_count_for(line: &str, wrap_chars: usize) -> usize {
+    row_count_for_len(
+        karkinos_core::text_ops::line_visual_char_count(line, DEFAULT_TAB_SIZE),
+        wrap_chars,
+    )
 }
 
-fn rebuild_char_lens(lines: &dyn LineBuffer) -> Vec<usize> {
-    (0..lines.line_count())
-        .map(|i| lines.get_line(i).chars().count())
-        .collect()
+/// Largo de una línea del Rope sin su salto final y si contiene tabs, con
+/// la misma regla que `TextBuffer::line_char_count`, sin materializar un
+/// `String`. `as_str()` evita navegar el árbol por cada carácter cuando la
+/// línea cae en un único chunk (el caso habitual).
+fn slice_line_info(slice: ropey::RopeSlice<'_>) -> (usize, bool) {
+    let total = slice.len_chars();
+    if let Some(s) = slice.as_str() {
+        let trailing = if s.ends_with("\r\n") {
+            2
+        } else if s.ends_with('\n') {
+            1
+        } else {
+            0
+        };
+        (total - trailing, s.contains('\t'))
+    } else {
+        let mut len = total;
+        if len > 0 && slice.char(len - 1) == '\n' {
+            len -= 1;
+            if len > 0 && slice.char(len - 1) == '\r' {
+                len -= 1;
+            }
+        }
+        (len, slice.chars().any(|c| c == '\t'))
+    }
+}
+
+fn slice_char_len(slice: ropey::RopeSlice<'_>) -> usize {
+    slice_line_info(slice).0
+}
+
+/// Ancho visual de la línea (sin salto) expandiendo los tabs igual que
+/// `line_visual_char_count`.
+fn slice_visual_len(slice: ropey::RopeSlice<'_>, len: usize) -> usize {
+    if let Some(s) = slice.as_str() {
+        let trailing = if s.ends_with("\r\n") {
+            2
+        } else if s.ends_with('\n') {
+            1
+        } else {
+            0
+        };
+        karkinos_core::text_ops::line_visual_char_count(&s[..s.len() - trailing], DEFAULT_TAB_SIZE)
+    } else {
+        let mut vcol = 0usize;
+        for c in slice.chars().take(len) {
+            if c == '\t' {
+                vcol += DEFAULT_TAB_SIZE - (vcol % DEFAULT_TAB_SIZE);
+            } else {
+                vcol += 1;
+            }
+        }
+        vcol
+    }
+}
+
+fn rebuild_row_counts(lines: &dyn LineBuffer, wrap_chars: usize, state: &EditorState) -> Vec<usize> {
+    lines.rebuild_row_counts(wrap_chars, state)
+}
+
+fn rebuild_caches(
+    lines: &dyn LineBuffer,
+    wrap_chars: usize,
+    state: &EditorState,
+) -> (Vec<usize>, Vec<usize>) {
+    lines.rebuild_caches(wrap_chars, state)
 }
 
 /// cum_rows[0] = 0 y cum_rows[i] = suma de row_counts[0..i).
@@ -1340,8 +1505,9 @@ pub fn show(
         || state.last_gutter != gutter_w
         || state.last_collapsed_folds != state.collapsed_folds
     {
-        state.row_counts = rebuild_row_counts(lines, wrap_chars, state);
-        state.char_lens = rebuild_char_lens(lines);
+        let (row_counts, char_lens) = rebuild_caches(lines, wrap_chars, state);
+        state.row_counts = row_counts;
+        state.char_lens = char_lens;
         state.cum_rows = build_cum_rows(&state.row_counts);
         state.last_wrap_chars = wrap_chars;
         state.last_gutter = gutter_w;
@@ -1415,7 +1581,7 @@ pub fn show(
                         state.last_collapsed_folds = state.collapsed_folds.clone();
                     } else {
                         // S8: Clic en el gutter (banda de números) selecciona la línea completa
-                        let line_end = line_char_count(&lines.get_line(clicked_line));
+                        let line_end = lines.line_char_len(clicked_line);
                         state.sel_anchor = Some((clicked_line, 0));
                         state.cursor_line = clicked_line;
                         state.cursor_col = line_end;
@@ -1444,7 +1610,7 @@ pub fn show(
                     } else if response.triple_clicked() {
                         state.sel_anchor = Some((clicked_line, 0));
                         state.cursor_line = clicked_line;
-                        state.cursor_col = line_char_count(&lines.get_line(clicked_line));
+                        state.cursor_col = lines.line_char_len(clicked_line);
                         state.preferred_col = None;
                     } else if response.double_clicked() {
                         let (ws, we) = word_range_at(&lines.get_line(clicked_line), clicked_col);
@@ -1485,8 +1651,9 @@ pub fn show(
     macro_rules! resync_rows {
         () => {
             if state.row_counts.len() != lines.line_count() {
-                state.row_counts = rebuild_row_counts(lines, wrap_chars, state);
-                state.char_lens = rebuild_char_lens(lines);
+                let (row_counts, char_lens) = rebuild_caches(lines, wrap_chars, state);
+                state.row_counts = row_counts;
+                state.char_lens = char_lens;
                 state.cum_rows = build_cum_rows(&state.row_counts);
             } else {
                 // La línea editada es cursor_line (todas las mutaciones
@@ -1496,7 +1663,7 @@ pub fn show(
                 let old_rows = state.row_counts[state.cursor_line];
                 let new_rows = row_count_for(&lines.get_line(state.cursor_line), wrap_chars);
                 state.row_counts[state.cursor_line] = new_rows;
-                state.char_lens[state.cursor_line] = line_char_count(&lines.get_line(state.cursor_line));
+                state.char_lens[state.cursor_line] = lines.line_char_len(state.cursor_line);
                 adjust_cum_rows(
                     &mut state.cum_rows,
                     state.cursor_line,
@@ -1688,8 +1855,9 @@ pub fn show(
                             }
                             changed = true;
                             force_snapshot = true;
-                            state.row_counts = rebuild_row_counts(lines, wrap_chars, state);
-                            state.char_lens = rebuild_char_lens(lines);
+                            let (row_counts, char_lens) = rebuild_caches(lines, wrap_chars, state);
+                            state.row_counts = row_counts;
+                            state.char_lens = char_lens;
                             state.cum_rows = build_cum_rows(&state.row_counts);
                         } else if modifiers.shift {
                             // S4 (Etapa 2): Shift+Tab en línea simple desindenta la línea actual
@@ -1793,7 +1961,7 @@ pub fn show(
                             if *c > 0 {
                                 ranges.push(((*l, *c - 1), (*l, *c)));
                             } else if *l > 0 {
-                                ranges.push(((*l - 1, line_char_count(&lines.get_line(*l - 1))), (*l, 0)));
+                                ranges.push(((*l - 1, lines.line_char_len(*l - 1)), (*l, 0)));
                             }
                         }
 
@@ -1807,7 +1975,7 @@ pub fn show(
                             } else if col > 0 {
                                 Some((line, col - 1))
                             } else if line > 0 {
-                                Some((line - 1, line_char_count(&lines.get_line(line - 1))))
+                                Some((line - 1, lines.line_char_len(line - 1)))
                             } else {
                                 Some((line, col))
                             }
@@ -1864,7 +2032,7 @@ pub fn show(
                             }
                         }
                         for (l, c) in &single_positions {
-                            if *c < line_char_count(&lines.get_line(*l)) {
+                            if *c < lines.line_char_len(*l) {
                                 ranges.push(((*l, *c), (*l, *c + 1)));
                             } else if *l + 1 < lines.line_count() {
                                 ranges.push(((*l, *c), (*l + 1, 0)));
@@ -1908,7 +2076,7 @@ pub fn show(
                             state.cursor_col -= 1;
                         } else if state.cursor_line > 0 {
                             state.cursor_line -= 1;
-                            state.cursor_col = line_char_count(&lines.get_line(state.cursor_line));
+                            state.cursor_col = lines.line_char_len(state.cursor_line);
                         }
                         if !modifiers.shift {
                             state.sel_anchor = Some((state.cursor_line, state.cursor_col));
@@ -1921,7 +2089,7 @@ pub fn show(
                             let (nl, nc) = next_word_pos(lines, state.cursor_line, state.cursor_col);
                             state.cursor_line = nl;
                             state.cursor_col = nc;
-                        } else if state.cursor_col < line_char_count(&lines.get_line(state.cursor_line)) {
+                        } else if state.cursor_col < lines.line_char_len(state.cursor_line) {
                             state.cursor_col += 1;
                         } else if state.cursor_line + 1 < lines.line_count() {
                             state.cursor_line += 1;
@@ -1980,7 +2148,7 @@ pub fn show(
                     egui::Key::End => {
                         cursor_moved = true;
                         state.preferred_col = None;
-                        state.cursor_col = line_char_count(&lines.get_line(state.cursor_line));
+                        state.cursor_col = lines.line_char_len(state.cursor_line);
                         if !modifiers.shift {
                             state.sel_anchor = Some((state.cursor_line, state.cursor_col));
                         }
@@ -1990,7 +2158,7 @@ pub fn show(
                         state.preferred_col = None;
                         state.sel_anchor = Some((0, 0));
                         state.cursor_line = lines.line_count() - 1;
-                        state.cursor_col = line_char_count(&lines.get_line(state.cursor_line));
+                        state.cursor_col = lines.line_char_len(state.cursor_line);
                     }
                     egui::Key::Escape if !state.extra_carets.is_empty() => {
                         // F3: Escape colapsa todos los cursores al primario.
@@ -2020,8 +2188,9 @@ pub fn show(
                         }
                         changed = true;
                         force_snapshot = true;
-                        state.row_counts = rebuild_row_counts(lines, wrap_chars, state);
-                        state.char_lens = rebuild_char_lens(lines);
+                        let (row_counts, char_lens) = rebuild_caches(lines, wrap_chars, state);
+                        state.row_counts = row_counts;
+                        state.char_lens = char_lens;
                         state.cum_rows = build_cum_rows(&state.row_counts);
                     }
                     egui::Key::D if modifiers.command || modifiers.ctrl => {
@@ -2064,8 +2233,9 @@ pub fn show(
                             toggle_comment_range(lines, start_l, end_l, prefix);
                             changed = true;
                             force_snapshot = true;
-                            state.row_counts = rebuild_row_counts(lines, wrap_chars, state);
-                            state.char_lens = rebuild_char_lens(lines);
+                            let (row_counts, char_lens) = rebuild_caches(lines, wrap_chars, state);
+                            state.row_counts = row_counts;
+                            state.char_lens = char_lens;
                             state.cum_rows = build_cum_rows(&state.row_counts);
                         }
                     }
@@ -2814,7 +2984,7 @@ pub fn show(
                     .char_lens
                     .get(i)
                     .copied()
-                    .unwrap_or_else(|| lines.get_line(i).chars().count());
+                    .unwrap_or_else(|| lines.line_char_len(i));
                 if len == 0 {
                     continue;
                 }
@@ -2838,7 +3008,7 @@ pub fn show(
                     .char_lens
                     .get(line_idx)
                     .copied()
-                    .unwrap_or_else(|| lines.get_line(line_idx).chars().count());
+                    .unwrap_or_else(|| lines.line_char_len(line_idx));
                 if len == 0 {
                     continue;
                 }
@@ -3216,6 +3386,137 @@ mod tests {
     #[test]
     fn build_cum_rows_vacio() {
         assert_eq!(build_cum_rows(&[]), vec![0]);
+    }
+
+    // T3: copia exacta de la implementación previa de `rebuild_row_counts`,
+    // que materializaba cada línea con `get_line`. Se usa como referencia
+    // de equivalencia (y para medir el antes en el perf test).
+    fn rebuild_row_counts_antes(
+        lines: &dyn LineBuffer,
+        wrap_chars: usize,
+        state: &EditorState,
+    ) -> Vec<usize> {
+        (0..lines.line_count())
+            .map(|i| {
+                if state.is_line_folded(i) {
+                    0
+                } else {
+                    row_count_for(&lines.get_line(i), wrap_chars)
+                }
+            })
+            .collect()
+    }
+
+    fn comprobar_caches_igual_que_antes(lines: &dyn LineBuffer, state: &EditorState) {
+        let char_lens_antes: Vec<usize> = (0..lines.line_count())
+            .map(|i| lines.get_line(i).chars().count())
+            .collect();
+        for wrap in [1usize, 7, 40, 120, 500] {
+            let rows_antes = rebuild_row_counts_antes(lines, wrap, state);
+            assert_eq!(
+                rebuild_row_counts(lines, wrap, state),
+                rows_antes,
+                "row_counts con wrap {wrap}"
+            );
+            let (rows, lens) = rebuild_caches(lines, wrap, state);
+            assert_eq!(rows, rows_antes, "rebuild_caches con wrap {wrap}");
+            assert_eq!(lens, char_lens_antes, "char_lens con wrap {wrap}");
+        }
+        assert_eq!(lines.rebuild_char_lens(), char_lens_antes);
+    }
+
+    #[test]
+    fn line_char_len_coincide_con_get_line() {
+        fn comprobar(lines: &dyn LineBuffer) {
+            for i in 0..lines.line_count() {
+                assert_eq!(
+                    lines.line_char_len(i),
+                    lines.get_line(i).chars().count(),
+                    "línea {i}"
+                );
+            }
+        }
+
+        // Vec<String>: líneas vacías, tildes/emoji y última línea sin `\n`.
+        let vec_lines = vec![
+            String::new(),
+            "hola niño".to_string(),
+            "🦀🚀✨".to_string(),
+            String::new(),
+            "final sin salto".to_string(),
+        ];
+        comprobar(&vec_lines);
+
+        // Buffer vacío: una única línea lógica vacía.
+        comprobar(&TextBuffer::new());
+
+        // TextBuffer con CRLF, líneas vacías y última línea sin salto.
+        comprobar(&TextBuffer::from_text("primera\r\n\r\nniño 🦀\r\nfinal"));
+    }
+
+    #[test]
+    fn rebuild_row_counts_igual_que_antes() {
+        use karkinos_core::syntax_ast::{FoldingKind, FoldingRange};
+
+        let vec_lines = vec![
+            String::new(),
+            "corta".to_string(),
+            "\tcon tab al inicio".to_string(),
+            "x".repeat(120),
+            format!("\t{}", "y".repeat(95)),
+            "última línea con tildes ñ 🦀".to_string(),
+        ];
+        let rope_lines = TextBuffer::from_text(&format!(
+            "corta\n\tcon tab al inicio\n{}\n\t{}\nfinal\n",
+            "x".repeat(120),
+            "y".repeat(95)
+        ));
+
+        let mut state = EditorState::default();
+        comprobar_caches_igual_que_antes(&vec_lines, &state);
+        comprobar_caches_igual_que_antes(&rope_lines, &state);
+
+        // Con un bloque plegado, las líneas ocultas pesan 0 igual que antes.
+        state.folding_ranges = vec![FoldingRange {
+            start_line: 1,
+            end_line: 3,
+            kind: FoldingKind::Block,
+        }];
+        state.collapsed_folds.push(1);
+        comprobar_caches_igual_que_antes(&vec_lines, &state);
+        comprobar_caches_igual_que_antes(&rope_lines, &state);
+    }
+
+    #[test]
+    #[ignore = "perf: correr a mano con cargo test --release -- --ignored"]
+    fn rebuild_caches_es_barato_con_documento_grande() {
+        use std::time::Instant;
+
+        // 200 000 líneas sin tabs: el camino rápido no debe asignar por línea.
+        let text = "let mut suma = contador + 1;\n".repeat(200_000);
+        let lines = TextBuffer::from_text(&text);
+        let state = EditorState::default();
+
+        let antes_inicio = Instant::now();
+        let rows_antes = rebuild_row_counts_antes(&lines, 80, &state);
+        let lens_antes: Vec<usize> = (0..lines.line_count())
+            .map(|i| lines.get_line(i).chars().count())
+            .collect();
+        let antes = antes_inicio.elapsed();
+
+        // Los call sites que reconstruyen las dos cachés (Enter, pegar,
+        // borrar líneas) usan una sola pasada sobre el Rope.
+        let despues_inicio = Instant::now();
+        let (rows, lens) = rebuild_caches(&lines, 80, &state);
+        let despues = despues_inicio.elapsed();
+
+        assert_eq!(rows, rows_antes);
+        assert_eq!(lens, lens_antes);
+        eprintln!("rebuild de cachés, 200 000 líneas: antes={antes:?} después={despues:?}");
+        assert!(
+            despues.as_millis() < 30,
+            "rebuild de cachés tardó {despues:?} (> 30 ms)"
+        );
     }
 
     #[test]
