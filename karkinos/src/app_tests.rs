@@ -3092,6 +3092,72 @@
         );
     }
 
+    // ---- S4 (T5): instalación administrada por el gestor de paquetes ----
+
+    #[test]
+    fn una_instalacion_de_paquete_abre_la_terminal_con_el_comando() {
+        let Some(asset) = karkinos_core::updater::platform_asset_name() else {
+            return;
+        };
+        let mut app = EditorApp::default();
+        app.updates
+            .set_install_kind(karkinos_core::updater::InstallKind::Package);
+        app.updates.set_package_helpers(true, false);
+        app.updates.apply(Ok(update_release("v99.0.0", &[asset])));
+        app.start_update();
+        assert!(app.updates.begin_install(), "el bucle procesa el pedido");
+
+        assert!(
+            app.take_package_update_command(),
+            "el comando del gestor llega a la terminal integrada"
+        );
+        assert!(app.cargo.panel_open, "se abre el dock inferior");
+        assert_eq!(app.cargo.active_tab, 0, "queda en la pestaña de terminal");
+        assert_eq!(
+            app.terminal_pending_command.as_deref(),
+            Some("yay -S karkinos-bin"),
+            "el comando espera a que la PTY esté viva para escribirse"
+        );
+        assert!(
+            !app.terminal.is_alive(),
+            "los tests no arrancan una PTY real"
+        );
+        assert!(
+            app.update_button_visible(),
+            "no se reemplazó nada: la actualización sigue disponible"
+        );
+        assert!(
+            !app.take_package_update_command(),
+            "el mismo comando no se reencola"
+        );
+    }
+
+    #[test]
+    fn sin_ayudantes_aur_el_click_avisa_que_use_el_gestor_de_paquetes() {
+        let Some(asset) = karkinos_core::updater::platform_asset_name() else {
+            return;
+        };
+        let mut app = EditorApp::default();
+        app.updates
+            .set_install_kind(karkinos_core::updater::InstallKind::Package);
+        app.updates.set_package_helpers(false, false);
+        app.updates.apply(Ok(update_release("v99.0.0", &[asset])));
+        app.start_update();
+        assert!(app.updates.begin_install());
+
+        assert!(
+            !app.take_package_update_command(),
+            "sin yay ni paru no hay nada que escribir en la terminal"
+        );
+        assert!(!app.cargo.panel_open, "no se abre el dock de terminal");
+        assert_eq!(
+            app.updates.result(),
+            Some(&crate::update_service::InstallOutcome::Failed {
+                message: crate::update_service::PACKAGE_MANAGER_HINT.to_string()
+            })
+        );
+    }
+
     // ---- S2 (T4b): cierre forzado tras actualizar, sin diálogo previo ----
 
     /// PRESERVE: sin el flag, cerrar con pestañas sucias sigue plantando el

@@ -183,6 +183,10 @@ pub struct EditorApp {
     // ventana vieja no vuelve a preguntar por las pestañas sucias (ver
     // `arm_forced_close` y `try_close`).
     pub force_close: bool,
+    // S4 (T5): comando del gestor de paquetes esperando que la PTY del dock
+    // esté viva para escribirse. Lo consume `show_interactive_terminal`
+    // (`ui.rs`) una sola vez.
+    pub terminal_pending_command: Option<String>,
     // S1 (Rust IDE): Ejecutor nativo de pipelines de Cargo
     // S4 (Rust IDE): Code Actions, Inlay Hints & Rename
     // S4 (Rust IDE): DAP Native Debugger & Breakpoints
@@ -844,6 +848,7 @@ impl Default for EditorApp {
             extensions: crate::extensions_service::ExtensionsService::default(),
             updates: crate::update_service::UpdateService::default(),
             force_close: false,
+            terminal_pending_command: None,
             ast_worker: crate::ast_worker::AstWorker::spawn(),
             ast_request_rev: 0,
             ast_applied_rev: 0,
@@ -3216,6 +3221,30 @@ impl EditorApp {
     /// se puede volver a apretar.
     pub fn update_installing(&self) -> bool {
         self.updates.installing()
+    }
+
+    /// S4 (T5): una instalación que administra el gestor de paquetes no se
+    /// reemplaza a sí misma. Si el click dejó un comando de `yay`/`paru`,
+    /// acá se abre la terminal integrada con ese comando preparado.
+    /// Devuelve `true` cuando hubo un comando que atender.
+    pub fn take_package_update_command(&mut self) -> bool {
+        let Some(command) = self.updates.take_terminal_command() else {
+            return false;
+        };
+        self.open_terminal_with_command(&command);
+        true
+    }
+
+    /// S4 (T5): abre el dock inferior en su pestaña de terminal y deja el
+    /// comando listo. Escribirlo es tarea de `show_interactive_terminal`
+    /// (`ui.rs`), que ya llama a `TerminalService::ensure_running` cada
+    /// frame: recién ahí hay una PTY a la que mandarle los bytes.
+    pub fn open_terminal_with_command(&mut self, command: &str) {
+        self.cargo.panel_open = true;
+        // Pestaña 0 del dock = terminal interactiva.
+        self.cargo.active_tab = 0;
+        self.terminal_pending_command = Some(command.to_string());
+        self.doc.status = format!("Package update: {}", command);
     }
 
     /// S2 (T4b): el usuario ya confirmó el reinicio tras actualizar, así que

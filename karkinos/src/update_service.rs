@@ -11,13 +11,18 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
 use karkinos_core::updater::{
-    fetch_latest_release, install_release, is_newer, platform_asset_name, ReleaseInfo,
+    fetch_latest_release, has_program, install_kind, install_release, is_newer, owned_by_package,
+    platform_asset_name, update_action, InstallKind, ReleaseInfo, UpdateAction,
 };
 
 /// S1: cada cuánto se vuelve a consultar el último release publicado.
 pub const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 /// S5: nombre del archivo de checksums que publica cada release.
 const SUMS_ASSET_NAME: &str = "SHA256SUMS";
+/// S4 (T5): mensaje cuando no hay `yay` ni `paru` para actualizar el
+/// paquete AUR `karkinos-bin` desde la app.
+pub const PACKAGE_MANAGER_HINT: &str =
+    "Update Karkinos with your package manager (karkinos-bin on the AUR).";
 
 /// Resultado de la descarga + instalación de T4. Uno de los dos se convierte
 /// en el diálogo modal al terminar (S2).
@@ -69,6 +74,17 @@ pub struct UpdateService {
     install_rx: Option<Receiver<Result<(), String>>>,
     /// Instante del último chequeo disparado: marca cada 6 horas.
     last_check: Option<Instant>,
+    /// S4 (T5): tipo de instalación ya resuelto. `None` = todavía no se
+    /// preguntó (se resuelve una sola vez, en el primer click, con
+    /// [`karkinos_core::updater::owned_by_package`]).
+    install_kind: Option<InstallKind>,
+    /// S4: ayudantes AUR disponibles (`yay`, `paru`). `None` = mirar el
+    /// `PATH` cuando haga falta; los tests lo fijan para no depender de lo
+    /// que haya instalado la máquina.
+    package_helpers: Option<(bool, bool)>,
+    /// S4: comando del gestor de paquetes listo para escribirse en la
+    /// terminal integrada. La UI lo consume con `take_terminal_command`.
+    terminal_command: Option<String>,
 }
 
 /// Lo que el hilo de instalación necesita saber, ya validado: sin
@@ -133,12 +149,42 @@ impl UpdateService {
     ///
     /// Un plan inválido (release sin `SHA256SUMS`) se resuelve acá mismo,
     /// sin red: es el camino que usan los tests.
+    ///
+    /// S4 (T5): si el gestor de paquetes instaló Karkinos, el click NO
+    /// descarga ni reemplaza nada: deja el comando del ayudante AUR para
+    /// que la UI lo escriba en la terminal integrada, o el mensaje cuando
+    /// no hay ninguno.
     pub fn begin_install(&mut self) -> bool {
         if !self.can_start_install() {
             return false;
         }
         self.pending = false;
 
+        let kind = self.resolved_install_kind();
+        // El PATH solo se consulta cuando la instalación la administra el
+        // gestor de paquetes (S4).
+        let (has_yay, has_paru) = if kind == InstallKind::Package {
+            self.helper_programs()
+        } else {
+            (false, false)
+        };
+
+        match update_action(kind, has_yay, has_paru) {
+            UpdateAction::RunInTerminal(command) => {
+                self.terminal_command = Some(command.to_string());
+                true
+            }
+            UpdateAction::AskPackageManager => {
+                self.apply_install_result(Err(PACKAGE_MANAGER_HINT.to_string()));
+                true
+            }
+            UpdateAction::Install => self.spawn_install(),
+        }
+    }
+
+    /// Descarga, verifica e instala en un hilo aparte (S2/S5). Es el camino
+    /// de las instalaciones portables.
+    fn spawn_install(&mut self) -> bool {
         let plan = match self.install_plan() {
             Ok(plan) => plan,
             Err(message) => {
@@ -151,8 +197,8 @@ impl UpdateService {
         let (tx, rx) = std::sync::mpsc::channel();
         self.install_rx = Some(rx);
         std::thread::spawn(move || {
-            // `owned_by_package` sigue en `false` en T4: el chequeo real de
-            // pacman (y la rama que abre la terminal con yay) es T5.
+            // Llegar acá ya significa `InstallKind::Portable`: el binario no
+            // pertenece a ningún paquete, así que se reemplaza a sí mismo.
             let result = std::env::current_exe()
                 .map_err(|e| format!("Cannot locate the running Karkinos executable: {}", e))
                 .and_then(|exe| {
@@ -167,6 +213,48 @@ impl UpdateService {
             let _ = tx.send(result);
         });
         true
+    }
+
+    /// S4 (T5): tipo de instalación, resuelto una sola vez por sesión. La
+    /// detección es capa fina (mira `current_exe()` y pregunta a `pacman`),
+    /// así que los tests la inyectan con [`UpdateService::set_install_kind`]
+    /// y nunca la ejecutan.
+    fn resolved_install_kind(&mut self) -> InstallKind {
+        if let Some(kind) = self.install_kind {
+            return kind;
+        }
+        let kind = std::env::current_exe().map_or(InstallKind::Portable, |exe| {
+            install_kind(&exe, owned_by_package(&exe))
+        });
+        self.install_kind = Some(kind);
+        kind
+    }
+
+    /// S4: `(has_yay, has_paru)`. Fijado por los tests o mirado en el
+    /// `PATH` (sin ejecutar ninguno de los dos).
+    fn helper_programs(&self) -> (bool, bool) {
+        self.package_helpers
+            .unwrap_or_else(|| (has_program("yay"), has_program("paru")))
+    }
+
+    /// S4: fija el tipo de instalación sin consultar `pacman`. Es el punto
+    /// de inyección de los tests: en producción lo resuelve
+    /// `resolved_install_kind` una sola vez.
+    #[cfg(test)]
+    pub fn set_install_kind(&mut self, kind: InstallKind) {
+        self.install_kind = Some(kind);
+    }
+
+    /// S4: fija qué ayudantes AUR hay, sin mirar el `PATH` (solo tests).
+    #[cfg(test)]
+    pub fn set_package_helpers(&mut self, has_yay: bool, has_paru: bool) {
+        self.package_helpers = Some((has_yay, has_paru));
+    }
+
+    /// S4: comando del gestor de paquetes pendiente de escribir en la
+    /// terminal integrada. Se entrega una sola vez.
+    pub fn take_terminal_command(&mut self) -> Option<String> {
+        self.terminal_command.take()
     }
 
     /// Lo que hay que bajar, o el error que impide instalar (S5: sin
@@ -315,7 +403,7 @@ impl UpdateService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use karkinos_core::updater::ReleaseAsset;
+    use karkinos_core::updater::{InstallKind, ReleaseAsset};
 
     /// Release bien formado para los tests: el binario de esta plataforma
     /// más `SHA256SUMS`. Las URLs son `example.invalid` a propósito: ningún
@@ -519,5 +607,124 @@ mod tests {
             "un fallo transitorio de red no oculta la actualización ya conocida"
         );
         assert_eq!(service.available_version(), Some("v99.0.0"));
+    }
+
+    // ---- S4 (T5): instalación administrada por el gestor de paquetes ----
+
+    /// Release con el binario pero SIN `SHA256SUMS`: sirve para comprobar
+    /// que una instalación portable falla sin tocar la red.
+    fn release_without_sums(version: &str) -> ReleaseInfo {
+        let asset = platform_asset_name().expect("esta plataforma tiene binario");
+        ReleaseInfo {
+            version: version.to_string(),
+            assets: vec![ReleaseAsset {
+                name: asset.to_string(),
+                download_url: "https://example.invalid/bin".to_string(),
+            }],
+        }
+    }
+
+    #[test]
+    fn una_instalacion_de_paquete_corre_yay_en_vez_de_descargar() {
+        if platform_asset_name().is_none() {
+            return;
+        }
+        let mut service = UpdateService::default();
+        service.set_install_kind(InstallKind::Package);
+        service.set_package_helpers(true, false);
+        service.apply(Ok(installable_release("v99.0.0")));
+        service.start();
+
+        assert!(service.begin_install(), "el pedido se procesa");
+        assert!(
+            !service.installing(),
+            "no hay descarga: el gestor de paquetes hace el trabajo"
+        );
+        assert_eq!(
+            service.take_terminal_command().as_deref(),
+            Some("yay -S karkinos-bin"),
+            "el comando queda listo para la terminal integrada"
+        );
+        assert!(
+            service.take_terminal_command().is_none(),
+            "el comando se entrega una sola vez"
+        );
+        assert!(
+            service.result().is_none(),
+            "no hay diálogo: el resultado se ve en la terminal"
+        );
+        assert!(
+            service.button_visible(),
+            "la app no instaló nada: la actualización sigue disponible"
+        );
+    }
+
+    #[test]
+    fn sin_yay_la_instalacion_de_paquete_corre_paru() {
+        if platform_asset_name().is_none() {
+            return;
+        }
+        let mut service = UpdateService::default();
+        service.set_install_kind(InstallKind::Package);
+        service.set_package_helpers(false, true);
+        service.apply(Ok(installable_release("v99.0.0")));
+        service.start();
+
+        assert!(service.begin_install());
+        assert_eq!(
+            service.take_terminal_command().as_deref(),
+            Some("paru -S karkinos-bin")
+        );
+        assert!(!service.installing());
+    }
+
+    #[test]
+    fn sin_ayudantes_aur_pide_usar_el_gestor_de_paquetes() {
+        if platform_asset_name().is_none() {
+            return;
+        }
+        let mut service = UpdateService::default();
+        service.set_install_kind(InstallKind::Package);
+        service.set_package_helpers(false, false);
+        service.apply(Ok(installable_release("v99.0.0")));
+        service.start();
+
+        assert!(service.begin_install(), "el pedido se procesa");
+        assert!(
+            service.take_terminal_command().is_none(),
+            "sin ayudante no hay comando que escribir"
+        );
+        assert_eq!(
+            service.result(),
+            Some(&InstallOutcome::Failed {
+                message: PACKAGE_MANAGER_HINT.to_string()
+            })
+        );
+        assert!(!service.installing(), "no hay descarga que esperar");
+    }
+
+    /// PRESERVE: en una instalación portable el click sigue siendo la
+    /// descarga + verificación de T4, aunque haya yay y paru instalados.
+    #[test]
+    fn una_instalacion_portable_no_abre_la_terminal() {
+        if platform_asset_name().is_none() {
+            return;
+        }
+        let mut service = UpdateService::default();
+        service.set_install_kind(InstallKind::Portable);
+        service.set_package_helpers(true, true);
+        // Sin `SHA256SUMS` el plan falla en el acto: nada de red.
+        service.apply(Ok(release_without_sums("v99.0.0")));
+        service.start();
+
+        assert!(service.begin_install(), "el pedido se procesa");
+        assert!(
+            service.take_terminal_command().is_none(),
+            "una instalación portable no corre yay"
+        );
+        assert!(
+            matches!(service.result(), Some(InstallOutcome::Failed { .. })),
+            "sigue el error de T4 por falta de checksums"
+        );
     }
 }

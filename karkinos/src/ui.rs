@@ -2372,6 +2372,21 @@ impl EditorApp {
         let rows = ((available_size.y - 12.0) / line_height).floor().max(5.0) as u16;
 
         self.terminal.ensure_running(&cwd, cols, rows);
+        // S4 (T5): recién ahora hay una PTY viva a la que escribirle. El
+        // comando pendiente del gestor de paquetes se manda una sola vez y
+        // el `Enter` final lo ejecuta en la shell del dock. Si la escritura
+        // falla (la shell murió justo ahora) queda pendiente para el frame
+        // siguiente, que vuelve a levantar la sesión.
+        if let Some(command) = self.terminal_pending_command.take() {
+            if self
+                .terminal
+                .send_str(&format!("{}\n", command))
+                .is_err()
+            {
+                self.terminal_pending_command = Some(command);
+            }
+            ctx.request_repaint();
+        }
         let revision_before = self.terminal.revision();
 
         egui::Frame::none()
@@ -2957,6 +2972,12 @@ impl eframe::App for EditorApp {
         if self.updates.begin_install() {
             ctx.request_repaint();
         }
+        // S4 (T5): si el gestor de paquetes instaló Karkinos, el click no
+        // descargó nada: acá se abre la terminal integrada con el comando
+        // de `yay`/`paru` preparado.
+        if self.take_package_update_command() {
+            ctx.request_repaint();
+        }
         if self.updates.poll_install() {
             ctx.request_repaint();
         }
@@ -3284,8 +3305,9 @@ impl eframe::App for EditorApp {
                         // Un segundo click no repite el pedido: queda
                         // pendiente hasta que el bucle lo ejecute (spinner)
                         // y mientras descarga no se puede volver a apretar.
-                        // Las instalaciones que administra el gestor de
-                        // paquetes se resuelven en T5.
+                        // S4: si el gestor de paquetes instaló Karkinos el
+                        // click abre la terminal con `yay`/`paru` en vez de
+                        // descargar nada (ver `update_service`).
                         if self.update_button_visible() {
                             let installing = self.update_installing();
                             let pending = self.update_pending();

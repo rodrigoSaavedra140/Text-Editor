@@ -257,13 +257,131 @@ pub enum InstallKind {
 }
 
 /// Decide si esta instalación es portable o la administra el gestor de
-/// paquetes. En esta tarea el dato llega ya resuelto; el chequeo real de
-/// `pacman -Qo` es T5 (S4).
+/// paquetes. `owned_by_package` lo resuelve [`owned_by_package`] en Linux;
+/// en las demás plataformas llega siempre en `false`.
 pub fn install_kind(_exe_path: &Path, owned_by_package: bool) -> InstallKind {
     if owned_by_package {
         InstallKind::Package
     } else {
         InstallKind::Portable
+    }
+}
+
+// ---------------------------------------------------------------------
+// S4 (T5): instalaciones administradas por el gestor de paquetes
+// ---------------------------------------------------------------------
+
+/// Qué hace el click del botón de update. La decisión depende solo del
+/// tipo de instalación y de los ayudantes AUR disponibles, así que es pura
+/// y se prueba sin ejecutar nada.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdateAction {
+    /// Instalación portable: descargar, verificar y reemplazar (S2/S5).
+    Install,
+    /// La administra el gestor: correr este comando en la terminal
+    /// integrada. Karkinos NUNCA reemplaza `/usr/bin/karkinos` (S4).
+    RunInTerminal(&'static str),
+    /// Sin `yay` ni `paru` solo queda explicarle al usuario cómo seguir.
+    AskPackageManager,
+}
+
+/// Comando para actualizar el paquete AUR `karkinos-bin` con el ayudante
+/// disponible: `yay` si está, `paru` como respaldo. Sin ninguno de los dos
+/// no hay comando (la app solo puede avisar).
+pub fn package_update_command(has_yay: bool, has_paru: bool) -> Option<&'static str> {
+    if has_yay {
+        Some("yay -S karkinos-bin")
+    } else if has_paru {
+        Some("paru -S karkinos-bin")
+    } else {
+        None
+    }
+}
+
+/// Decisión del click del botón (S2 vs S4). Es la única fuente de verdad:
+/// la UI y los tests llaman a esta función.
+pub fn update_action(kind: InstallKind, has_yay: bool, has_paru: bool) -> UpdateAction {
+    match kind {
+        InstallKind::Portable => UpdateAction::Install,
+        InstallKind::Package => match package_update_command(has_yay, has_paru) {
+            Some(command) => UpdateAction::RunInTerminal(command),
+            None => UpdateAction::AskPackageManager,
+        },
+    }
+}
+
+/// `true` si `exe` vive bajo `/usr/`, que es donde instala `pacman`. Un
+/// binario en `/opt`, `~/.local/bin` o un tarball descomprimido en
+/// cualquier lado es portable aunque el sistema tenga pacman.
+pub fn is_package_path(exe: &Path) -> bool {
+    exe.starts_with("/usr")
+}
+
+/// `true` si el gestor de paquetes instaló `exe`: está bajo `/usr/` y la
+/// consulta lo reconoce como parte de un paquete. En Linux la consulta es
+/// `pacman -Qo`; en las demás plataformas no existe el gestor, así que
+/// siempre es portable (S2).
+pub fn owned_by_package(exe: &Path) -> bool {
+    owned_by_package_using(exe, pacman_owns)
+}
+
+/// Igual que [`owned_by_package`] con la consulta inyectable: los tests
+/// pasan una consulta falsa y nunca ejecutan `pacman` (S4).
+pub fn owned_by_package_using(exe: &Path, query: impl Fn(&Path) -> bool) -> bool {
+    // Fuera de /usr la consulta ni se hace: no hay paquete que consultar.
+    is_package_path(exe) && query(exe)
+}
+
+/// Capa fina: pregunta a `pacman` a qué paquete pertenece `exe`. Sin
+/// `pacman` en el sistema (otra distribución) la respuesta es `false` y
+/// Karkinos se actualiza solo (S2).
+#[cfg(target_os = "linux")]
+fn pacman_owns(exe: &Path) -> bool {
+    if !has_program("pacman") {
+        return false;
+    }
+    // La salida no interesa: solo el código de salida (`-Qo` falla si
+    // ningún paquete es dueño del archivo).
+    std::process::Command::new("pacman")
+        .arg("-Qo")
+        .arg(exe)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn pacman_owns(_exe: &Path) -> bool {
+    false
+}
+
+/// `true` si `name` está en el `PATH`. No ejecuta el programa: solo mira
+/// si hay un archivo ejecutable con ese nombre, así que sirve para saber
+/// si existen `yay` / `paru` sin lanzarlos.
+pub fn has_program(name: &str) -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|dir| is_executable_file(&dir.join(name)))
+}
+
+/// `true` si `path` es un archivo ejecutable.
+fn is_executable_file(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path)
+            .map(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+    }
+
+    #[cfg(not(unix))]
+    {
+        std::fs::metadata(path)
+            .map(|meta| meta.is_file())
+            .unwrap_or(false)
     }
 }
 
@@ -885,8 +1003,113 @@ mod tests {
         assert_eq!(
             install_kind(exe, true),
             InstallKind::Package,
-            "el chequeo real de pacman llega en T5"
+            "un binario que pertenece a un paquete no se reemplaza solo"
         );
+    }
+
+    // ---- S4 (T5): instalaciones administradas por el gestor de paquetes ----
+
+    #[test]
+    fn package_update_command_elige_yay_despues_paru_y_nada_si_no_hay() {
+        assert_eq!(
+            package_update_command(true, true),
+            Some("yay -S karkinos-bin"),
+            "con los dos ayudantes gana yay"
+        );
+        assert_eq!(
+            package_update_command(true, false),
+            Some("yay -S karkinos-bin")
+        );
+        assert_eq!(
+            package_update_command(false, true),
+            Some("paru -S karkinos-bin"),
+            "sin yay se usa paru"
+        );
+        assert_eq!(
+            package_update_command(false, false),
+            None,
+            "sin ayudante AUR no hay comando que correr"
+        );
+    }
+
+    #[test]
+    fn is_package_path_solo_acepta_lo_que_vive_bajo_usr() {
+        assert!(is_package_path(Path::new("/usr/bin/karkinos")));
+        assert!(is_package_path(Path::new("/usr/local/bin/karkinos")));
+        assert!(!is_package_path(Path::new("/opt/karkinos/karkinos")));
+        assert!(!is_package_path(Path::new("/home/user/.local/bin/karkinos")));
+        assert!(
+            !is_package_path(Path::new("/usr2/bin/karkinos")),
+            "un prefijo parecido no es /usr"
+        );
+        assert!(
+            !is_package_path(Path::new("karkinos")),
+            "una ruta relativa no está bajo /usr"
+        );
+    }
+
+    #[test]
+    fn owned_by_package_usa_la_consulta_inyectada_sin_ejecutar_pacman() {
+        // Los tests NUNCA corren `pacman`: la consulta llega como parámetro.
+        let owned = |_path: &Path| true;
+        let not_owned = |_path: &Path| false;
+
+        assert!(owned_by_package_using(
+            Path::new("/usr/bin/karkinos"),
+            owned
+        ));
+        assert!(!owned_by_package_using(
+            Path::new("/usr/bin/karkinos"),
+            not_owned
+        ));
+
+        // Fuera de /usr la consulta ni se hace: es una instalación portable
+        // aunque el sistema tenga pacman y el archivo exista.
+        let calls = std::cell::Cell::new(0);
+        let spy = |_path: &Path| {
+            calls.set(calls.get() + 1);
+            true
+        };
+        assert!(!owned_by_package_using(
+            Path::new("/opt/karkinos/karkinos"),
+            spy
+        ));
+        assert_eq!(calls.get(), 0, "fuera de /usr no se consulta pacman");
+    }
+
+    #[test]
+    fn update_action_decide_que_hace_el_click_segun_la_instalacion() {
+        // Portable: descarga, verifica y se reemplaza a sí mismo (S2).
+        assert_eq!(
+            update_action(InstallKind::Portable, true, true),
+            UpdateAction::Install
+        );
+        assert_eq!(
+            update_action(InstallKind::Portable, false, false),
+            UpdateAction::Install,
+            "los ayudantes AUR no cambian nada en una instalación portable"
+        );
+
+        // Paquete: no se toca el binario, se corre el ayudante AUR (S4).
+        assert_eq!(
+            update_action(InstallKind::Package, true, false),
+            UpdateAction::RunInTerminal("yay -S karkinos-bin")
+        );
+        assert_eq!(
+            update_action(InstallKind::Package, false, true),
+            UpdateAction::RunInTerminal("paru -S karkinos-bin")
+        );
+
+        // Paquete sin ayudantes: solo queda explicarlo al usuario.
+        assert_eq!(
+            update_action(InstallKind::Package, false, false),
+            UpdateAction::AskPackageManager
+        );
+    }
+
+    #[test]
+    fn has_program_no_encuentra_un_programa_inexistente() {
+        assert!(!has_program("karkinos-programa-que-no-existe-1234"));
     }
 
     // ---- S2: reinicio tras actualizar + instancia única ----
