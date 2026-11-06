@@ -323,24 +323,65 @@ pub fn section_label(ui: &mut egui::Ui, theme: &Theme, label: &str) {
     ui.add_space(2.0);
 }
 
+/// Marco común de las tarjetas: su alto se ajusta al contenido.
+///
+/// Primero se dibuja el contenido y recién después se reserva el rectángulo,
+/// con el alto medido. Con un alto fijo el texto que no entraba (descripción
+/// partida en más líneas, fuentes del sistema más altas) se salía por abajo y
+/// la tarjeta siguiente, apilada sin separación, se pintaba encima.
+///
+/// El fondo se reserva como un shape vacío antes del contenido para que quede
+/// debajo, y el hover se calcula con el rectángulo del frame anterior porque
+/// el actual todavía no se conoce cuando se dibujan los controles.
+fn card_frame<R>(
+    ui: &mut egui::Ui,
+    theme: &Theme,
+    add_contents: impl FnOnce(&mut egui::Ui, f32, egui::Id) -> R,
+) -> R {
+    let id = ui.next_auto_id();
+    let hovered = ui
+        .data(|d| d.get_temp::<egui::Rect>(id))
+        .is_some_and(|prev| ui.rect_contains_pointer(prev));
+    let hover_t = ui.ctx().animate_bool_with_time(id, hovered, 0.12);
+
+    let background = ui.painter().add(egui::Shape::Noop);
+    let outer = ui.available_rect_before_wrap();
+    let inner = egui::Rect::from_min_size(
+        outer.min + egui::vec2(CARD_PAD, CARD_PAD),
+        egui::vec2((outer.width() - 2.0 * CARD_PAD).max(0.0), f32::INFINITY),
+    );
+    let mut content = ui.child_ui(inner, egui::Layout::top_down(egui::Align::Min));
+    let inner_result = add_contents(&mut content, hover_t, id);
+
+    let rect = egui::Rect::from_min_max(
+        outer.min,
+        egui::pos2(outer.right(), content.min_rect().bottom() + CARD_PAD),
+    );
+    ui.allocate_rect(rect, egui::Sense::hover());
+    ui.painter().set(
+        background,
+        egui::Shape::rect_filled(rect, egui::Rounding::same(CARD_RADIUS), card_fill(theme, hover_t)),
+    );
+    card_divider(ui, theme, rect);
+    ui.data_mut(|d| d.insert_temp(id, rect));
+    inner_result
+}
+
 /// Tarjeta de extensión con avatar, estado, descripción de 2 líneas y descargas.
 pub fn extension_card(ui: &mut egui::Ui, theme: &Theme, card: &ExtensionCard) -> CardAction {
+    card_frame(ui, theme, |content, hover_t, card_id| {
+        extension_card_contents(content, theme, card, hover_t, card_id)
+    })
+}
+
+fn extension_card_contents(
+    content: &mut egui::Ui,
+    theme: &Theme,
+    card: &ExtensionCard,
+    hover_t: f32,
+    card_id: egui::Id,
+) -> CardAction {
     let mut action = CardAction::None;
-    let height = 112.0;
-    let (rect, response) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), height), egui::Sense::click());
-    let hover_t = ui
-        .ctx()
-        .animate_bool_with_time(response.id, response.hovered(), 0.12);
-
-    ui.painter()
-        .rect_filled(rect, egui::Rounding::same(CARD_RADIUS), card_fill(theme, hover_t));
-    card_divider(ui, theme, rect);
-
-    let mut content = ui.child_ui(
-        rect.shrink(CARD_PAD),
-        egui::Layout::top_down(egui::Align::Min),
-    );
     content.spacing_mut().item_spacing = egui::vec2(6.0, 4.0);
 
     let controls_w = match card.state {
@@ -412,7 +453,7 @@ pub fn extension_card(ui: &mut egui::Ui, theme: &Theme, card: &ExtensionCard) ->
                     if hover_t > 0.02 {
                         let delete = ui.interact(
                             slot,
-                            response.id.with("delete"),
+                            card_id.with("delete"),
                             egui::Sense::click(),
                         );
                         let delete_t = ui.ctx().animate_bool_with_time(
@@ -480,22 +521,11 @@ pub fn extension_card(ui: &mut egui::Ui, theme: &Theme, card: &ExtensionCard) ->
 /// Tarjeta compacta para paquetes `.vsix` ya descargados. Devuelve `true` si
 /// el usuario pidió borrar el paquete.
 pub fn compact_card(ui: &mut egui::Ui, theme: &Theme, title: &str, subtitle: &str) -> bool {
-    let mut delete = false;
-    let (rect, response) = ui.allocate_exact_size(
-        egui::vec2(ui.available_width(), 54.0),
-        egui::Sense::click(),
-    );
-    let hover_t = ui
-        .ctx()
-        .animate_bool_with_time(response.id, response.hovered(), 0.12);
-    ui.painter()
-        .rect_filled(rect, egui::Rounding::same(CARD_RADIUS), card_fill(theme, hover_t));
-    card_divider(ui, theme, rect);
+    card_frame(ui, theme, |content, _, _| compact_card_contents(content, theme, title, subtitle))
+}
 
-    let mut content = ui.child_ui(
-        rect.shrink(CARD_PAD),
-        egui::Layout::top_down(egui::Align::Min),
-    );
+fn compact_card_contents(content: &mut egui::Ui, theme: &Theme, title: &str, subtitle: &str) -> bool {
+    let mut delete = false;
     content.spacing_mut().item_spacing.y = 2.0;
     content.horizontal(|ui| {
         ui.vertical(|ui| {
@@ -577,6 +607,96 @@ mod tests {
         assert_eq!(format_count(1_250), "1.3K");
         assert_eq!(format_count(34_500), "34.5K");
         assert_eq!(format_count(1_200_000), "1.2M");
+    }
+
+    /// Dibuja una tarjeta en un panel de `width` px y devuelve el rectángulo
+    /// que reservó y los rectángulos de todos los textos que pintó.
+    fn render_card(
+        width: f32,
+        draw: impl Fn(&mut egui::Ui, &Theme),
+    ) -> (egui::Rect, Vec<egui::Rect>) {
+        let ctx = egui::Context::default();
+        let theme = crate::theme::ThemeMode::ALL[0].theme();
+        let mut card_rect = egui::Rect::NOTHING;
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(width, 600.0),
+            )),
+            ..Default::default()
+        };
+        let output = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let top = ui.cursor().top();
+                draw(ui, &theme);
+                card_rect = egui::Rect::from_x_y_ranges(
+                    ui.max_rect().x_range(),
+                    top..=ui.cursor().top(),
+                );
+            });
+        });
+        let texts = output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Text(text) => Some(
+                    egui::Rect::from_min_size(text.pos, text.galley.size())
+                        .intersect(clipped.clip_rect),
+                ),
+                _ => None,
+            })
+            .filter(|r| r.is_positive())
+            .collect();
+        (card_rect, texts)
+    }
+
+    fn assert_texts_inside(card: egui::Rect, texts: &[egui::Rect]) {
+        assert!(!texts.is_empty(), "la tarjeta no pintó texto");
+        for text in texts {
+            assert!(
+                text.bottom() <= card.bottom() + 0.5,
+                "un texto termina en y={:.1} y la tarjeta en y={:.1}: se solapa con la siguiente",
+                text.bottom(),
+                card.bottom()
+            );
+        }
+    }
+
+    #[test]
+    fn extension_card_contiene_todo_su_texto() {
+        let card = ExtensionCard {
+            title: "rust-analyzer".into(),
+            publisher: "rust-lang".into(),
+            version: "0.3.2000".into(),
+            description: "Rust language support for Visual Studio Code with inlay hints, \
+                          completion, diagnostics, refactorings and much more besides."
+                .repeat(3),
+            downloads: Some(1_234_567),
+            state: CardState::Available,
+        };
+        for width in [180.0, 260.0, 420.0] {
+            let (rect, texts) = render_card(width, |ui, theme| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                extension_card(ui, theme, &card);
+            });
+            assert_texts_inside(rect, &texts);
+        }
+    }
+
+    #[test]
+    fn compact_card_contiene_todo_su_texto() {
+        for width in [180.0, 260.0] {
+            let (rect, texts) = render_card(width, |ui, theme| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                compact_card(
+                    ui,
+                    theme,
+                    "rust-lang.rust-analyzer-0.3.2000.vsix",
+                    "12.4 MB · downloaded package waiting to be installed",
+                );
+            });
+            assert_texts_inside(rect, &texts);
+        }
     }
 
     #[test]
