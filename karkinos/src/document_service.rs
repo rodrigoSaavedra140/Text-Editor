@@ -8,8 +8,10 @@
 //! (por ejemplo `load_tab`, `set_text`, `undo/redo`) siguen en
 //! `app.rs`, que ahora coordina servicios en vez de concentrar todo.
 
+use std::borrow::Cow;
 use std::fs;
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -77,8 +79,9 @@ pub fn mtime_is_stale(
 pub struct TabDocument {
     #[allow(dead_code)]
     pub id: usize,
-    pub lines: Vec<String>,
-    pub buffer: TextBuffer,
+    // S8 (T7): el texto vive SOLO en el `TextBuffer` (Rope). `lines`
+    // desaparece: se pide una línea por vez con `line()`.
+    buffer: TextBuffer,
     pub editor_state: EditorState,
     pub last_snapshot: Rope,
     pub undo_stack: UndoStack,
@@ -96,7 +99,6 @@ impl TabDocument {
     pub fn new(id: usize) -> Self {
         Self {
             id,
-            lines: vec![String::new()],
             buffer: TextBuffer::new(),
             editor_state: EditorState::default(),
             last_snapshot: Rope::from_str(""),
@@ -112,8 +114,33 @@ impl TabDocument {
         }
     }
 
+    /// S8 (T7): texto completo de la pestaña, leído del Rope.
+    pub fn text(&self) -> String {
+        self.buffer.to_string()
+    }
+
+    pub fn set_text(&mut self, text: &str) {
+        self.buffer.set_text(text);
+    }
+
+    pub fn insert(&mut self, char_idx: usize, text: &str) {
+        self.buffer.insert(char_idx, text);
+    }
+
+    pub fn remove(&mut self, range: Range<usize>) {
+        self.buffer.remove(range);
+    }
+
+    pub fn recalc_view_bytes(&mut self) {
+        self.view_bytes = self.buffer.len_bytes();
+    }
+
+    pub fn line_col_to_char(&self, line: usize, col: usize) -> usize {
+        self.buffer.line_col_to_char(line, col)
+    }
+
     pub fn is_empty(&self) -> bool {
-        self.lines.is_empty() || (self.lines.len() == 1 && self.lines[0].trim().is_empty())
+        self.buffer.len_lines() <= 1 && self.buffer.line_without_newline(0).trim().is_empty()
     }
 
     pub fn display_title(&self) -> String {
@@ -141,9 +168,10 @@ impl TabDocument {
 /// además alimentan la presentación, el LSP o el AST quedan como
 /// orquestadores en `app.rs`.
 pub struct DocumentService {
-    // Buffer "vivo", partido en líneas para render y edición por franjas.
-    pub lines: Vec<String>,
-    pub buffer: TextBuffer,
+    // S8 (T7): el texto vive SOLO en el `TextBuffer` (Rope). El editor
+    // pide líneas con `line()` y edita con `insert`/`remove`/`set_text`
+    // sobre índices de carácter; no hay segunda copia en `Vec<String>`.
+    buffer: TextBuffer,
     pub last_snapshot: Rope, // snapshot del buffer en Rope (Copy-On-Write O(1) con UndoStack)
     pub undo_stack: UndoStack,
     pub file_path_input: String,
@@ -207,7 +235,6 @@ pub struct DocumentService {
 impl Default for DocumentService {
     fn default() -> Self {
         DocumentService {
-            lines: vec![String::new()],
             buffer: TextBuffer::new(),
             last_snapshot: Rope::from_str(""),
             undo_stack: UndoStack::new(),
@@ -269,7 +296,7 @@ impl DocumentService {
     }
 
     pub fn is_empty_buffer(&self) -> bool {
-        self.lines.len() <= 1 && self.lines.first().map(|l| l.is_empty()).unwrap_or(true)
+        self.buffer.len_lines() <= 1 && self.buffer.line_without_newline(0).is_empty()
     }
 
     /// S3: Registra un snapshot explícito para un texto dado. Si coincide
@@ -294,11 +321,66 @@ impl DocumentService {
         self.snapshot_text(&current);
     }
 
-    /// Reconstruye el texto completo a partir de `lines` — es O(n),
-    /// así que solo se llama en momentos puntuales (snapshot, guardar),
-    /// nunca en cada tecla.
+    /// S8 (T7): texto completo, derivado del `TextBuffer` (única
+    /// fuente de verdad). O(n), para snapshot/guardar, no por tecla.
+    ///
+    /// `current_text` se conserva como alias histórico: todos los
+    /// llamadores existentes obtienen exactamente el mismo String.
+    pub fn text(&self) -> String {
+        self.buffer.to_string()
+    }
+
     pub fn current_text(&self) -> String {
-        self.lines.join("\n")
+        self.text()
+    }
+
+    /// S8 (T7): línea `i` sin el salto de línea. Devuelve `Cow` para
+    /// que el render pida solo las líneas visibles sin reconstruir el
+    /// documento entero.
+    pub fn line(&self, i: usize) -> Cow<'_, str> {
+        Cow::Owned(self.buffer.line_without_newline(i))
+    }
+
+    pub fn line_count(&self) -> usize {
+        self.buffer.len_lines()
+    }
+
+    /// S8 (T7): edición por índice de carácter sobre el Rope.
+    pub fn insert(&mut self, char_idx: usize, text: &str) {
+        self.buffer.insert(char_idx, text);
+    }
+
+    pub fn remove(&mut self, range: Range<usize>) {
+        self.buffer.remove(range);
+    }
+
+    /// S8 (T7): reemplaza el contenido de una línea lógica (sin tocar
+    /// el salto de línea).
+    pub fn set_line(&mut self, line: usize, text: &str) {
+        let current_len = self.buffer.line_without_newline(line).chars().count();
+        let start = self.buffer.line_col_to_char(line, 0);
+        let end = start + current_len;
+        if start < end {
+            self.buffer.remove(start..end);
+        }
+        if !text.is_empty() {
+            self.buffer.insert(start, text);
+        }
+    }
+
+    /// S8 (T7): reemplaza el contenido completo del buffer.
+    pub fn set_text(&mut self, text: &str) {
+        self.buffer.set_text(text);
+    }
+
+    /// S8 (T7): acceso mutable al Rope para el widget del editor, que
+    /// edita directamente la única copia del texto.
+    pub fn buffer_mut(&mut self) -> &mut TextBuffer {
+        &mut self.buffer
+    }
+
+    pub fn line_col_to_char(&self, line: usize, col: usize) -> usize {
+        self.buffer.line_col_to_char(line, col)
     }
 
     /// El texto del buffer serializado con el estilo de fin de línea
@@ -306,7 +388,7 @@ impl DocumentService {
     /// con CRLF sale a disco EXACTAMENTE como estaba, sin '\r'
     /// escondidos en el medio (el buffer solo usa '\n').
     pub fn current_text_with_ending(&self) -> String {
-        let text = self.current_text();
+        let text = self.text();
         serialize_line_ending(&text, self.line_ending)
     }
 
@@ -318,12 +400,9 @@ impl DocumentService {
     }
 
     /// Recalcula el tamaño "en vivo" que muestra la barra de estado.
-    /// O(n) en memoria leída (sin alocar el texto entero), y solo se
-    /// corre cuando el buffer cambia de verdad: al editar (una vez por
-    /// tecla, no por frame), abrir, deshacer o rehacer.
+    /// O(1): el Rope ya conoce sus bytes, sin alocar el texto entero.
     pub fn recalc_view_bytes(&mut self) {
-        self.view_bytes = self.lines.iter().map(|l| l.len()).sum::<usize>()
-            + self.lines.len().saturating_sub(1);
+        self.view_bytes = self.buffer.len_bytes();
     }
 
     /// Lee un archivo del disco: contenido ya normalizado a '\n' para
@@ -698,7 +777,7 @@ impl DocumentService {
 
     /// Retorna `true` si el buffer actual no contiene texto real (vacío o solo whitespace).
     pub fn is_buffer_empty(&self) -> bool {
-        self.lines.is_empty() || (self.lines.len() == 1 && self.lines[0].trim().is_empty())
+        self.buffer.len_lines() <= 1 && self.buffer.line_without_newline(0).trim().is_empty()
     }
 }
 

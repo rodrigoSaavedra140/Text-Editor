@@ -53,7 +53,7 @@ impl LspService {
                 doc.status = format!("LSP: {}", diag.message);
             }
 
-            let line_count = doc.lines.len();
+            let line_count = doc.line_count();
             client.request_inlay_hints(
                 &uri,
                 karkinos_core::lsp::LspRange {
@@ -133,7 +133,7 @@ impl LspService {
         }
         if let (Some(ref client), Some(ref path)) = (&self.client, &doc.current_file) {
             let uri = karkinos_core::path_to_uri(path);
-            let line_count = doc.lines.len();
+            let line_count = doc.line_count();
             let range = karkinos_core::lsp::LspRange {
                 start: karkinos_core::lsp::LspPosition { line: 0, character: 0 },
                 end: karkinos_core::lsp::LspPosition { line: line_count, character: 0 },

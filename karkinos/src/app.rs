@@ -1033,9 +1033,9 @@ impl EditorApp {
             tab.current_file.clone()
         };
         let content = if active {
-            self.doc.current_text()
+            self.doc.text()
         } else {
-            tab.buffer.to_string()
+            tab.text()
         };
         let title = if let Some(name) = path
             .as_ref()
@@ -1078,10 +1078,10 @@ impl EditorApp {
 
         let line = entry
             .cursor_line
-            .min(self.doc.lines.len().saturating_sub(1));
+            .min(self.doc.line_count().saturating_sub(1));
         let col = entry
             .cursor_col
-            .min(self.doc.lines.get(line).map(|text| text.chars().count()).unwrap_or(0));
+            .min(self.doc.line(line).chars().count());
         self.editor_state.cursor_line = line;
         self.editor_state.cursor_col = col;
         self.editor_state.sel_anchor = None;
@@ -1104,10 +1104,14 @@ impl EditorApp {
             }
         });
 
-        let sample = if self.doc.lines.len() <= 100 {
-            self.doc.lines.join("\n")
+        let line_count = self.doc.line_count();
+        let sample = if line_count <= 100 {
+            self.doc.text()
         } else {
-            self.doc.lines[..100].join("\n")
+            (0..100)
+                .map(|i| self.doc.line(i).into_owned())
+                .collect::<Vec<_>>()
+                .join("\n")
         };
 
         crate::syntax::Language::detect(path, &sample)
@@ -1115,9 +1119,9 @@ impl EditorApp {
 
     /// S8 (Etapa 2): Guarda el estado actual del editor en la pestaña activa.
     pub fn sync_active_to_tab(&mut self) {
+        let text = self.doc.text();
         if let Some(tab) = self.doc.tabs.get_mut(self.doc.active_tab) {
-            tab.lines = self.doc.lines.clone();
-            tab.buffer = self.doc.buffer.clone();
+            tab.set_text(&text);
             tab.editor_state = self.editor_state.clone();
             tab.last_snapshot = self.doc.last_snapshot.clone();
             tab.undo_stack = self.doc.undo_stack.clone();
@@ -1169,21 +1173,21 @@ impl EditorApp {
 
     /// S8 (Etapa 2): Carga los datos de la pestaña `idx` en el estado activo del editor.
     pub fn load_tab(&mut self, idx: usize) {
-        if let Some(tab) = self.doc.tabs.get(idx) {
+        if idx < self.doc.tabs.len() {
+            let text = self.doc.tabs[idx].text();
             self.doc.active_tab = idx;
-            self.doc.lines = tab.lines.clone();
-            self.doc.buffer = tab.buffer.clone();
-            self.editor_state = tab.editor_state.clone();
-            self.doc.last_snapshot = tab.last_snapshot.clone();
-            self.doc.undo_stack = tab.undo_stack.clone();
-            self.doc.file_path_input = tab.file_path_input.clone();
-            self.doc.current_file = tab.current_file.clone();
-            self.doc.dirty = tab.dirty;
-            self.doc.line_ending = tab.line_ending;
-            self.doc.last_disk_mtime = tab.last_disk_mtime;
-            self.doc.external_changed = tab.external_changed;
-            self.doc.last_mtime_check = tab.last_mtime_check;
-            self.doc.view_bytes = tab.view_bytes;
+            self.doc.set_text(&text);
+            self.editor_state = self.doc.tabs[idx].editor_state.clone();
+            self.doc.last_snapshot = self.doc.tabs[idx].last_snapshot.clone();
+            self.doc.undo_stack = self.doc.tabs[idx].undo_stack.clone();
+            self.doc.file_path_input = self.doc.tabs[idx].file_path_input.clone();
+            self.doc.current_file = self.doc.tabs[idx].current_file.clone();
+            self.doc.dirty = self.doc.tabs[idx].dirty;
+            self.doc.line_ending = self.doc.tabs[idx].line_ending;
+            self.doc.last_disk_mtime = self.doc.tabs[idx].last_disk_mtime;
+            self.doc.external_changed = self.doc.tabs[idx].external_changed;
+            self.doc.last_mtime_check = self.doc.tabs[idx].last_mtime_check;
+            self.doc.view_bytes = self.doc.tabs[idx].view_bytes;
             self.doc.chunk_tracker.reset();
             self.find_matches.clear();
 
@@ -1289,12 +1293,7 @@ impl EditorApp {
     /// conserva: es contenido del texto, no un salto).
     pub fn set_text(&mut self, text: &str) {
         let text = text.replace("\r\n", "\n");
-        self.doc.buffer.set_text(&text);
-        self.doc.lines = if text.is_empty() {
-            vec![String::new()]
-        } else {
-            text.split('\n').map(|l| l.to_string()).collect()
-        };
+        self.doc.set_text(&text);
         self.editor_state.cursor_line = 0;
         self.editor_state.cursor_col = 0;
         self.editor_state.preferred_col = None;
@@ -1944,12 +1943,7 @@ impl EditorApp {
             };
             let view_bytes = content.len();
             let tab = &mut self.doc.tabs[idx];
-            tab.lines = if content.is_empty() {
-                vec![String::new()]
-            } else {
-                content.split('\n').map(|line| line.to_string()).collect()
-            };
-            tab.buffer = karkinos_core::TextBuffer::from_text(&content);
+            tab.set_text(&content);
             tab.last_snapshot = Rope::from_str(&content);
             tab.undo_stack = UndoStack::new();
             tab.dirty = false;
@@ -2145,7 +2139,7 @@ impl EditorApp {
 
     /// F7: lleva el cursor al símbolo y cierra el selector.
     pub fn jump_to_symbol(&mut self, symbol: &karkinos_core::syntax_ast::DocumentSymbol) {
-        let line = symbol.line.min(self.doc.lines.len().saturating_sub(1));
+        let line = symbol.line.min(self.doc.line_count().saturating_sub(1));
         self.editor_state.cursor_line = line;
         self.editor_state.cursor_col = symbol.character;
         self.editor_state.preferred_col = None;
@@ -2538,12 +2532,7 @@ impl EditorApp {
             }
             let view_bytes = content.len();
             let tab = &mut self.doc.tabs[idx];
-            tab.lines = if content.is_empty() {
-                vec![String::new()]
-            } else {
-                content.split('\n').map(|line| line.to_string()).collect()
-            };
-            tab.buffer = karkinos_core::TextBuffer::from_text(&content);
+            tab.set_text(&content);
             tab.last_snapshot = Rope::from_str(&content);
             tab.undo_stack = UndoStack::new();
             tab.dirty = false;
@@ -2596,7 +2585,7 @@ impl EditorApp {
         let line = m
             .line_number
             .saturating_sub(1)
-            .min(self.doc.lines.len().saturating_sub(1));
+            .min(self.doc.line_count().saturating_sub(1));
         self.editor_state.cursor_line = line;
         self.editor_state.cursor_col = m.col_start;
         self.editor_state.preferred_col = None;
@@ -2811,26 +2800,19 @@ impl EditorApp {
         for edit in sorted {
             let start_char = self
                 .doc
-                .buffer
                 .line_col_to_char(edit.range.start.line, edit.range.start.character);
             let end_char = self
                 .doc
-                .buffer
                 .line_col_to_char(edit.range.end.line, edit.range.end.character);
 
             if start_char < end_char {
-                self.doc.buffer.remove(start_char..end_char);
+                self.doc.remove(start_char..end_char);
             }
             if !edit.new_text.is_empty() {
-                self.doc.buffer.insert(start_char, &edit.new_text);
+                self.doc.insert(start_char, &edit.new_text);
             }
         }
 
-        let full_text = self.doc.buffer.to_string();
-        self.doc.lines = full_text.split('\n').map(|s| s.to_string()).collect();
-        if self.doc.lines.is_empty() {
-            self.doc.lines.push(String::new());
-        }
         self.doc.recalc_view_bytes();
         self.doc.dirty = true;
         self.doc.snapshot_if_changed();
@@ -2849,26 +2831,19 @@ impl EditorApp {
 
             for edit in sorted {
                 let start_char = tab
-                    .buffer
                     .line_col_to_char(edit.range.start.line, edit.range.start.character);
                 let end_char = tab
-                    .buffer
                     .line_col_to_char(edit.range.end.line, edit.range.end.character);
 
                 if start_char < end_char {
-                    tab.buffer.remove(start_char..end_char);
+                    tab.remove(start_char..end_char);
                 }
                 if !edit.new_text.is_empty() {
-                    tab.buffer.insert(start_char, &edit.new_text);
+                    tab.insert(start_char, &edit.new_text);
                 }
             }
-            let full_text = tab.buffer.to_string();
-            tab.lines = full_text.split('\n').map(|s| s.to_string()).collect();
-            if tab.lines.is_empty() {
-                tab.lines.push(String::new());
-            }
             tab.dirty = true;
-            tab.view_bytes = tab.buffer.len_bytes();
+            tab.recalc_view_bytes();
         }
     }
 
@@ -3271,16 +3246,16 @@ impl EditorApp {
         );
         self.set_text(text);
         self.editor_state.scroll = scroll;
-        let last_line = self.doc.lines.len().saturating_sub(1);
+        let last_line = self.doc.line_count().saturating_sub(1);
         if line > last_line {
             // La línea vieja ya no existe: el contenido Ty se ajusta a
             // que el cursor aterrice al FIN de la última línea nueva.
             self.editor_state.cursor_line = last_line;
             self.editor_state.cursor_col =
-                self.doc.lines[last_line].chars().count();
+                self.doc.line(last_line).chars().count();
         } else {
             self.editor_state.cursor_line = line;
-            let line_len = self.doc.lines[line].chars().count();
+            let line_len = self.doc.line(line).chars().count();
             self.editor_state.cursor_col = col.min(line_len);
         }
     }
@@ -3326,9 +3301,10 @@ impl EditorApp {
         } else {
             self.find_query.to_lowercase()
         };
-        for (li, line) in self.doc.lines.iter().enumerate() {
+        for li in 0..self.doc.line_count() {
+            let line = self.doc.line(li).into_owned();
             let hay = if self.find_case_sensitive {
-                line.clone()
+                line
             } else {
                 line.to_lowercase()
             };
@@ -3390,9 +3366,11 @@ impl EditorApp {
         self.doc.snapshot_if_changed();
         if let Some(&(line, col)) = self.find_matches.get(self.find_current) {
             let qlen = self.find_query.chars().count();
-            let sb = crate::editor_widget::char_to_byte_pub(&self.doc.lines[line], col);
-            let eb = crate::editor_widget::char_to_byte_pub(&self.doc.lines[line], col + qlen);
-            self.doc.lines[line].replace_range(sb..eb, &self.find_replace);
+            let mut text = self.doc.line(line).into_owned();
+            let sb = crate::editor_widget::char_to_byte_pub(&text, col);
+            let eb = crate::editor_widget::char_to_byte_pub(&text, col + qlen);
+            text.replace_range(sb..eb, &self.find_replace);
+            self.doc.set_line(line, &text);
             self.doc.dirty = true;
             self.doc.recalc_view_bytes();
             self.doc.snapshot_if_changed();
@@ -3417,9 +3395,11 @@ impl EditorApp {
         let count = self.find_matches.len();
         // Reemplazar de atrás hacia adelante evita recalcular offsets.
         for &(line, col) in self.find_matches.iter().rev() {
-            let sb = crate::editor_widget::char_to_byte_pub(&self.doc.lines[line], col);
-            let eb = crate::editor_widget::char_to_byte_pub(&self.doc.lines[line], col + qlen);
-            self.doc.lines[line].replace_range(sb..eb, &self.find_replace);
+            let mut text = self.doc.line(line).into_owned();
+            let sb = crate::editor_widget::char_to_byte_pub(&text, col);
+            let eb = crate::editor_widget::char_to_byte_pub(&text, col + qlen);
+            text.replace_range(sb..eb, &self.find_replace);
+            self.doc.set_line(line, &text);
         }
         self.doc.dirty = true;
         self.doc.recalc_view_bytes();
@@ -3515,7 +3495,7 @@ impl EditorApp {
         }
 
         // Si la pestaña actual está intacta y vacía, la reutilizamos; si no, creamos nueva pestaña
-        let can_reuse_current = self.doc.current_file.is_none() && !self.doc.dirty && self.doc.lines == [""];
+        let can_reuse_current = self.doc.current_file.is_none() && !self.doc.dirty && self.doc.text().is_empty();
         if !can_reuse_current {
             let new_tab = TabDocument::new(self.doc.next_tab_id);
             self.doc.next_tab_id += 1;
@@ -3752,7 +3732,7 @@ mod tests {
         let mut app = EditorApp::default();
         app.open_path(path.clone());
         // Dentro del buffer quedan líneas SIN \r escondido.
-        assert_eq!(app.doc.lines, vec!["uno", "dos", "", "tres"]);
+        assert_eq!(app.doc.text(), "uno\ndos\n\ntres");
         // Y el serializer trae de vuelta el archivo EXACTO original.
         assert_eq!(app.doc.current_text_with_ending(), "uno\r\ndos\r\n\r\ntres");
         std::fs::remove_file(path)?;
@@ -4169,7 +4149,7 @@ mod tests {
         app.new_document();
 
         assert_eq!(app.doc.current_text(), "");
-        assert_eq!(app.doc.lines, vec![String::new()]);
+        assert_eq!(app.doc.text(), "");
         assert_eq!(app.doc.current_file, None);
         assert_eq!(app.doc.file_path_input, "");
         assert!(!app.doc.dirty);
@@ -4800,6 +4780,32 @@ mod tests {
     }
 
     #[test]
+    fn edit_lsp_y_edit_de_teclado_mantienen_el_mismo_texto() {
+        use karkinos_core::lsp::{LspPosition, LspRange, LspTextEdit};
+
+        let mut app = EditorApp::default();
+        app.set_text("fn main() {\n    let x = 1;\n}\n");
+
+        // Un edit del LSP reemplaza el "1" por "42" sobre el Rope.
+        app.apply_text_edits_to_active(&[LspTextEdit {
+            range: LspRange {
+                start: LspPosition { line: 1, character: 12 },
+                end: LspPosition { line: 1, character: 13 },
+            },
+            new_text: "42".to_string(),
+        }]);
+
+        // Después "tipeamos" con el mismo helper del widget: escribe
+        // sobre el mismo buffer, sin reconstruir ninguna copia aparte.
+        let end_col = app.doc.line(1).chars().count();
+        crate::editor_widget::insert_text(app.doc.buffer_mut(), (1, end_col), "!");
+
+        assert_eq!(app.doc.text(), "fn main() {\n    let x = 42;!\n}\n");
+        assert_eq!(app.doc.line_count(), 4);
+        assert_eq!(app.doc.line(1), "    let x = 42;!");
+    }
+
+    #[test]
     fn test_editor_app_breakpoints_and_dap_debugging() {
         use karkinos_core::dap::{DapClient, DapStackFrame, DapStopReason, DapVariable};
 
@@ -4954,10 +4960,10 @@ mod tests {
 
         // El buffer activo y la pestaña abierta reflejan el disco, sin dirty.
         assert_eq!(app.doc.current_text(), "let baz = baz;\n");
-        assert_eq!(app.doc.buffer.to_string(), "let baz = baz;\n");
+        assert_eq!(app.doc.text(), "let baz = baz;\n");
         assert!(!app.doc.dirty);
         let tab = &app.doc.tabs[app.doc.active_tab];
-        assert_eq!(tab.buffer.to_string(), "let baz = baz;\n");
+        assert_eq!(tab.text(), "let baz = baz;\n");
         assert!(!tab.dirty);
         assert_eq!(
             tab.last_disk_mtime,
@@ -5029,7 +5035,7 @@ mod tests {
             .iter()
             .find(|tab| tab.current_file.as_deref() == Some(a.as_path()))
             .expect("tab a");
-        assert_eq!(tab_a.buffer.to_string(), "alpha edited\n");
+        assert_eq!(tab_a.text(), "alpha edited\n");
         assert!(tab_a.dirty, "una pestaña intacta no pierde ediciones");
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -6280,7 +6286,7 @@ mod tests {
         let mut app = EditorApp::default();
         app.doc.browse_dir = root.clone();
         app.open_path(path.clone());
-        assert_eq!(app.doc.lines, ["primera", ""]);
+        assert_eq!(app.doc.text(), "primera\n");
         assert!(!app.doc.dirty);
 
         std::fs::write(&path, "segunda linea\n").expect("reescritura");
@@ -6288,8 +6294,8 @@ mod tests {
         app.last_disk_poll = None;
         app.poll_external_changes();
 
-        assert_eq!(app.doc.lines, ["segunda linea", ""]);
-        assert_eq!(app.doc.buffer.to_string(), "segunda linea\n");
+        assert_eq!(app.doc.text(), "segunda linea\n");
+        assert_eq!(app.doc.text(), "segunda linea\n");
         assert!(!app.doc.dirty, "una recarga limpia no marca dirty");
         assert!(app.doc.tabs[app.doc.active_tab].last_disk_mtime.is_some());
 
@@ -6322,7 +6328,7 @@ mod tests {
         app.last_disk_poll = None;
         app.poll_external_changes();
 
-        assert_eq!(app.doc.lines, ["edicion local", ""], "no pisa ediciones");
+        assert_eq!(app.doc.text(), "edicion local\n", "no pisa ediciones");
         assert!(app.doc.dirty, "sigue dirty");
         assert!(
             app.doc.status.contains("File modified on disk: edited.txt"),
@@ -6470,7 +6476,7 @@ mod tests {
             Some(file.as_path()),
             "el archivo quedó abierto en la pestaña activa"
         );
-        assert_eq!(app.doc.lines, vec!["contenido".to_string()]);
+        assert_eq!(app.doc.text(), "contenido");
 
         std::fs::remove_dir_all(&root).ok();
     }
@@ -6521,7 +6527,7 @@ mod tests {
             Some(file.as_path()),
             "el comando abre el archivo en la pestaña activa"
         );
-        assert_eq!(app.doc.lines, vec!["fn main() {}".to_string()]);
+        assert_eq!(app.doc.text(), "fn main() {}");
 
         std::fs::remove_dir_all(&root).ok();
     }

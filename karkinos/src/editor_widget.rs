@@ -1,5 +1,6 @@
 use eframe::egui;
 
+use karkinos_core::TextBuffer;
 use karkinos_core::text_ops::{
     closing_delimiter, col_from_visual_col, is_closing_delimiter, is_empty_pair_around,
     visual_col_at, DEFAULT_TAB_SIZE,
@@ -116,10 +117,118 @@ impl Caret {
     }
 }
 
+/// S8 (T7): vista de líneas que consume el widget del editor.
+///
+/// En producción la implementa `TextBuffer` (el único dueño del
+/// texto, en el Rope). Los tests siguen usando `Vec<String>`, que
+/// implementa el mismo contrato para no duplicar los casos.
+pub trait LineBuffer {
+    fn line_count(&self) -> usize;
+    fn get_line(&self, i: usize) -> String;
+    fn full_text(&self) -> String;
+    fn set_line(&mut self, i: usize, text: &str);
+    fn insert_line(&mut self, i: usize, text: String);
+    fn remove_lines(&mut self, range: std::ops::Range<usize>);
+}
+
+impl LineBuffer for Vec<String> {
+    fn line_count(&self) -> usize {
+        self.len()
+    }
+
+    fn get_line(&self, i: usize) -> String {
+        self.get(i).cloned().unwrap_or_default()
+    }
+
+    fn full_text(&self) -> String {
+        self.join("\n")
+    }
+
+    fn set_line(&mut self, i: usize, text: &str) {
+        if let Some(line) = self.get_mut(i) {
+            line.clear();
+            line.push_str(text);
+        }
+    }
+
+    fn insert_line(&mut self, i: usize, text: String) {
+        self.insert(i.min(self.len()), text);
+    }
+
+    fn remove_lines(&mut self, range: std::ops::Range<usize>) {
+        let start = range.start.min(self.len());
+        let end = range.end.min(self.len());
+        if start < end {
+            self.drain(start..end);
+        }
+    }
+}
+
+impl LineBuffer for TextBuffer {
+    fn line_count(&self) -> usize {
+        self.len_lines()
+    }
+
+    fn get_line(&self, i: usize) -> String {
+        self.line_without_newline(i)
+    }
+
+    fn full_text(&self) -> String {
+        self.to_string()
+    }
+
+    fn set_line(&mut self, i: usize, text: &str) {
+        let current_len = self.line_without_newline(i).chars().count();
+        let start = self.line_col_to_char(i, 0);
+        let end = start + current_len;
+        if start < end {
+            self.remove(start..end);
+        }
+        if !text.is_empty() {
+            self.insert(start, text);
+        }
+    }
+
+    fn insert_line(&mut self, i: usize, text: String) {
+        // Inserta una línea LÓGICA completa. Al final del buffer hay
+        // que agregar el salto que separa la nueva línea de la última.
+        if i < self.len_lines() {
+            let at = self.line_col_to_char(i, 0);
+            self.insert(at, &format!("{}\n", text));
+        } else {
+            let at = self.len_chars();
+            self.insert(at, &format!("\n{}", text));
+        }
+    }
+
+    fn remove_lines(&mut self, range: std::ops::Range<usize>) {
+        let count = self.len_lines();
+        let start = range.start.min(count);
+        let end = range.end.min(count);
+        if start >= end {
+            return;
+        }
+        let mut start_char = self.line_col_to_char(start, 0);
+        let end_char = if end < count {
+            self.line_col_to_char(end, 0)
+        } else {
+            self.len_chars()
+        };
+        // Al borrar hasta la última línea también se va el salto que
+        // la separaba de la anterior (si no, quedaría una línea vacía).
+        if end == count && start > 0 {
+            start_char -= 1;
+        }
+        if start_char < end_char {
+            self.remove(start_char..end_char);
+        }
+    }
+}
+
 /// F3: próxima aparición de `needle` después de `after`, en orden de
 /// documento. Solo busca dentro de una línea (Ctrl+D selecciona una palabra).
 pub fn find_next_occurrence(
-    lines: &[String],
+    lines: &dyn LineBuffer,
     needle: &str,
     after: (usize, usize),
 ) -> Option<((usize, usize), (usize, usize))> {
@@ -127,7 +236,8 @@ pub fn find_next_occurrence(
         return None;
     }
     let needle_chars: Vec<char> = needle.chars().collect();
-    for (line_idx, line) in lines.iter().enumerate().skip(after.0) {
+    for line_idx in after.0..lines.line_count() {
+        let line = lines.get_line(line_idx);
         let chars: Vec<char> = line.chars().collect();
         let from = if line_idx == after.0 { after.1 } else { 0 };
         if from >= chars.len() {
@@ -148,7 +258,7 @@ pub fn find_next_occurrence(
 /// derecha a izquierda, para que las posiciones anteriores no se corran.
 /// Devuelve las posiciones nuevas en el mismo orden que `positions`.
 pub fn insert_text_multi(
-    lines: &mut Vec<String>,
+    lines: &mut dyn LineBuffer,
     positions: &[(usize, usize)],
     text: &str,
 ) -> Vec<(usize, usize)> {
@@ -164,7 +274,7 @@ pub fn insert_text_multi(
 /// F3: borra cada rango (en orden descendente) y devuelve, por cada uno, la
 /// posición donde queda su cursor (el inicio del rango borrado).
 pub fn delete_ranges_multi(
-    lines: &mut Vec<String>,
+    lines: &mut dyn LineBuffer,
     ranges: &[TextRange],
 ) -> Vec<(usize, usize)> {
     let mut order: Vec<usize> = (0..ranges.len()).collect();
@@ -496,13 +606,13 @@ fn caret_blink_next_wake(now: f64, last_activity: f64) -> f32 {
     (CARET_BLINK_PERIOD_S - (idle % CARET_BLINK_PERIOD_S)) as f32
 }
 
-fn clamp_col(lines: &[String], line: usize, col: usize) -> usize {
-    col.min(line_char_count(&lines[line]))
+fn clamp_col(lines: &dyn LineBuffer, line: usize, col: usize) -> usize {
+    col.min(line_char_count(&lines.get_line(line)))
 }
 
 /// S12: Desplaza el cursor una línea hacia arriba, respetando líneas plegadas
 /// y manteniendo la columna preferida a través de líneas vacías o más cortas.
-pub fn move_cursor_up(lines: &[String], state: &mut EditorState, shift: bool) {
+pub fn move_cursor_up(lines: &dyn LineBuffer, state: &mut EditorState, shift: bool) {
     if state.cursor_line > 0 {
         let mut target_line = state.cursor_line - 1;
         while target_line > 0 && state.is_line_folded(target_line) {
@@ -521,10 +631,10 @@ pub fn move_cursor_up(lines: &[String], state: &mut EditorState, shift: bool) {
 
 /// S12: Desplaza el cursor una línea hacia abajo, respetando líneas plegadas
 /// y manteniendo la columna preferida a través de líneas vacías o más cortas.
-pub fn move_cursor_down(lines: &[String], state: &mut EditorState, shift: bool) {
-    if state.cursor_line + 1 < lines.len() {
+pub fn move_cursor_down(lines: &dyn LineBuffer, state: &mut EditorState, shift: bool) {
+    if state.cursor_line + 1 < lines.line_count() {
         let mut target_line = state.cursor_line + 1;
-        while target_line + 1 < lines.len() && state.is_line_folded(target_line) {
+        while target_line + 1 < lines.line_count() && state.is_line_folded(target_line) {
             target_line += 1;
         }
         if !state.is_line_folded(target_line) {
@@ -547,42 +657,50 @@ fn selection_range(state: &EditorState) -> Option<((usize, usize), (usize, usize
     Some(if anchor <= cursor { (anchor, cursor) } else { (cursor, anchor) })
 }
 
-fn selected_text(lines: &[String], start: (usize, usize), end: (usize, usize)) -> String {
+fn selected_text(lines: &dyn LineBuffer, start: (usize, usize), end: (usize, usize)) -> String {
     let (sl, sc) = start;
     let (el, ec) = end;
     if sl == el {
-        let sb = char_to_byte(&lines[sl], sc);
-        let eb = char_to_byte(&lines[sl], ec);
-        lines[sl][sb..eb].to_string()
+        let line = lines.get_line(sl);
+        let sb = char_to_byte(&line, sc);
+        let eb = char_to_byte(&line, ec);
+        line[sb..eb].to_string()
     } else {
         let mut out = String::new();
-        let sb = char_to_byte(&lines[sl], sc);
-        out.push_str(&lines[sl][sb..]);
-        for line in &lines[sl + 1..el] {
+        let first = lines.get_line(sl);
+        let sb = char_to_byte(&first, sc);
+        out.push_str(&first[sb..]);
+        for line_idx in sl + 1..el {
             out.push('\n');
-            out.push_str(line);
+            out.push_str(&lines.get_line(line_idx));
         }
         out.push('\n');
-        let eb = char_to_byte(&lines[el], ec);
-        out.push_str(&lines[el][..eb]);
+        let last = lines.get_line(el);
+        let eb = char_to_byte(&last, ec);
+        out.push_str(&last[..eb]);
         out
     }
 }
 
-fn delete_range(lines: &mut Vec<String>, start: (usize, usize), end: (usize, usize)) {
+fn delete_range(lines: &mut dyn LineBuffer, start: (usize, usize), end: (usize, usize)) {
     let (sl, sc) = start;
     let (el, ec) = end;
     if sl == el {
-        let sb = char_to_byte(&lines[sl], sc);
-        let eb = char_to_byte(&lines[sl], ec);
-        lines[sl].replace_range(sb..eb, "");
+        let line = lines.get_line(sl);
+        let sb = char_to_byte(&line, sc);
+        let eb = char_to_byte(&line, ec);
+        let mut new_line = line;
+        new_line.replace_range(sb..eb, "");
+        lines.set_line(sl, &new_line);
     } else {
-        let sb = char_to_byte(&lines[sl], sc);
-        let eb = char_to_byte(&lines[el], ec);
-        let tail = lines[el][eb..].to_string();
-        lines[sl].truncate(sb);
-        lines[sl].push_str(&tail);
-        lines.drain(sl + 1..=el);
+        let first = lines.get_line(sl);
+        let sb = char_to_byte(&first, sc);
+        let last = lines.get_line(el);
+        let eb = char_to_byte(&last, ec);
+        let mut merged = first[..sb].to_string();
+        merged.push_str(&last[eb..]);
+        lines.set_line(sl, &merged);
+        lines.remove_lines(sl + 1..el + 1);
     }
 }
 
@@ -623,29 +741,32 @@ fn indent_line(line: &mut String) {
 
 /// S6: Comenta o descomenta el rango de líneas [start_line..=end_line] usando el prefijo indicado.
 pub fn toggle_comment_range(
-    lines: &mut [String],
+    lines: &mut dyn LineBuffer,
     start_line: usize,
     end_line: usize,
     prefix: &str,
 ) {
-    if lines.is_empty() {
+    let count = lines.line_count();
+    if count == 0 {
         return;
     }
-    let end_l = end_line.min(lines.len() - 1);
+    let end_l = end_line.min(count - 1);
     let start_l = start_line.min(end_l);
 
     let all_commented = (start_l..=end_l).all(|l| {
-        let trimmed = lines[l].trim_start();
+        let line = lines.get_line(l);
+        let trimmed = line.trim_start();
         trimmed.is_empty() || trimmed.starts_with(prefix)
     });
 
-    for line in lines.iter_mut().take(end_l + 1).skip(start_l) {
+    for l in start_l..=end_l {
+        let mut line = lines.get_line(l);
         if line.trim().is_empty() {
             continue;
         }
         if all_commented {
             let indent_len = line.chars().take_while(|c| c.is_whitespace()).count();
-            let indent_bytes = char_to_byte(line, indent_len);
+            let indent_bytes = char_to_byte(&line, indent_len);
             let rest = &line[indent_bytes..];
             if let Some(stripped) = rest.strip_prefix(prefix) {
                 let strip_len = if stripped.starts_with(' ') {
@@ -657,10 +778,11 @@ pub fn toggle_comment_range(
             }
         } else {
             let indent_len = line.chars().take_while(|c| c.is_whitespace()).count();
-            let indent_bytes = char_to_byte(line, indent_len);
+            let indent_bytes = char_to_byte(&line, indent_len);
             let insert = format!("{} ", prefix);
             line.insert_str(indent_bytes, &insert);
         }
+        lines.set_line(l, &line);
     }
 }
 
@@ -670,46 +792,54 @@ pub fn toggle_comment_range(
 /// Event::Copy / Event::Cut sin payload, así que la decisión vive
 /// en este helper puro.
 fn copy_text(
-    lines: &[String],
+    lines: &dyn LineBuffer,
     sel: Option<((usize, usize), (usize, usize))>,
     cursor_line: usize,
 ) -> String {
     match sel {
         Some((s, e)) => selected_text(lines, s, e),
-        None => lines[cursor_line.min(lines.len().saturating_sub(1))].clone(),
+        None => lines.get_line(cursor_line.min(lines.line_count().saturating_sub(1))),
     }
 }
 
 /// Inserta `text` (puede tener saltos de línea, ej. al pegar) en
 /// `at`, y devuelve la posición del cursor después de insertar.
-fn insert_text(lines: &mut Vec<String>, at: (usize, usize), text: &str) -> (usize, usize) {
+pub(crate) fn insert_text(
+    lines: &mut dyn LineBuffer,
+    at: (usize, usize),
+    text: &str,
+) -> (usize, usize) {
     let (line, col) = at;
-    let byte = char_to_byte(&lines[line], col);
+    let content = lines.get_line(line);
+    let byte = char_to_byte(&content, col);
 
     if !text.contains('\n') {
-        lines[line].insert_str(byte, text);
+        let mut new_line = content;
+        new_line.insert_str(byte, text);
+        lines.set_line(line, &new_line);
         return (line, col + text.chars().count());
     }
 
-    let tail = lines[line][byte..].to_string();
-    lines[line].truncate(byte);
-
+    let tail = content[byte..].to_string();
     let mut parts: Vec<String> = text.split('\n').map(|s| s.to_string()).collect();
     let first = parts.remove(0);
-    lines[line].push_str(&first);
+    let mut head = content[..byte].to_string();
+    head.push_str(&first);
+    let head_len = head.chars().count();
+    lines.set_line(line, &head);
 
     let last_idx = parts.len().saturating_sub(1);
     let mut insert_at = line + 1;
-    let mut result = (line, line_char_count(&lines[line]));
+    let mut result = (line, head_len);
     for (i, part) in parts.into_iter().enumerate() {
         if i == last_idx {
-            let col_after = line_char_count(&part);
+            let col_after = part.chars().count();
             let mut final_line = part;
             final_line.push_str(&tail);
-            lines.insert(insert_at, final_line);
+            lines.insert_line(insert_at, final_line);
             result = (insert_at, col_after);
         } else {
-            lines.insert(insert_at, part);
+            lines.insert_line(insert_at, part);
             insert_at += 1;
         }
     }
@@ -723,15 +853,16 @@ fn is_word_char(c: char) -> bool {
 
 /// S5: salto por palabra adelante (Ctrl+→). Si está en una palabra, salta al fin de la palabra.
 /// Si está en separadores, salta al inicio de la siguiente palabra.
-fn next_word_pos(lines: &[String], line: usize, col: usize) -> (usize, usize) {
-    if lines.is_empty() {
+fn next_word_pos(lines: &dyn LineBuffer, line: usize, col: usize) -> (usize, usize) {
+    let count = lines.line_count();
+    if count == 0 {
         return (0, 0);
     }
-    let line = line.min(lines.len() - 1);
-    let chars: Vec<char> = lines[line].chars().collect();
+    let line = line.min(count - 1);
+    let chars: Vec<char> = lines.get_line(line).chars().collect();
     let len = chars.len();
     if col >= len {
-        if line + 1 < lines.len() {
+        if line + 1 < count {
             (line + 1, 0)
         } else {
             (line, len)
@@ -753,19 +884,20 @@ fn next_word_pos(lines: &[String], line: usize, col: usize) -> (usize, usize) {
 
 /// S5: salto por palabra atrás (Ctrl+←). Retrocede sobre la palabra o separador actual
 /// hasta el límite anterior.
-fn prev_word_pos(lines: &[String], line: usize, col: usize) -> (usize, usize) {
-    if lines.is_empty() {
+fn prev_word_pos(lines: &dyn LineBuffer, line: usize, col: usize) -> (usize, usize) {
+    let count = lines.line_count();
+    if count == 0 {
         return (0, 0);
     }
     if col == 0 {
         if line > 0 {
-            (line - 1, line_char_count(&lines[line - 1]))
+            (line - 1, line_char_count(&lines.get_line(line - 1)))
         } else {
             (0, 0)
         }
     } else {
-        let line = line.min(lines.len() - 1);
-        let chars: Vec<char> = lines[line].chars().collect();
+        let line = line.min(count - 1);
+        let chars: Vec<char> = lines.get_line(line).chars().collect();
         let mut c = col.min(chars.len());
         while c > 0 {
             c -= 1;
@@ -836,14 +968,15 @@ fn matching_partner(c: char) -> Option<(char, bool)> {
 }
 
 pub fn find_matching_bracket(
-    lines: &[String],
+    lines: &dyn LineBuffer,
     cursor_line: usize,
     cursor_col: usize,
 ) -> Option<BracketMatch> {
-    if lines.is_empty() || cursor_line >= lines.len() {
+    let count = lines.line_count();
+    if count == 0 || cursor_line >= count {
         return None;
     }
-    let cur_line = &lines[cursor_line];
+    let cur_line = lines.get_line(cursor_line);
     let cur_chars: Vec<char> = cur_line.chars().collect();
 
     let (origin_col, ch) = if cursor_col < cur_chars.len()
@@ -866,8 +999,9 @@ pub fn find_matching_bracket(
     if forward {
         let mut depth = 1usize;
         let mut start_c = origin_col + 1;
-        let end_line = (cursor_line + max_lines).min(lines.len());
-        for (l, line) in lines.iter().enumerate().take(end_line).skip(cursor_line) {
+        let end_line = (cursor_line + max_lines).min(count);
+        for l in cursor_line..end_line {
+            let line = lines.get_line(l);
             for (c_idx, c) in line.chars().enumerate().skip(start_c) {
                 if c == ch {
                     depth += 1;
@@ -888,7 +1022,7 @@ pub fn find_matching_bracket(
         let start_c = origin_col;
         let min_line = cursor_line.saturating_sub(max_lines);
         for l in (min_line..=cursor_line).rev() {
-            let line_chars: Vec<char> = lines[l].chars().collect();
+            let line_chars: Vec<char> = lines.get_line(l).chars().collect();
             let from = if l == cursor_line { start_c } else { line_chars.len() };
             for c_idx in (0..from).rev() {
                 let c = line_chars[c_idx];
@@ -939,7 +1073,7 @@ enum DelimiterOutcome {
 ///    de línea, espacio o delimitador de cierre, inserta `c`+cierre y deja el
 ///    cursor en el medio.
 fn handle_delimiter_char(
-    lines: &mut Vec<String>,
+    lines: &mut dyn LineBuffer,
     state: &mut EditorState,
     c: char,
 ) -> DelimiterOutcome {
@@ -961,7 +1095,7 @@ fn handle_delimiter_char(
     // 2. Overtyping (sin selección).
     if is_closing_delimiter(c) {
         let (l, col) = (state.cursor_line, state.cursor_col);
-        let chars: Vec<char> = lines[l].chars().collect();
+        let chars: Vec<char> = lines.get_line(l).chars().collect();
         if chars.get(col) == Some(&c) {
             let is_quote = matches!(c, '"' | '\'' | '`');
             let should_overtype = if is_quote {
@@ -986,7 +1120,7 @@ fn handle_delimiter_char(
     // 3. Auto-cierre (sin selección).
     if let Some(close) = closing_delimiter(c) {
         let (l, col) = (state.cursor_line, state.cursor_col);
-        let after = lines[l].chars().nth(col);
+        let after = lines.get_line(l).chars().nth(col);
         let should_auto_close = match after {
             None => true, // fin de línea
             Some(ch) => ch.is_whitespace() || is_closing_delimiter(ch),
@@ -1006,12 +1140,12 @@ fn handle_delimiter_char(
 
 /// Borra un par vacío `()`, `[]`, `{}`, `""`, `''` o `` `` `` alrededor del
 /// cursor primario. Devuelve `true` si borró ambos caracteres.
-fn backspace_empty_pair(lines: &mut Vec<String>, state: &mut EditorState) -> bool {
+fn backspace_empty_pair(lines: &mut dyn LineBuffer, state: &mut EditorState) -> bool {
     if selection_range(state).is_some() {
         return false;
     }
     let (l, c) = (state.cursor_line, state.cursor_col);
-    if !is_empty_pair_around(&lines[l], c) {
+    if !is_empty_pair_around(&lines.get_line(l), c) {
         return false;
     }
     delete_range(lines, (l, c - 1), (l, c + 1));
@@ -1022,17 +1156,17 @@ fn backspace_empty_pair(lines: &mut Vec<String>, state: &mut EditorState) -> boo
 
 /// Expande un bloque `{|}` en tres líneas con indentación expandida y deja el
 /// cursor en el renglón intermedio. Devuelve `true` si lo hizo.
-fn enter_between_braces(lines: &mut Vec<String>, state: &mut EditorState) -> bool {
+fn enter_between_braces(lines: &mut dyn LineBuffer, state: &mut EditorState) -> bool {
     let line_idx = state.cursor_line;
     let col = state.cursor_col;
     let between_braces = {
-        let chars: Vec<char> = lines[line_idx].chars().collect();
+        let chars: Vec<char> = lines.get_line(line_idx).chars().collect();
         col > 0 && col < chars.len() && chars[col - 1] == '{' && chars[col] == '}'
     };
     if !between_braces {
         return false;
     }
-    let base = inherited_indent(&lines[line_idx]);
+    let base = inherited_indent(&lines.get_line(line_idx));
     let base_len = line_char_count(&base);
     let insert = format!("\n{}    \n{}", base, base);
     let (closing_line, _) = insert_text(lines, (line_idx, col), &insert);
@@ -1061,22 +1195,22 @@ fn row_count_for(line: &str, wrap_chars: usize) -> usize {
     }
 }
 
-fn rebuild_row_counts(lines: &[String], wrap_chars: usize, state: &EditorState) -> Vec<usize> {
-    lines
-        .iter()
-        .enumerate()
-        .map(|(i, l)| {
+fn rebuild_row_counts(lines: &dyn LineBuffer, wrap_chars: usize, state: &EditorState) -> Vec<usize> {
+    (0..lines.line_count())
+        .map(|i| {
             if state.is_line_folded(i) {
                 0
             } else {
-                row_count_for(l, wrap_chars)
+                row_count_for(&lines.get_line(i), wrap_chars)
             }
         })
         .collect()
 }
 
-fn rebuild_char_lens(lines: &[String]) -> Vec<usize> {
-    lines.iter().map(|l| l.chars().count()).collect()
+fn rebuild_char_lens(lines: &dyn LineBuffer) -> Vec<usize> {
+    (0..lines.line_count())
+        .map(|i| lines.get_line(i).chars().count())
+        .collect()
 }
 
 /// cum_rows[0] = 0 y cum_rows[i] = suma de row_counts[0..i).
@@ -1142,7 +1276,7 @@ pub struct SearchHighlight<'a> {
 /// sale de la pantalla hacia los costados.
 pub fn show(
     ui: &mut egui::Ui,
-    lines: &mut Vec<String>,
+    lines: &mut TextBuffer,
     state: &mut EditorState,
     theme: &crate::theme::Theme,
     language: crate::syntax::Language,
@@ -1183,7 +1317,7 @@ pub fn show(
 
     // S4: banda de números a la izquierda del texto — ancho según
     // los dígitos del total de líneas (crece con el documento).
-    let gutter_w = gutter_width_for(lines.len(), char_width);
+    let gutter_w = gutter_width_for(lines.line_count(), char_width);
     // Origen del texto: después de la banda (y del PAD_X de siempre).
     let text_left = rect.left() + gutter_w + PAD_X;
 
@@ -1201,7 +1335,7 @@ pub fn show(
     // deshacer/rehacer, redimensionar ventana, gutter que crece) —
     // en el caso común (tipear un carácter) esto se saltea, y más
     // abajo parcheamos solo la línea que cambió.
-    if state.row_counts.len() != lines.len()
+    if state.row_counts.len() != lines.line_count()
         || state.last_wrap_chars != wrap_chars
         || state.last_gutter != gutter_w
         || state.last_collapsed_folds != state.collapsed_folds
@@ -1281,7 +1415,7 @@ pub fn show(
                         state.last_collapsed_folds = state.collapsed_folds.clone();
                     } else {
                         // S8: Clic en el gutter (banda de números) selecciona la línea completa
-                        let line_end = line_char_count(&lines[clicked_line]);
+                        let line_end = line_char_count(&lines.get_line(clicked_line));
                         state.sel_anchor = Some((clicked_line, 0));
                         state.cursor_line = clicked_line;
                         state.cursor_col = line_end;
@@ -1290,10 +1424,10 @@ pub fn show(
                 } else {
                     let rel_x = (pos.x - text_left).max(0.0);
                     let target_vcol = (rel_x / char_width).round() as usize;
-                    let target_line = &lines[clicked_line];
-                    let vstart = visual_col_at(target_line, sub_row * wrap_chars, DEFAULT_TAB_SIZE);
+                    let target_line = lines.get_line(clicked_line);
+                    let vstart = visual_col_at(&target_line, sub_row * wrap_chars, DEFAULT_TAB_SIZE);
                     let clicked_col = col_from_visual_col(
-                        target_line,
+                        &target_line,
                         vstart + target_vcol,
                         DEFAULT_TAB_SIZE,
                     );
@@ -1310,10 +1444,10 @@ pub fn show(
                     } else if response.triple_clicked() {
                         state.sel_anchor = Some((clicked_line, 0));
                         state.cursor_line = clicked_line;
-                        state.cursor_col = line_char_count(&lines[clicked_line]);
+                        state.cursor_col = line_char_count(&lines.get_line(clicked_line));
                         state.preferred_col = None;
                     } else if response.double_clicked() {
-                        let (ws, we) = word_range_at(&lines[clicked_line], clicked_col);
+                        let (ws, we) = word_range_at(&lines.get_line(clicked_line), clicked_col);
                         state.sel_anchor = Some((clicked_line, ws));
                         state.cursor_line = clicked_line;
                         state.cursor_col = we;
@@ -1350,7 +1484,7 @@ pub fn show(
     // más caro, pero son las ediciones menos frecuentes.
     macro_rules! resync_rows {
         () => {
-            if state.row_counts.len() != lines.len() {
+            if state.row_counts.len() != lines.line_count() {
                 state.row_counts = rebuild_row_counts(lines, wrap_chars, state);
                 state.char_lens = rebuild_char_lens(lines);
                 state.cum_rows = build_cum_rows(&state.row_counts);
@@ -1360,9 +1494,9 @@ pub fn show(
                 // SOLO su entrada de las tres cachés, en O(n) solo si
                 // cambió su cantidad de filas (ajuste del sumatorio).
                 let old_rows = state.row_counts[state.cursor_line];
-                let new_rows = row_count_for(&lines[state.cursor_line], wrap_chars);
+                let new_rows = row_count_for(&lines.get_line(state.cursor_line), wrap_chars);
                 state.row_counts[state.cursor_line] = new_rows;
-                state.char_lens[state.cursor_line] = line_char_count(&lines[state.cursor_line]);
+                state.char_lens[state.cursor_line] = line_char_count(&lines.get_line(state.cursor_line));
                 adjust_cum_rows(
                     &mut state.cum_rows,
                     state.cursor_line,
@@ -1482,7 +1616,7 @@ pub fn show(
                 egui::Event::Paste(t) => {
                     cursor_moved = true;
                     state.preferred_col = None;
-                    pre_break_snapshot = Some(lines.join("\n"));
+                    pre_break_snapshot = Some(lines.full_text());
                     if let Some((s, e)) = selection_range(state) {
                         delete_range(lines, s, e);
                         state.cursor_line = s.0;
@@ -1515,8 +1649,10 @@ pub fn show(
                                 // S4 (Etapa 2): Shift+Tab desindenta bloque multilínea
                                 let mut removed_first = 0;
                                 let mut removed_last = 0;
-                                for (l, line) in lines.iter_mut().enumerate().take(to_l + 1).skip(from_l) {
-                                    let rem = dedent_line(line);
+                                for l in from_l..=to_l.min(lines.line_count().saturating_sub(1)) {
+                                    let mut line = lines.get_line(l);
+                                    let rem = dedent_line(&mut line);
+                                    lines.set_line(l, &line);
                                     if l == s.0 {
                                         removed_first = rem;
                                     }
@@ -1535,8 +1671,10 @@ pub fn show(
                                 }
                             } else {
                                 // S4 (Etapa 2): Tab indenta bloque multilínea con 4 espacios
-                                for line in lines.iter_mut().take(to_l + 1).skip(from_l) {
-                                    indent_line(line);
+                                for l in from_l..=to_l.min(lines.line_count().saturating_sub(1)) {
+                                    let mut line = lines.get_line(l);
+                                    indent_line(&mut line);
+                                    lines.set_line(l, &line);
                                 }
                                 let new_s_col = s.1 + 4;
                                 let new_e_col = if e.1 > 0 || e.0 == to_l { e.1 + 4 } else { e.1 };
@@ -1555,8 +1693,10 @@ pub fn show(
                             state.cum_rows = build_cum_rows(&state.row_counts);
                         } else if modifiers.shift {
                             // S4 (Etapa 2): Shift+Tab en línea simple desindenta la línea actual
-                            let rem = dedent_line(&mut lines[state.cursor_line]);
+                            let mut line = lines.get_line(state.cursor_line);
+                            let rem = dedent_line(&mut line);
                             if rem > 0 {
+                                lines.set_line(state.cursor_line, &line);
                                 state.cursor_col = state.cursor_col.saturating_sub(rem);
                                 if let Some(anchor) = state.sel_anchor {
                                     if anchor.0 == state.cursor_line {
@@ -1589,7 +1729,7 @@ pub fn show(
                     egui::Key::Enter => {
                         cursor_moved = true;
                         state.preferred_col = None;
-                        pre_break_snapshot = Some(lines.join("\n"));
+                        pre_break_snapshot = Some(lines.full_text());
                         if let Some((s, e)) = selection_range(state) {
                             delete_range(lines, s, e);
                             state.cursor_line = s.0;
@@ -1606,7 +1746,7 @@ pub fn show(
                             // línea en la que estaba el cursor. (se lee
                             // DESPUÉS de descartar la selección y ANTES de
                             // partir la línea en dos).
-                            let indenta = inherited_indent(&lines[state.cursor_line]);
+                            let indenta = inherited_indent(&lines.get_line(state.cursor_line));
                             let insert = if indenta.is_empty() {
                                 "\n".to_string()
                             } else {
@@ -1653,7 +1793,7 @@ pub fn show(
                             if *c > 0 {
                                 ranges.push(((*l, *c - 1), (*l, *c)));
                             } else if *l > 0 {
-                                ranges.push(((*l - 1, line_char_count(&lines[*l - 1])), (*l, 0)));
+                                ranges.push(((*l - 1, line_char_count(&lines.get_line(*l - 1))), (*l, 0)));
                             }
                         }
 
@@ -1667,7 +1807,7 @@ pub fn show(
                             } else if col > 0 {
                                 Some((line, col - 1))
                             } else if line > 0 {
-                                Some((line - 1, line_char_count(&lines[line - 1])))
+                                Some((line - 1, line_char_count(&lines.get_line(line - 1))))
                             } else {
                                 Some((line, col))
                             }
@@ -1724,9 +1864,9 @@ pub fn show(
                             }
                         }
                         for (l, c) in &single_positions {
-                            if *c < line_char_count(&lines[*l]) {
+                            if *c < line_char_count(&lines.get_line(*l)) {
                                 ranges.push(((*l, *c), (*l, *c + 1)));
-                            } else if *l + 1 < lines.len() {
+                            } else if *l + 1 < lines.line_count() {
                                 ranges.push(((*l, *c), (*l + 1, 0)));
                             }
                         }
@@ -1768,7 +1908,7 @@ pub fn show(
                             state.cursor_col -= 1;
                         } else if state.cursor_line > 0 {
                             state.cursor_line -= 1;
-                            state.cursor_col = line_char_count(&lines[state.cursor_line]);
+                            state.cursor_col = line_char_count(&lines.get_line(state.cursor_line));
                         }
                         if !modifiers.shift {
                             state.sel_anchor = Some((state.cursor_line, state.cursor_col));
@@ -1781,9 +1921,9 @@ pub fn show(
                             let (nl, nc) = next_word_pos(lines, state.cursor_line, state.cursor_col);
                             state.cursor_line = nl;
                             state.cursor_col = nc;
-                        } else if state.cursor_col < line_char_count(&lines[state.cursor_line]) {
+                        } else if state.cursor_col < line_char_count(&lines.get_line(state.cursor_line)) {
                             state.cursor_col += 1;
-                        } else if state.cursor_line + 1 < lines.len() {
+                        } else if state.cursor_line + 1 < lines.line_count() {
                             state.cursor_line += 1;
                             state.cursor_col = 0;
                         }
@@ -1840,7 +1980,7 @@ pub fn show(
                     egui::Key::End => {
                         cursor_moved = true;
                         state.preferred_col = None;
-                        state.cursor_col = line_char_count(&lines[state.cursor_line]);
+                        state.cursor_col = line_char_count(&lines.get_line(state.cursor_line));
                         if !modifiers.shift {
                             state.sel_anchor = Some((state.cursor_line, state.cursor_col));
                         }
@@ -1849,8 +1989,8 @@ pub fn show(
                         cursor_moved = true;
                         state.preferred_col = None;
                         state.sel_anchor = Some((0, 0));
-                        state.cursor_line = lines.len() - 1;
-                        state.cursor_col = line_char_count(&lines[state.cursor_line]);
+                        state.cursor_line = lines.line_count() - 1;
+                        state.cursor_col = line_char_count(&lines.get_line(state.cursor_line));
                     }
                     egui::Key::Escape if !state.extra_carets.is_empty() => {
                         // F3: Escape colapsa todos los cursores al primario.
@@ -1863,17 +2003,18 @@ pub fn show(
                         if let Some((s, e)) = sel {
                             let from_l = s.0;
                             let to_l = if e.1 == 0 && e.0 > s.0 { e.0 - 1 } else { e.0 };
-                            let cloned_lines: Vec<String> = lines[from_l..=to_l].to_vec();
+                            let cloned_lines: Vec<String> =
+                                (from_l..=to_l).map(|l| lines.get_line(l)).collect();
                             let insert_idx = to_l + 1;
                             let num_cloned = cloned_lines.len();
                             for (offset, line) in cloned_lines.into_iter().enumerate() {
-                                lines.insert(insert_idx + offset, line);
+                                lines.insert_line(insert_idx + offset, line);
                             }
                             state.cursor_line += num_cloned;
                             state.sel_anchor = Some((s.0 + num_cloned, s.1));
                         } else {
-                            let cur_line = lines[state.cursor_line].clone();
-                            lines.insert(state.cursor_line + 1, cur_line);
+                            let cur_line = lines.get_line(state.cursor_line);
+                            lines.insert_line(state.cursor_line + 1, cur_line);
                             state.cursor_line += 1;
                             state.sel_anchor = Some((state.cursor_line, state.cursor_col));
                         }
@@ -1892,7 +2033,7 @@ pub fn show(
                         if let Some((s, e)) = selection_range(state) {
                             if s.0 == e.0 && e.1 > s.1 {
                                 let needle: String =
-                                    lines[s.0].chars().skip(s.1).take(e.1 - s.1).collect();
+                                    lines.get_line(s.0).chars().skip(s.1).take(e.1 - s.1).collect();
                                 if let Some((ns, ne)) = find_next_occurrence(lines, &needle, e) {
                                     state.extra_carets.push(Caret {
                                         line: ne.0,
@@ -1903,7 +2044,7 @@ pub fn show(
                                 }
                             }
                         } else {
-                            let (ws, we) = word_range_at(&lines[state.cursor_line], state.cursor_col);
+                            let (ws, we) = word_range_at(&lines.get_line(state.cursor_line), state.cursor_col);
                             if ws != we {
                                 state.sel_anchor = Some((state.cursor_line, ws));
                                 state.cursor_col = we;
@@ -2079,13 +2220,14 @@ pub fn show(
     // entran en pantalla (más la primera, que puede verse partida),
     // no el documento entero como antes.
     let first_row = ((state.scroll / row_height).floor().max(0.0)) as usize;
-    let start_line = line_at_visual_row(&state.cum_rows, first_row).min(lines.len().saturating_sub(1));
+    let start_line = line_at_visual_row(&state.cum_rows, first_row).min(lines.line_count().saturating_sub(1));
     // S1 (Roadmap v0.2.9): se alinea la estampa del cache con la revisión
     // del AST antes de recorrer las líneas visibles. Si `update_ast`
     // regeneró el árbol, acá se vacía la cache de una sola vez.
     state.layout_cache.sync_ast(state.ast_rev);
     let mut visual_row = state.cum_rows[start_line];
-    for (i, line) in lines.iter().enumerate().skip(start_line) {
+    for i in start_line..lines.line_count() {
+        let line = lines.get_line(i);
         let rows_here = state.row_counts.get(i).copied().unwrap_or(1);
         if rows_here == 0 {
             continue;
@@ -2119,8 +2261,8 @@ pub fn show(
                 continue;
             }
             if let Some((start_pos, end_pos)) = caret.range() {
-                let vs = visual_col_at(line, start_pos.1, DEFAULT_TAB_SIZE);
-                let ve = visual_col_at(line, end_pos.1, DEFAULT_TAB_SIZE);
+                let vs = visual_col_at(&line, start_pos.1, DEFAULT_TAB_SIZE);
+                let ve = visual_col_at(&line, end_pos.1, DEFAULT_TAB_SIZE);
                 let sx = text_left + vs as f32 * char_width;
                 let ex = text_left + ve as f32 * char_width;
                 painter.rect_filled(
@@ -2132,7 +2274,7 @@ pub fn show(
                     theme.selection,
                 );
             }
-            let cx = text_left + visual_col_at(line, caret.col, DEFAULT_TAB_SIZE) as f32 * char_width;
+            let cx = text_left + visual_col_at(&line, caret.col, DEFAULT_TAB_SIZE) as f32 * char_width;
             painter.line_segment(
                 [egui::pos2(cx, line_top_y), egui::pos2(cx, line_top_y + row_height)],
                 egui::Stroke::new(1.5_f32, theme.caret),
@@ -2244,7 +2386,7 @@ pub fn show(
             .char_lens
             .get(i)
             .copied()
-            .unwrap_or_else(|| line_char_count(line));
+            .unwrap_or_else(|| line_char_count(&line));
         let is_pure_ascii = line.len() == char_len;
 
         // S6 (Etapa 2) + S3 (Etapa 3), S1 (Roadmap v0.2.9): el tokenizado
@@ -2270,8 +2412,8 @@ pub fn show(
             }
             let start = sub * wrap_chars;
             let end = (start + wrap_chars).min(char_len);
-            let sb = if is_pure_ascii { start } else { char_to_byte(line, start) };
-            let eb = if is_pure_ascii { end } else { char_to_byte(line, end) };
+            let sb = if is_pure_ascii { start } else { char_to_byte(&line, start) };
+            let eb = if is_pure_ascii { end } else { char_to_byte(&line, end) };
             let chunk = &line[sb..eb];
 
             // S4 (Rust IDE): Resaltado de fondo para la línea activa en depuración
@@ -2318,9 +2460,9 @@ pub fn show(
                     let row_start = line_start_col.max(start);
                     let row_end = line_end_col.min(end);
                     if row_start < row_end || (line_start_col == line_end_col && start == 0 && sub == 0) {
-                        let vs_start = visual_col_at(line, row_start, DEFAULT_TAB_SIZE);
-                        let vs_end = visual_col_at(line, row_end, DEFAULT_TAB_SIZE);
-                        let vs_sub = visual_col_at(line, start, DEFAULT_TAB_SIZE);
+                        let vs_start = visual_col_at(&line, row_start, DEFAULT_TAB_SIZE);
+                        let vs_end = visual_col_at(&line, row_end, DEFAULT_TAB_SIZE);
+                        let vs_sub = visual_col_at(&line, start, DEFAULT_TAB_SIZE);
                         let x0 = text_left + (vs_start.saturating_sub(vs_sub)) as f32 * char_width;
                         let x1 =
                             text_left + (vs_end.saturating_sub(vs_sub)).max(vs_start.saturating_sub(vs_sub) + 1) as f32 * char_width;
@@ -2343,7 +2485,7 @@ pub fn show(
                             Vec::new()
                         } else {
                         crate::syntax::tokenize_line_semantic(
-                            line,
+                            &line,
                             i,
                             language,
                             Some(state.ast_spans.as_slice()),
@@ -2480,7 +2622,7 @@ pub fn show(
                     .char_lens
                     .get(i)
                     .copied()
-                    .unwrap_or_else(|| line_char_count(line));
+                    .unwrap_or_else(|| line_char_count(&line));
                 let gx = text_left + line_len as f32 * char_width + 16.0;
                 painter.text(
                     egui::pos2(gx.min(clip_rect.right() - 4.0), line_top_y),
@@ -2498,12 +2640,12 @@ pub fn show(
     // S11: Renderizado y animación fluida del cursor smear
     if has_focus {
         let wrap_c = wrap_chars.max(1);
-        let cursor_line = state.cursor_line.min(lines.len().saturating_sub(1));
-        let line_str = lines.get(cursor_line).map(|s| s.as_str()).unwrap_or("");
+        let cursor_line = state.cursor_line.min(lines.line_count().saturating_sub(1));
+        let line_str = lines.get_line(cursor_line);
         let sub = state.cursor_col / wrap_c;
         let start = sub * wrap_c;
-        let vcol = visual_col_at(line_str, state.cursor_col, DEFAULT_TAB_SIZE);
-        let vstart = visual_col_at(line_str, start, DEFAULT_TAB_SIZE);
+        let vcol = visual_col_at(&line_str, state.cursor_col, DEFAULT_TAB_SIZE);
+        let vstart = visual_col_at(&line_str, start, DEFAULT_TAB_SIZE);
         let caret_doc_x = gutter_w + PAD_X + (vcol.saturating_sub(vstart)) as f32 * char_width;
 
         let visual_row = visual_row_of(&state.cum_rows, cursor_line, state.cursor_col, wrap_chars);
@@ -2641,7 +2783,7 @@ pub fn show(
                 egui::Sense::click(),
             );
             if response.clicked() {
-                state.cursor_line = (*scope_line).min(lines.len().saturating_sub(1));
+                state.cursor_line = (*scope_line).min(lines.line_count().saturating_sub(1));
                 state.cursor_col = 0;
                 state.preferred_col = None;
                 state.sel_anchor = None;
@@ -2658,7 +2800,7 @@ pub fn show(
     if state.show_minimap {
         let mm_painter = ui.painter();
         mm_painter.rect_filled(minimap_rect, 0.0, theme.bg);
-        let total = lines.len().max(1);
+        let total = lines.line_count().max(1);
         let mm_height = minimap_rect.height();
         let mm_height_usize = (mm_height as usize).max(1);
 
@@ -2666,13 +2808,13 @@ pub fn show(
             // El documento entra entero: una barra por línea en su posición
             // proporcional, sin forzar un paso mínimo.
             let step = mm_height / total as f32;
-            for (i, line) in lines.iter().enumerate() {
+            for i in 0..lines.line_count() {
                 let y = minimap_rect.top() + i as f32 * step;
                 let len = state
                     .char_lens
                     .get(i)
                     .copied()
-                    .unwrap_or_else(|| line.chars().count());
+                    .unwrap_or_else(|| lines.get_line(i).chars().count());
                 if len == 0 {
                     continue;
                 }
@@ -2690,13 +2832,13 @@ pub fn show(
             // Documento más alto que el minimap: muestrear una línea por píxel
             // vertical, mapeando el píxel a la línea proporcional. Así se
             // cubre el 0%..100% del archivo sin truncar las líneas inferiores.
-            let mapping = minimap_line_mapping(lines.len(), mm_height_usize);
+            let mapping = minimap_line_mapping(lines.line_count(), mm_height_usize);
             for (py, &line_idx) in mapping.iter().enumerate() {
                 let len = state
                     .char_lens
                     .get(line_idx)
                     .copied()
-                    .unwrap_or_else(|| lines[line_idx].chars().count());
+                    .unwrap_or_else(|| lines.get_line(line_idx).chars().count());
                 if len == 0 {
                     continue;
                 }

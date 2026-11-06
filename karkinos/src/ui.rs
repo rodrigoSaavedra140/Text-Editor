@@ -2375,7 +2375,7 @@ impl EditorApp {
             };
             return crate::editor_widget::show(
                 ui,
-                &mut self.doc.lines,
+                self.doc.buffer_mut(),
                 &mut self.editor_state,
                 theme,
                 language,
@@ -2427,7 +2427,7 @@ impl EditorApp {
         };
         let first = crate::editor_widget::show(
             &mut first_ui,
-            &mut self.doc.lines,
+            self.doc.buffer_mut(),
             &mut self.editor_state,
             theme,
             language,
@@ -2448,7 +2448,7 @@ impl EditorApp {
             let split = self.split.as_mut().expect("split activo");
             crate::editor_widget::show(
                 &mut second_ui,
-                &mut self.doc.lines,
+                self.doc.buffer_mut(),
                 &mut split.secondary,
                 theme,
                 language,
@@ -3184,7 +3184,7 @@ impl EditorApp {
         }
         if apply {
             self.goto_pending = false;
-            match crate::util::parse_goto_line(&self.goto_input, self.doc.lines.len()) {
+            match crate::util::parse_goto_line(&self.goto_input, self.doc.line_count()) {
                 Some(idx) => {
                     self.editor_state.cursor_line = idx;
                     self.editor_state.cursor_col = 0;
