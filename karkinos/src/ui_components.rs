@@ -12,9 +12,31 @@ use crate::theme::{lerp_color, Theme};
 /// como color "Danger" mientras no exista un token de error en la paleta.
 pub const ERROR_COLOR: egui::Color32 = egui::Color32::from_rgb(255, 90, 90);
 
-const CARD_RADIUS: f32 = 6.0;
+// Tarjetas rectas y sobrias: sin esquinas redondeadas y apiladas sin
+// separación (una línea de 1 px las divide).
+const CARD_RADIUS: f32 = 0.0;
 const BUTTON_RADIUS: f32 = 6.0;
 const CARD_PAD: f32 = 10.0;
+/// Cuánto se oscurece la superficie del panel para el fondo de la tarjeta.
+const CARD_DARKEN: f32 = 0.18;
+/// Cuánto se acerca la tarjeta a `elevated_bg` con el hover completo.
+const CARD_HOVER_LIFT: f32 = 0.5;
+
+/// Fondo opaco de las tarjetas de extensión: la superficie del panel apenas
+/// más oscura, que se aclara un poco hacia `elevated_bg` con el hover.
+pub fn card_fill(theme: &Theme, hover_t: f32) -> egui::Color32 {
+    let base = lerp_color(theme.surface_bg, egui::Color32::BLACK, CARD_DARKEN);
+    lerp_color(base, theme.elevated_bg, CARD_HOVER_LIFT * hover_t)
+}
+
+/// Línea divisoria de 1 px en el borde inferior de una tarjeta.
+fn card_divider(ui: &egui::Ui, theme: &Theme, rect: egui::Rect) {
+    ui.painter().hline(
+        rect.x_range(),
+        rect.bottom() - 0.5,
+        egui::Stroke::new(1.0_f32, theme.border_subtle),
+    );
+}
 
 /// Tipo de botón tipo píldora.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -311,15 +333,9 @@ pub fn extension_card(ui: &mut egui::Ui, theme: &Theme, card: &ExtensionCard) ->
         .ctx()
         .animate_bool_with_time(response.id, response.hovered(), 0.12);
 
-    let fill = lerp_color(theme.badge_bg, theme.text, 0.10 * hover_t);
-    let border = lerp_color(theme.border_subtle, theme.border_focus, hover_t);
     ui.painter()
-        .rect_filled(rect, egui::Rounding::same(CARD_RADIUS), fill);
-    ui.painter().rect_stroke(
-        rect,
-        egui::Rounding::same(CARD_RADIUS),
-        egui::Stroke::new(1.0_f32, border),
-    );
+        .rect_filled(rect, egui::Rounding::same(CARD_RADIUS), card_fill(theme, hover_t));
+    card_divider(ui, theme, rect);
 
     let mut content = ui.child_ui(
         rect.shrink(CARD_PAD),
@@ -472,19 +488,9 @@ pub fn compact_card(ui: &mut egui::Ui, theme: &Theme, title: &str, subtitle: &st
     let hover_t = ui
         .ctx()
         .animate_bool_with_time(response.id, response.hovered(), 0.12);
-    ui.painter().rect_filled(
-        rect,
-        egui::Rounding::same(CARD_RADIUS),
-        lerp_color(theme.badge_bg, theme.text, 0.10 * hover_t),
-    );
-    ui.painter().rect_stroke(
-        rect,
-        egui::Rounding::same(CARD_RADIUS),
-        egui::Stroke::new(
-            1.0_f32,
-            lerp_color(theme.border_subtle, theme.border_focus, hover_t),
-        ),
-    );
+    ui.painter()
+        .rect_filled(rect, egui::Rounding::same(CARD_RADIUS), card_fill(theme, hover_t));
+    card_divider(ui, theme, rect);
 
     let mut content = ui.child_ui(
         rect.shrink(CARD_PAD),
@@ -571,5 +577,39 @@ mod tests {
         assert_eq!(format_count(1_250), "1.3K");
         assert_eq!(format_count(34_500), "34.5K");
         assert_eq!(format_count(1_200_000), "1.2M");
+    }
+
+    #[test]
+    fn card_fill_es_opaco_y_apenas_mas_oscuro_que_el_panel() {
+        for mode in crate::theme::ThemeMode::ALL {
+            let theme = mode.theme();
+            let fill = card_fill(&theme, 0.0);
+            assert_eq!(fill.a(), 255, "{}: el fondo de la tarjeta debe ser opaco", mode.name());
+            let (sum_fill, sum_panel) = (
+                fill.r() as u32 + fill.g() as u32 + fill.b() as u32,
+                theme.surface_bg.r() as u32 + theme.surface_bg.g() as u32 + theme.surface_bg.b() as u32,
+            );
+            assert!(sum_fill < sum_panel, "{}: la tarjeta debe ser más oscura que el panel", mode.name());
+            let ratio = crate::theme::contrast_ratio(fill, theme.surface_bg);
+            assert!(ratio < 1.3, "{}: solo un poco más oscura, mide {ratio:.2}", mode.name());
+        }
+    }
+
+    #[test]
+    fn texto_de_tarjeta_legible_en_reposo_y_hover() {
+        for mode in crate::theme::ThemeMode::ALL {
+            let theme = mode.theme();
+            for hover_t in [0.0, 1.0] {
+                let fill = card_fill(&theme, hover_t);
+                for (name, color) in [("text", theme.text), ("text_muted", theme.text_muted)] {
+                    let ratio = crate::theme::contrast_ratio(color, fill);
+                    assert!(
+                        ratio >= 4.5,
+                        "{}: {name} sobre la tarjeta (hover {hover_t}) mide {ratio:.2}",
+                        mode.name()
+                    );
+                }
+            }
+        }
     }
 }

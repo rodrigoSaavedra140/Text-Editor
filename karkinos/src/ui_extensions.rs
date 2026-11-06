@@ -123,6 +123,9 @@ impl EditorApp {
                         } else {
                             if !plugins.is_empty() {
                                 section_label(ui, theme, "PLUGINS");
+                                // Tarjetas apiladas sin separación: las divide su línea de 1 px.
+                                let gap = ui.spacing().item_spacing.y;
+                                ui.spacing_mut().item_spacing.y = 0.0;
                                 for plugin in &plugins {
                                     let card = ExtensionCard {
                                         title: plugin.name.clone(),
@@ -152,10 +155,14 @@ impl EditorApp {
                                         });
                                     }
                                 }
+                                ui.spacing_mut().item_spacing.y = gap;
                             }
 
                             if !vsix_list.is_empty() {
                                 section_label(ui, theme, "DOWNLOADED PACKAGES");
+                                // Tarjetas apiladas sin separación: las divide su línea de 1 px.
+                                let gap = ui.spacing().item_spacing.y;
+                                ui.spacing_mut().item_spacing.y = 0.0;
                                 for (filename, size) in &vsix_list {
                                     if compact_card(
                                         ui,
@@ -166,6 +173,7 @@ impl EditorApp {
                                         vsix_to_uninstall = Some(filename.clone());
                                     }
                                 }
+                                ui.spacing_mut().item_spacing.y = gap;
                             }
                         }
                     }
@@ -193,6 +201,9 @@ impl EditorApp {
                                 "Fast boilerplate expansion and productivity snippets for popular languages.",
                             ),
                         ];
+                        // Tarjetas apiladas sin separación: las divide su línea de 1 px.
+                        let gap = ui.spacing().item_spacing.y;
+                        ui.spacing_mut().item_spacing.y = 0.0;
                         for (name, version, description) in showcase {
                             let card = ExtensionCard {
                                 title: name.to_string(),
@@ -204,6 +215,7 @@ impl EditorApp {
                             };
                             extension_card(ui, theme, &card);
                         }
+                        ui.spacing_mut().item_spacing.y = gap;
                         ui.add_space(4.0);
                         ui.label(
                             egui::RichText::new(
@@ -258,6 +270,9 @@ impl EditorApp {
                             empty_state(ui, theme, "🔍", "No results", "Try another search term.");
                         } else {
                             let downloading = self.extensions.downloading.clone();
+                            // Tarjetas apiladas sin separación: las divide su línea de 1 px.
+                            let gap = ui.spacing().item_spacing.y;
+                            ui.spacing_mut().item_spacing.y = 0.0;
                             for ext in &self.extensions.open_vsx_results {
                                 let ext_id = ext.id();
                                 let state = if downloading.as_deref() == Some(ext_id.as_str()) {
@@ -299,6 +314,7 @@ impl EditorApp {
                                     CardAction::None => {}
                                 }
                             }
+                            ui.spacing_mut().item_spacing.y = gap;
                         }
                     }
                 }
