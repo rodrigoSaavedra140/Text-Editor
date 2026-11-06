@@ -130,6 +130,38 @@ pub fn icon_collapse_button(
     response.on_hover_text(hover_text)
 }
 
+/// T1 (v0.2.78): botón compacto de colapso del dock inferior. Dibuja sólo
+/// un triángulo relleno apuntando hacia abajo (sin texto ni glifo de fuente),
+/// con el mismo hover animado que `icon_close_button`.
+pub fn icon_triangle_down_button(
+    ui: &mut egui::Ui,
+    hover_text: &str,
+    theme: &crate::theme::Theme,
+) -> egui::Response {
+    let size = egui::vec2(18.0, 18.0);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    let hover_t = ui.ctx().animate_bool_with_time(response.id, response.hovered(), 0.12);
+    if hover_t > 0.001 {
+        ui.painter().rect_filled(rect, egui::Rounding::same(3.0), theme.badge_bg.gamma_multiply(hover_t));
+    }
+    let color = crate::theme::lerp_color(theme.text_muted, theme.text, hover_t);
+    let center = rect.center();
+    let tri_top_y = center.y - 4.5;
+    let tri_bottom_y = center.y + 4.5;
+    let tri_half_w = 4.5;
+    let points = vec![
+        egui::pos2(center.x - tri_half_w, tri_top_y),
+        egui::pos2(center.x + tri_half_w, tri_top_y),
+        egui::pos2(center.x, tri_bottom_y),
+    ];
+    ui.painter().add(egui::Shape::convex_polygon(
+        points,
+        color,
+        egui::Stroke::NONE,
+    ));
+    response.on_hover_text(hover_text)
+}
+
 /// Bordes invisibles en los 4 lados + 4 esquinas de la ventana, para
 /// poder seguir redimensionando arrastrando el borde con el mouse
 /// ahora que le sacamos la decoración nativa (que era la que hacía

@@ -1372,7 +1372,7 @@ dependencies = [
 
 [[package]]
 name = "karkinos"
-version = "0.2.77"
+version = "0.2.78"
 dependencies = [
  "arboard",
  "eframe",
@@ -1383,7 +1383,7 @@ dependencies = [
 
 [[package]]
 name = "karkinos-core"
-version = "0.2.77"
+version = "0.2.78"
 dependencies = [
  "libc",
  "portable-pty",

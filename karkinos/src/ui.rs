@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use eframe::egui;
 
 use crate::app::{picker_should_stay_open, EditorApp, PickerNewItemKind};
-use crate::title_bar::{draw_resize_handles, icon_close_button, title_bar_icon_button, TitleBarIcon};
+use crate::title_bar::{draw_resize_handles, icon_close_button, icon_triangle_down_button, title_bar_icon_button, TitleBarIcon};
 use crate::util::{format_size, request_close};
 use crate::LOGO_BYTES;
 
@@ -1948,6 +1948,15 @@ impl EditorApp {
                     .stroke(egui::Stroke::new(1.0_f32, theme.border_subtle)),
             )
             .show(ctx, |ui| {
+                // T1 (v0.2.78): egui persiste el alto del panel a partir del
+                // rect del *contenido* (PanelState en containers/panel.rs),
+                // no del panel. Una pestaña con contenido más bajo (Diagnostics
+                // vacío, Debugger sin frames) encogía el panel al frame
+                // siguiente y parecía volver al tamaño default. Forzar que el
+                // contenido ocupe todo el alto disponible mantiene la misma
+                // altura persistida en terminal, Diagnostics y Debugger.
+                ui.set_min_height(ui.available_height());
+
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
 
@@ -2054,11 +2063,7 @@ impl EditorApp {
                     }
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui
-                            .small_button("▾ Collapse")
-                            .on_hover_text("Close Console (Ctrl+`)")
-                            .clicked()
-                        {
+                        if icon_triangle_down_button(ui, "Close Console (Ctrl+`)", theme).clicked() {
                             close_panel = true;
                         }
                         if ui.small_button("🗑 Clear").on_hover_text("Clear console (Ctrl+L)").clicked() {
@@ -2090,7 +2095,9 @@ impl EditorApp {
                     if diags.is_empty() {
                         ui.label(egui::RichText::new("No compiler errors or warnings detected.").italics().color(egui::Color32::from_gray(140)));
                     } else {
-                        egui::ScrollArea::vertical().show(ui, |ui| {
+                        egui::ScrollArea::vertical()
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
                             for diag in &diags {
                                 let (badge, color) = match diag.level.as_str() {
                                     "error" => ("● ERROR", egui::Color32::from_rgb(255, 80, 80)),
@@ -2167,7 +2174,8 @@ impl EditorApp {
                         if dap_state.stack_frames.is_empty() {
                             cols[0].label(egui::RichText::new("No active frames").italics().small());
                         } else {
-                            egui::ScrollArea::vertical().id_source("dap_stack_scroll").max_height(140.0).show(&mut cols[0], |ui| {
+                            let stack_height = cols[0].available_height();
+                            egui::ScrollArea::vertical().id_source("dap_stack_scroll").max_height(stack_height).auto_shrink([false, false]).show(&mut cols[0], |ui| {
                                 for frame in &dap_state.stack_frames {
                                     let label = format!("{}:{}", frame.name, frame.line + 1);
                                     if ui.selectable_label(false, label).clicked() {
@@ -2190,7 +2198,8 @@ impl EditorApp {
                         if dap_state.variables.is_empty() {
                             cols[1].label(egui::RichText::new("No local variables").italics().small());
                         } else {
-                            egui::ScrollArea::vertical().id_source("dap_vars_scroll").max_height(140.0).show(&mut cols[1], |ui| {
+                            let vars_height = cols[1].available_height();
+                            egui::ScrollArea::vertical().id_source("dap_vars_scroll").max_height(vars_height).auto_shrink([false, false]).show(&mut cols[1], |ui| {
                                 for var in &dap_state.variables {
                                     let type_part = var.type_name.as_deref().map(|t| format!(": {}", t)).unwrap_or_default();
                                     ui.label(egui::RichText::new(format!("{}{}", var.name, type_part)).monospace().color(theme.syntax_keyword));
@@ -2205,7 +2214,8 @@ impl EditorApp {
                             cols[2].label(egui::RichText::new("No breakpoints set (F9 to toggle)").italics().small());
                         } else {
                             let mut to_remove = None;
-                            egui::ScrollArea::vertical().id_source("dap_bps_scroll").max_height(140.0).show(&mut cols[2], |ui| {
+                            let bps_height = cols[2].available_height();
+                            egui::ScrollArea::vertical().id_source("dap_bps_scroll").max_height(bps_height).auto_shrink([false, false]).show(&mut cols[2], |ui| {
                                 for (path, line) in &self.dap.breakpoints {
                                     let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
                                     ui.horizontal(|ui| {
@@ -3740,6 +3750,74 @@ mod tests {
             }
         }
         assert!(visible_pixels > 350_000, "el logo debe conservar sus píxeles visibles");
+    }
+
+    // ---- T1 (v0.2.78): altura compartida del dock inferior ----
+
+    /// Corre tres frames del dock inferior con una pantalla de 1200×800.
+    /// Tres frames alcanzan para que la altura persistida deje de ser la
+    /// inicial y refleje lo que egui guardó del contenido.
+    fn frames_del_dock(app: &mut EditorApp, ctx: &egui::Context, theme: &crate::theme::Theme) {
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1200.0, 800.0),
+            )),
+            ..Default::default()
+        };
+        for _ in 0..3 {
+            ctx.begin_frame(raw.clone());
+            app.show_cargo_panel(ctx, theme);
+            let _ = ctx.end_frame();
+        }
+    }
+
+    /// Altura que egui persistió para el panel `"cargo_panel"`.
+    fn altura_persistida_del_dock(ctx: &egui::Context) -> f32 {
+        egui::containers::panel::PanelState::load(ctx, egui::Id::new("cargo_panel"))
+            .expect("el panel del dock debe persistir su estado")
+            .rect
+            .height()
+    }
+
+    #[test]
+    fn dock_conserva_altura_default_en_diagnostics_y_debugger() {
+        let ctx = egui::Context::default();
+        let theme = crate::theme::ThemeMode::default().theme();
+        let mut app = EditorApp::default();
+        app.cargo.panel_open = true;
+
+        // Sólo pestañas sin PTY: la 0 arrancaría la terminal real.
+        for tab in [1usize, 2] {
+            app.cargo.active_tab = tab;
+            frames_del_dock(&mut app, &ctx, &theme);
+            let height = altura_persistida_del_dock(&ctx);
+            assert!(
+                (height - 200.0).abs() <= 1.0,
+                "la pestaña {tab} debe conservar el alto por defecto de 200 px, pero persistió {height}"
+            );
+        }
+    }
+
+    #[test]
+    fn dock_misma_altura_al_cambiar_de_pestana() {
+        let ctx = egui::Context::default();
+        let theme = crate::theme::ThemeMode::default().theme();
+        let mut app = EditorApp::default();
+        app.cargo.panel_open = true;
+
+        app.cargo.active_tab = 1;
+        frames_del_dock(&mut app, &ctx, &theme);
+        let en_diagnostics = altura_persistida_del_dock(&ctx);
+
+        app.cargo.active_tab = 2;
+        frames_del_dock(&mut app, &ctx, &theme);
+        let en_debugger = altura_persistida_del_dock(&ctx);
+
+        assert!(
+            (en_diagnostics - en_debugger).abs() <= 1.0,
+            "el alto debe ser el mismo en las tres pestañas: diagnostics {en_diagnostics}, debugger {en_debugger}"
+        );
     }
 
     #[test]
