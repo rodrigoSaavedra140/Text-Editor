@@ -77,7 +77,10 @@ pub fn write_atomic(
     if let Err(err) = fs::rename(&tmp_path, path) {
         if path.exists() {
             let _ = fs::remove_file(&old_path);
-            fs::rename(path, &old_path)?;
+            if let Err(backup_err) = fs::rename(path, &old_path) {
+                let _ = fs::remove_file(&tmp_path);
+                return Err(backup_err);
+            }
             if let Err(rename_err) = fs::rename(&tmp_path, path) {
                 let _ = fs::rename(&old_path, path);
                 let _ = fs::remove_file(&tmp_path);

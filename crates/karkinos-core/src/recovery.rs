@@ -281,6 +281,8 @@ fn is_recovery_artifact(path: &Path) -> bool {
         name.ends_with(".recovery")
             || name.ends_with(".recovery.tmp")
             || name.ends_with(".recovery.old")
+            || name.ends_with(".recovery.karkinos-tmp")
+            || name.ends_with(".recovery.karkinos-tmp.old")
     } else {
         false
     }
@@ -552,12 +554,16 @@ mod tests {
         save_recovery_file(dir.path(), "b.recovery", &untitled_entry()).unwrap();
         fs::write(dir.path().join("c.recovery.tmp"), "temp").unwrap();
         fs::write(dir.path().join("d.recovery.old"), "old").unwrap();
+        fs::write(dir.path().join(".e.recovery.karkinos-tmp"), "temp").unwrap();
+        fs::write(dir.path().join(".f.recovery.karkinos-tmp.old"), "old").unwrap();
         fs::write(dir.path().join("keep.bin"), "data").unwrap();
 
         clear_recovery_dir(dir.path()).unwrap();
         assert!(scan_recovery_dir(dir.path()).is_empty());
         assert!(!dir.path().join("c.recovery.tmp").exists());
         assert!(!dir.path().join("d.recovery.old").exists());
+        assert!(!dir.path().join(".e.recovery.karkinos-tmp").exists());
+        assert!(!dir.path().join(".f.recovery.karkinos-tmp.old").exists());
         assert!(dir.path().join("keep.bin").exists());
     }
 
