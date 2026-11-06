@@ -7,13 +7,15 @@ pub enum ThemeMode {
     Dark,
     Monokai,
     Dracula,
+    OneDark,
 }
 
 impl ThemeMode {
-    pub const ALL: [ThemeMode; 3] = [
+    pub const ALL: [ThemeMode; 4] = [
         ThemeMode::Dark,
         ThemeMode::Monokai,
         ThemeMode::Dracula,
+        ThemeMode::OneDark,
     ];
 
     pub fn name(&self) -> &'static str {
@@ -21,6 +23,7 @@ impl ThemeMode {
             ThemeMode::Dark => "Dark",
             ThemeMode::Monokai => "Monokai",
             ThemeMode::Dracula => "Dracula",
+            ThemeMode::OneDark => "One Dark",
         }
     }
 
@@ -29,6 +32,7 @@ impl ThemeMode {
             ThemeMode::Dark => "dark",
             ThemeMode::Monokai => "monokai",
             ThemeMode::Dracula => "dracula",
+            ThemeMode::OneDark => "onedark",
         }
     }
 
@@ -36,6 +40,7 @@ impl ThemeMode {
         match s.to_lowercase().as_str() {
             "monokai" => ThemeMode::Monokai,
             "dracula" => ThemeMode::Dracula,
+            "onedark" | "one_dark" | "one-dark" => ThemeMode::OneDark,
             _ => ThemeMode::Dark,
         }
     }
@@ -116,6 +121,31 @@ impl ThemeMode {
                 syntax_string: egui::Color32::from_rgb(241, 250, 140),
                 syntax_comment: egui::Color32::from_rgb(98, 114, 164),
                 syntax_number: egui::Color32::from_rgb(189, 147, 249),
+            },
+            // Paleta auténtica de Atom One Dark (#282c34, #abb2bf).
+            ThemeMode::OneDark => Theme {
+                mode: ThemeMode::OneDark,
+                bg: egui::Color32::from_rgb(40, 44, 52),                    // #282c34
+                surface_bg: egui::Color32::from_rgb(33, 37, 43),           // #21252b
+                elevated_bg: egui::Color32::from_rgb(47, 52, 64),          // #2f3440
+                border_subtle: egui::Color32::from_rgba_unmultiplied(255, 255, 255, 18),
+                border_focus: egui::Color32::from_rgb(97, 175, 239),       // #61afef
+                badge_bg: egui::Color32::from_rgba_unmultiplied(255, 255, 255, 14),
+                text: egui::Color32::from_rgb(171, 178, 191),              // #abb2bf
+                text_muted: egui::Color32::from_rgb(92, 99, 112),          // #5c6370
+                accent: egui::Color32::from_rgb(97, 175, 239),             // #61afef
+                gutter_bg: egui::Color32::from_rgb(33, 37, 43),            // #21252b
+                gutter_text: egui::Color32::from_rgb(92, 99, 112),         // #5c6370
+                selection: egui::Color32::from_rgb(62, 68, 81),            // #3e4451
+                active_line: egui::Color32::from_rgb(44, 49, 58),          // #2c313a
+                caret: egui::Color32::from_rgb(82, 139, 255),              // #528bff
+                title_bar_bg: egui::Color32::from_rgb(33, 37, 43),         // #21252b
+                panel_bg: egui::Color32::from_rgb(33, 37, 43),             // #21252b
+                syntax_keyword: egui::Color32::from_rgb(198, 120, 221),    // #c678dd
+                syntax_type: egui::Color32::from_rgb(229, 192, 123),       // #e5c07b
+                syntax_string: egui::Color32::from_rgb(152, 195, 121),     // #98c379
+                syntax_comment: egui::Color32::from_rgb(92, 99, 112),      // #5c6370
+                syntax_number: egui::Color32::from_rgb(209, 154, 102),     // #d19a66
             },
         }
     }
@@ -237,6 +267,53 @@ mod tests {
             t.border_subtle,
             egui::Color32::from_rgba_unmultiplied(255, 255, 255, 18)
         );
+    }
+
+    /// One Dark: la paleta usa los valores auténticos de Atom One Dark.
+    #[test]
+    fn one_dark_usa_la_paleta_de_atom() {
+        let t = ThemeMode::OneDark.theme();
+        assert_eq!(t.mode, ThemeMode::OneDark);
+        assert_eq!(t.bg, egui::Color32::from_rgb(40, 44, 52));
+        assert_eq!(t.surface_bg, egui::Color32::from_rgb(33, 37, 43));
+        assert_eq!(t.elevated_bg, egui::Color32::from_rgb(47, 52, 64));
+        assert_eq!(
+            t.border_subtle,
+            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 18)
+        );
+        assert_eq!(t.border_focus, egui::Color32::from_rgb(97, 175, 239));
+        assert_eq!(
+            t.badge_bg,
+            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 14)
+        );
+        assert_eq!(t.text, egui::Color32::from_rgb(171, 178, 191));
+        assert_eq!(t.text_muted, egui::Color32::from_rgb(92, 99, 112));
+        assert_eq!(t.accent, egui::Color32::from_rgb(97, 175, 239));
+        assert_eq!(t.gutter_bg, egui::Color32::from_rgb(33, 37, 43));
+        assert_eq!(t.gutter_text, egui::Color32::from_rgb(92, 99, 112));
+        assert_eq!(t.selection, egui::Color32::from_rgb(62, 68, 81));
+        assert_eq!(t.active_line, egui::Color32::from_rgb(44, 49, 58));
+        assert_eq!(t.caret, egui::Color32::from_rgb(82, 139, 255));
+        assert_eq!(t.title_bar_bg, egui::Color32::from_rgb(33, 37, 43));
+        assert_eq!(t.panel_bg, egui::Color32::from_rgb(33, 37, 43));
+        assert_eq!(t.syntax_keyword, egui::Color32::from_rgb(198, 120, 221));
+        assert_eq!(t.syntax_type, egui::Color32::from_rgb(229, 192, 123));
+        assert_eq!(t.syntax_string, egui::Color32::from_rgb(152, 195, 121));
+        assert_eq!(t.syntax_comment, egui::Color32::from_rgb(92, 99, 112));
+        assert_eq!(t.syntax_number, egui::Color32::from_rgb(209, 154, 102));
+    }
+
+    #[test]
+    fn one_dark_from_storage_acepta_alias() {
+        for alias in ["onedark", "one_dark", "one-dark", "OneDark"] {
+            assert_eq!(
+                ThemeMode::from_storage_str(alias),
+                ThemeMode::OneDark,
+                "alias {alias}"
+            );
+        }
+        assert_eq!(ThemeMode::OneDark.to_storage_str(), "onedark");
+        assert_eq!(ThemeMode::OneDark.name(), "One Dark");
     }
 
     /// UI-3 (v0.2.21): las tarjetas flotantes salen de los tokens de

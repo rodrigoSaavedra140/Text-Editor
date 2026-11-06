@@ -663,6 +663,12 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
         shortcut: None,
     },
     PaletteCommand {
+        id: "theme:onedark",
+        title: "Preferences: Theme: One Dark",
+        category: "Theme",
+        shortcut: None,
+    },
+    PaletteCommand {
         id: "editor:format",
         title: "Editor: Format Document with rustfmt",
         category: "Editor",
@@ -2303,6 +2309,10 @@ impl EditorApp {
             "theme:dracula" => {
                 self.theme_mode = crate::theme::ThemeMode::Dracula;
                 self.doc.status = "Theme: Dracula".to_string();
+            }
+            "theme:onedark" => {
+                self.theme_mode = crate::theme::ThemeMode::OneDark;
+                self.doc.status = "Theme: One Dark".to_string();
             }
             "editor:format" => self.format_document(),
             "file:save" => {
@@ -5766,7 +5776,7 @@ mod tests {
         ids.sort_unstable();
         ids.dedup();
         assert_eq!(ids.len(), total, "cada id del catálogo es único");
-        assert_eq!(total, 38, "el catálogo de v0.2.59 tiene 38 comandos");
+        assert_eq!(total, 39, "el catálogo de v0.2.59 tiene 39 comandos");
 
         for expected in [
             "layout:split_vertical",
@@ -5793,6 +5803,7 @@ mod tests {
             "theme:dark",
             "theme:monokai",
             "theme:dracula",
+            "theme:onedark",
             "editor:format",
             "file:save",
             "file:new",
@@ -5826,7 +5837,10 @@ mod tests {
             .iter()
             .map(|command| command.id)
             .collect();
-        assert_eq!(themes, ["theme:dark", "theme:monokai", "theme:dracula"]);
+        assert_eq!(
+            themes,
+            ["theme:dark", "theme:monokai", "theme:dracula", "theme:onedark"]
+        );
 
         app.command_palette.query = "minimap".to_string();
         let minimap: Vec<&str> = app
@@ -5886,12 +5900,12 @@ mod tests {
 
         app.move_palette_selection(1);
         app.move_palette_selection(100);
-        assert_eq!(app.command_palette.selected, 2, "no pasa del último");
+        assert_eq!(app.command_palette.selected, 3, "no pasa del último");
 
         app.execute_selected_palette_command();
         assert_eq!(
             app.theme_mode,
-            crate::theme::ThemeMode::Dracula,
+            crate::theme::ThemeMode::OneDark,
             "Enter ejecuta el comando seleccionado"
         );
         assert!(!app.command_palette.open, "ejecutar cierra el modal");
