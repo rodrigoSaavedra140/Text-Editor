@@ -3508,7 +3508,7 @@ impl EditorApp {
                     if vsix_list.is_empty() {
                         ui.label(
                             egui::RichText::new(
-                                "No .vsix downloaded yet. Search Open VSX to install packages.",
+                                "No .vsix downloaded yet. Search Open VSX to download packages.",
                             )
                             .italics()
                             .color(theme.text_muted)
@@ -3527,7 +3527,7 @@ impl EditorApp {
                                     ui.with_layout(
                                         egui::Layout::right_to_left(egui::Align::Center),
                                         |ui| {
-                                            if ui.small_button("🗑 Uninstall").clicked() {
+                                            if ui.small_button("🗑 Delete").clicked() {
                                                 vsix_to_uninstall = Some(filename.clone());
                                             }
                                         },
@@ -3702,17 +3702,17 @@ impl EditorApp {
                                     |ui| {
                                         let vsix_name = ext.vsix_file_name();
                                         if self.is_vsix_installed(ext) {
-                                            if ui.small_button("🗑 Uninstall").clicked() {
+                                            if ui.small_button("🗑 Delete").clicked() {
                                                 vsix_to_uninstall = vsix_name;
                                             }
                                             ui.label(
-                                                egui::RichText::new("● Installed")
+                                                egui::RichText::new("● Downloaded")
                                                     .color(egui::Color32::from_rgb(80, 200, 120))
                                                     .small()
                                                     .strong(),
                                             );
                                         } else if !ext.download_url.is_empty()
-                                            && ui.small_button("📥 Install").clicked()
+                                            && ui.small_button("📥 Download").clicked()
                                         {
                                             download_target = Some(ext.clone());
                                         }

@@ -3133,7 +3133,7 @@ impl EditorApp {
         Some(Self::extensions_dir().join(file_name))
     }
 
-    /// Lists installed .vsix packages on disk. Returns list of (filename, file_size_bytes).
+    /// Lists downloaded .vsix packages on disk. Returns list of (filename, file_size_bytes).
     pub fn list_installed_vsix() -> Vec<(String, u64)> {
         let dir = Self::extensions_dir();
         let mut list = Vec::new();
@@ -3159,7 +3159,7 @@ impl EditorApp {
             .unwrap_or(false)
     }
 
-    /// Uninstalls / deletes a downloaded .vsix package by filename.
+    /// Deletes a downloaded .vsix package by filename.
     pub fn uninstall_vsix(&mut self, filename: &str) -> bool {
         let Some(path) = Self::vsix_path(filename) else {
             self.doc.status = "Invalid package name".to_string();
@@ -3167,7 +3167,7 @@ impl EditorApp {
         };
         if path.exists() {
             if std::fs::remove_file(&path).is_ok() {
-                self.doc.status = format!("Uninstalled .vsix extension: {}", filename);
+                self.doc.status = format!("Deleted .vsix package: {}", filename);
                 true
             } else {
                 self.doc.status = format!("Failed to delete: {}", filename);
@@ -4651,7 +4651,7 @@ mod tests {
         let uninstalled = app.uninstall_vsix("test-ext-1.0.0.vsix");
         assert!(uninstalled);
         assert!(!test_vsix.exists());
-        assert!(app.doc.status.contains("Uninstalled .vsix extension: test-ext-1.0.0.vsix"));
+        assert!(app.doc.status.contains("Deleted .vsix package: test-ext-1.0.0.vsix"));
     }
 
     #[test]
