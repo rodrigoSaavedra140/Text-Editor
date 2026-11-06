@@ -2696,6 +2696,41 @@ impl EditorApp {
 
 }
 
+/// S1 (auto-actualización): botón de la barra de título para instalar la
+/// actualización disponible. Mantiene el mismo chrome que
+/// `title_bar::title_bar_icon_button` (32×32, hover blanco translúcido),
+/// porque ese helper solo sabe dibujar los íconos de ventana; el de
+/// "actualizar" (flecha hacia arriba en un círculo) se dibuja acá.
+fn update_icon_button(ui: &mut egui::Ui) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(32.0, 32.0), egui::Sense::click());
+
+    if response.hovered() {
+        ui.painter()
+            .rect_filled(rect, 0.0, egui::Color32::from_white_alpha(25));
+    }
+
+    let stroke = egui::Stroke::new(1.4_f32, egui::Color32::from_gray(225));
+    let center = rect.center();
+    let painter = ui.painter();
+
+    // Círculo abierto arriba + flecha hacia arriba: el glifo de "actualizar".
+    painter.circle_stroke(center + egui::vec2(0.0, 1.0), 6.5, stroke);
+    painter.line_segment(
+        [center + egui::vec2(0.0, 3.5), center + egui::vec2(0.0, -6.5)],
+        stroke,
+    );
+    painter.line_segment(
+        [center + egui::vec2(0.0, -6.5), center + egui::vec2(-3.0, -3.5)],
+        stroke,
+    );
+    painter.line_segment(
+        [center + egui::vec2(0.0, -6.5), center + egui::vec2(3.0, -3.5)],
+        stroke,
+    );
+
+    response
+}
+
 /// Procesa una imagen RGBA eliminando el fondo oscuro opaco y suavizando
 /// los bordes con transparencia alfa (feathering), para que el logo se
 /// mezcle de forma limpia sin contornos ni bordes cuadrados sobre
@@ -2863,6 +2898,17 @@ impl eframe::App for EditorApp {
         // aunque el usuario no vuelva a tocar nada (mismo patrón que el
         // chunk_tracker de arriba).
         if let Some(remaining) = self.poll_full_text_sync(now) {
+            ctx.request_repaint_after(remaining);
+        }
+        // S1 (auto-actualización): chequeo del último release al iniciar y
+        // cada 6 h, en un hilo aparte. Sin red o con error de la API no se
+        // muestra nada. El despertador evita quedarse dormido hasta el
+        // próximo chequeo programado.
+        self.updates.check_due(now);
+        if self.updates.poll() {
+            ctx.request_repaint();
+        }
+        if let Some(remaining) = self.updates.next_check_in(now) {
             ctx.request_repaint_after(remaining);
         }
 
@@ -3181,6 +3227,25 @@ impl eframe::App for EditorApp {
                         }
                         if ui.button("▶ Run").on_hover_text("Run cargo run (F5)").clicked() {
                             self.run_cargo(karkinos_core::cargo::CargoAction::Run);
+                        }
+
+                        // S1 (auto-actualización): botón que solo existe
+                        // cuando hay un release más nuevo con el binario de
+                        // esta plataforma, con el tooltip de la versión.
+                        // Un segundo click no repite el pedido: queda
+                        // pendiente hasta que T4 lo ejecute (spinner).
+                        // Las instalaciones que administra el gestor de
+                        // paquetes se resuelven en T5.
+                        if self.update_button_visible() {
+                            let pending = self.update_pending();
+                            let hover = match (pending, self.updates.available_version()) {
+                                (true, _) => "Update pending".to_string(),
+                                (false, Some(version)) => format!("Update to {}", version),
+                                (false, None) => "Update available".to_string(),
+                            };
+                            if update_icon_button(ui).on_hover_text(hover).clicked() && !pending {
+                                self.start_update();
+                            }
                         }
                     });
                 });

@@ -23,6 +23,7 @@ pub mod plugin;
 pub mod recovery;
 pub mod syntax_ast;
 pub mod terminal;
+pub mod updater;
 pub mod workspace_search;
 pub mod text_ops;
 pub mod undo;

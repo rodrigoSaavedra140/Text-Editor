@@ -176,6 +176,9 @@ pub struct EditorApp {
     pub extensions_tab: usize,
     // S9 (Roadmap v0.2.72): estado y operaciones de Open VSX / `.vsix`.
     pub extensions: crate::extensions_service::ExtensionsService,
+    // S1 (auto-actualización): chequeo del último release publicado y
+    // estado del botón de update de la barra de título.
+    pub updates: crate::update_service::UpdateService,
     // S1 (Rust IDE): Ejecutor nativo de pipelines de Cargo
     // S4 (Rust IDE): Code Actions, Inlay Hints & Rename
     // S4 (Rust IDE): DAP Native Debugger & Breakpoints
@@ -835,6 +838,7 @@ impl Default for EditorApp {
             plugin_manager: karkinos_core::plugin::PluginManager::with_default_plugins(),
             extensions_tab: 0,
             extensions: crate::extensions_service::ExtensionsService::default(),
+            updates: crate::update_service::UpdateService::default(),
             ast_worker: crate::ast_worker::AstWorker::spawn(),
             ast_request_rev: 0,
             ast_applied_rev: 0,
@@ -3182,6 +3186,25 @@ impl EditorApp {
     /// S10: restablece el tamaño de fuente al valor por defecto (14 px).
     pub fn reset_zoom(&mut self) {
         self.set_font_size(crate::editor_widget::DEFAULT_FONT_SIZE);
+    }
+
+    /// S1 (auto-actualización): el botón de la barra de título solo se
+    /// dibuja cuando hay un release más nuevo con el binario de esta
+    /// plataforma. La UI y los tests consultan este mismo punto.
+    pub fn update_button_visible(&self) -> bool {
+        self.updates.button_visible()
+    }
+
+    /// S1: click del botón. En esta tarea solo deja el pedido pendiente y
+    /// observable; T4 (S2/S5) se encarga de descargar, verificar e
+    /// instalar.
+    pub fn start_update(&mut self) {
+        self.updates.start();
+    }
+
+    /// S1: hay un pedido de actualización esperando ejecutarse.
+    pub fn update_pending(&self) -> bool {
+        self.updates.pending()
     }
 
     /// S10: cambia el tamaño de la fuente del editor un paso (zoom in

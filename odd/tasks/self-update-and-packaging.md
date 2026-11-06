@@ -31,8 +31,8 @@ Pedido original (verbatim): "ahora quiero que la app tenga un boton que este ocu
 | ID | Specs | Riesgo | Estado | Commit |
 |----|-------|--------|--------|--------|
 | T1 | S5, S2 | Alto: item 5 (release/CI) | hecha | `1f7b8fc` ci(release): publish raw binaries and SHA256SUMS |
-| T2 | S3 | Alto: item 5 (dependencia de build) | hecha | `build(windows): embed the app icon in karkinos.exe` |
-| T3 | S1 | Bajo | pendiente | `feat(update): show an update button when a new release exists` |
+| T2 | S3 | Alto: item 5 (dependencia de build) | hecha | `fbb1944` `build(windows): embed the app icon in karkinos.exe` |
+| T3 | S1 | Bajo | hecha | `feat(update): show an update button when a new release exists` |
 | T4 | S2, S5 | Alto: items 1, 2 (reemplaza el ejecutable, descarga código) | pendiente | `feat(update): download, verify and install updates in place` |
 | T5 | S4 | Medio | pendiente | `feat(update): update package-managed installs through yay or paru` |
 | T6 | S4 | Alto: item 5 (publicación AUR) | pendiente | `ci(aur): publish karkinos-bin to the AUR on each release` |
@@ -112,3 +112,5 @@ Mientras descarga, el botón muestra un spinner y no se puede volver a apretar.
 - **L5** (T1, DeepSeek): `release.yml` publica `karkinos-linux-x86_64` y `karkinos-windows-x86_64.exe` sueltos y un job `checksums` (`needs: build`, solo en tags `v*`) sube `SHA256SUMS` con las 4 líneas. Verificación estructural: YAML parsea (Ruby Psych; no hay PyYAML/actionlint), `bash -n` de los bloques `run:`, `scripts/release-workflow.yml` idéntico (`diff` vacío). Revisión del orquestador: nombres y formato coinciden con S5/T4. Pendiente: se ejercita de verdad en el primer tag.
 - **L6** (T2, DeepSeek): `karkinos/assets/karkinos.ico` (7 resoluciones 16-256, desde `assets/karkinos.png`) y `karkinos/build.rs` que lo embebe con `winresource` 0.1.34 solo si `CARGO_CFG_TARGET_OS == "windows"`. Build Linux, suite (266 + 2 ignored, 149) y clippy en verde. Sin RED posible: el recurso PE solo existe en el build de Windows; se confirma en el job de Windows del próximo release.
 - **L7** (decisión del orquestador): la versión se sube una sola vez, en el último commit de la feature (no por tarea), porque los commits de la rama no se taggean.
+- **L8** (verificación independiente T1+T2, gentle-ai-verify): S2 (lado release), S3 y S5 cumplidos, sin bloqueantes. Nota: los dos jobs de la matriz crean el release en paralelo con `softprops/action-gh-release` (comportamiento previo a esta feature); carrera de baja probabilidad, queda como seguimiento. `toml_datetime` 1.1.2→1.1.3 transitivo por `winresource`, compatible.
+- **L9** (T3, DeepSeek): `karkinos_core::updater` (parse_version, is_newer, parse_latest_release, platform_asset_name, fetch_latest_release) + `karkinos/src/update_service.rs` (chequeo al iniciar y cada 6 h en hilo aparte) + botón en la barra de título visible solo con versión más nueva y asset de la plataforma; click → `start_update()` deja `pending`. RED: E0425/E0599 por API inexistente; GREEN: 7 tests updater + 5 update; suite 270+2 ignored / 156 y clippy en verde. Spot check del orquestador: mismos 12 tests en verde. Deuda menor para T4: `https_agent()` duplicado de open_vsx (privado) y `update_icon_button` local en ui.rs en vez de una variante de `TitleBarIcon`.

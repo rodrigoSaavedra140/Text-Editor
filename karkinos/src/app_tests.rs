@@ -2978,6 +2978,80 @@
         );
     }
 
+    // ---- S1 (auto-actualización): botón oculto que aparece con una update ----
+
+    fn update_release(version: &str, assets: &[&str]) -> karkinos_core::updater::ReleaseInfo {
+        karkinos_core::updater::ReleaseInfo {
+            version: version.to_string(),
+            assets: assets
+                .iter()
+                .map(|name| karkinos_core::updater::ReleaseAsset {
+                    name: (*name).to_string(),
+                    download_url: format!("https://example.invalid/{name}"),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn update_button_visible_solo_con_version_mas_nueva_y_asset_de_la_plataforma() {
+        // En una plataforma sin binario publicado no hay botón que probar.
+        let Some(asset) = karkinos_core::updater::platform_asset_name() else {
+            return;
+        };
+        let current = env!("CARGO_PKG_VERSION");
+
+        let mut app = EditorApp::default();
+        assert!(
+            !app.update_button_visible(),
+            "sin chequeo hecho el botón está oculto"
+        );
+
+        // Más nueva y con el asset de esta plataforma: aparece.
+        app.updates.apply(Ok(update_release("v99.0.0", &[asset])));
+        assert!(app.update_button_visible());
+        assert_eq!(app.updates.available_version(), Some("v99.0.0"));
+
+        // Igual a la versión en uso: oculto.
+        app.updates
+            .apply(Ok(update_release(&format!("v{current}"), &[asset])));
+        assert!(!app.update_button_visible());
+
+        // Más nueva pero sin el binario de esta plataforma: oculto.
+        app.updates.apply(Ok(update_release("v99.0.0", &["otro-asset"])));
+        assert!(!app.update_button_visible());
+
+        // Sin red o con error de la API no aparece nada ni se interrumpe.
+        app.updates.apply(Err("network down".to_string()));
+        assert!(!app.update_button_visible());
+    }
+
+    #[test]
+    fn start_update_deja_pendiente_solo_si_hay_actualizacion() {
+        let Some(asset) = karkinos_core::updater::platform_asset_name() else {
+            return;
+        };
+
+        let mut app = EditorApp::default();
+        app.start_update();
+        assert!(
+            !app.update_pending(),
+            "sin actualización disponible el click no deja nada pendiente"
+        );
+
+        app.updates.apply(Ok(update_release("v99.0.0", &[asset])));
+        app.start_update();
+        assert!(
+            app.update_pending(),
+            "el click deja el pedido pendiente (T4 lo ejecuta)"
+        );
+        assert_eq!(
+            app.updates.available_version(),
+            Some("v99.0.0"),
+            "el pedido pendiente no descarta los datos del release"
+        );
+    }
+
     #[test]
     fn file_menu_exit_sin_contexto_no_hace_nada() {
         // Exit necesita el `egui::Context` para pedir el cierre de la

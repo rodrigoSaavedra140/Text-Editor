@@ -23,6 +23,7 @@ mod ui_components;
 mod ui_explorer;
 mod ui_extensions;
 mod ui_source_control;
+mod update_service;
 mod util;
 
 pub use karkinos_core::buffer;
