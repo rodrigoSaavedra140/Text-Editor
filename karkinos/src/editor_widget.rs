@@ -20,9 +20,10 @@ pub fn clamp_font_size(size: f32) -> f32 {
     size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE)
 }
 
-/// OPT-3 (v0.2.26): fracción de acercamiento al destino por frame. Con 0.25
-/// la animación llega al destino en pocos frames y no se siente un salto.
-pub const SCROLL_EASING: f32 = 0.25;
+/// OPT-3 (v0.2.26 / v0.2.57): fracción de acercamiento al destino por frame. Con 0.42
+/// la animación reacciona de inmediato en el primer frame y asienta con suavidad en ~7-8 frames,
+/// eliminando la sensación de arrastre o retraso al scrollear archivos.
+pub const SCROLL_EASING: f32 = 0.42;
 
 /// OPT-3: un paso de interpolación exponencial hacia `target`. Devuelve el
 /// scroll nuevo y si la animación sigue en curso (todavía hay diferencia

@@ -3781,6 +3781,23 @@ impl eframe::App for EditorApp {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Fluidez de scroll global (v0.2.57):
+        // En Linux/X11/Wayland, los eventos de rueda de mouse discretos entregan deltas muy reducidos
+        // (~14-24 pt), lo que provoca que el desplazamiento en listas de modales (Quick Open,
+        // Command Palette, extensiones, explorador) se sienta duro, pesado y a los tirones.
+        // Escalamos el delta por 2.2x y aseguramos repintado continuo mientras haya movimiento.
+        let is_scrolling = ctx.input_mut(|i| {
+            let has_scroll = i.smooth_scroll_delta != egui::Vec2::ZERO;
+            if has_scroll {
+                i.smooth_scroll_delta *= 2.2;
+                i.raw_scroll_delta *= 2.2;
+            }
+            has_scroll
+        });
+        if is_scrolling {
+            ctx.request_repaint();
+        }
+
         if !self.ipc_waker_installed {
             if let Some(ref server) = self.ipc_server {
                 let ctx_clone = ctx.clone();
