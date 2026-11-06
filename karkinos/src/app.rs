@@ -162,6 +162,9 @@ pub struct EditorApp {
     pub font_size: f32,
     // S5 (Etapa 2): Tema visual activo (Dark, Monokai, Dracula).
     pub theme_mode: crate::theme::ThemeMode,
+    // S2 (v0.2.81): último tema cuyos colores se copiaron a `egui::Visuals`.
+    // `None` fuerza la aplicación en el primer frame.
+    pub applied_theme: Option<crate::theme::ThemeMode>,
     // S7 (Etapa 2): Estado del modal de búsqueda rápida de archivos (Ctrl+P).
     pub quick_open: crate::quick_open::QuickOpenState,
     // S4 (Roadmap v0.2.9): servicios de fondo del Quick Open (indexador
@@ -826,6 +829,7 @@ impl Default for EditorApp {
             picker_new_name: String::new(),
             font_size: 14.0,
             theme_mode: crate::theme::ThemeMode::Dark,
+            applied_theme: None,
             quick_open: crate::quick_open::QuickOpenState::default(),
             quick_open_services: crate::quick_open::QuickOpenServices::default(),
             plugin_manager: karkinos_core::plugin::PluginManager::with_default_plugins(),
@@ -1107,6 +1111,16 @@ impl EditorApp {
     /// S5 (Etapa 2): Retorna la paleta de colores del tema activo.
     pub fn theme(&self) -> crate::theme::Theme {
         self.theme_mode.theme()
+    }
+
+    /// S2 (v0.2.81): si cambió el tema, copia sus colores a los
+    /// `egui::Visuals` para que menús, popups, ventanas y widgets de egui
+    /// lo reflejen al instante (File → Theme o Command Palette).
+    pub fn sync_theme_visuals(&mut self, ctx: &egui::Context) {
+        if self.applied_theme != Some(self.theme_mode) {
+            crate::theme::apply_visuals(ctx, &self.theme_mode.theme());
+            self.applied_theme = Some(self.theme_mode);
+        }
     }
 
     /// S6 (Etapa 2): Retorna el lenguaje detectado para el documento actual (autodetecta por extensión y contenido).

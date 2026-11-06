@@ -400,6 +400,7 @@ impl EditorApp {
             return;
         }
 
+        let theme = self.theme();
         let mut apply = false;
         let mut cancel = false;
         let mut is_open = true;
@@ -414,7 +415,7 @@ impl EditorApp {
                 ui.label("Enter a name for this file:");
                 ui.label(
                     egui::RichText::new("(If left blank, it will be saved as untitled.txt)")
-                        .color(egui::Color32::from_gray(140))
+                        .color(theme.text_muted)
                         .small(),
                 );
                 ui.add_space(4.0);
@@ -1966,17 +1967,17 @@ impl EditorApp {
                         if self.terminal.is_alive() {
                             ("Running", egui::Color32::from_rgb(63, 185, 80))
                         } else {
-                            ("Idle", egui::Color32::from_gray(140))
+                            ("Idle", theme.text_muted)
                         }
                     } else {
                         match status {
-                            karkinos_core::cargo::CargoStatus::Idle => ("Idle", egui::Color32::from_gray(140)),
+                            karkinos_core::cargo::CargoStatus::Idle => ("Idle", theme.text_muted),
                             karkinos_core::cargo::CargoStatus::Running => ("Running…", egui::Color32::from_rgb(255, 190, 60)),
                             karkinos_core::cargo::CargoStatus::Success => ("Success", egui::Color32::from_rgb(63, 185, 80)),
                             karkinos_core::cargo::CargoStatus::Failed(_code) => {
                                 ("Failed", egui::Color32::from_rgb(248, 81, 73))
                             }
-                            karkinos_core::cargo::CargoStatus::Killed => ("Terminated", egui::Color32::from_gray(160)),
+                            karkinos_core::cargo::CargoStatus::Killed => ("Terminated", theme.text_muted),
                         }
                     };
 
@@ -2095,7 +2096,7 @@ impl EditorApp {
                 } else if self.cargo.active_tab == 1 {
                     let diags = self.cargo.runner.diagnostics();
                     if diags.is_empty() {
-                        ui.label(egui::RichText::new("No compiler errors or warnings detected.").italics().color(egui::Color32::from_gray(140)));
+                        ui.label(egui::RichText::new("No compiler errors or warnings detected.").italics().color(theme.text_muted));
                     } else {
                         egui::ScrollArea::vertical()
                             .auto_shrink([false, false])
@@ -2755,6 +2756,10 @@ impl eframe::App for EditorApp {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // S2 (v0.2.81): si el tema cambió (File → Theme o Command
+        // Palette), sus colores pasan a los widgets de egui en este frame.
+        self.sync_theme_visuals(ctx);
+
         // Fluidez de scroll global (v0.2.57):
         // En Linux/X11/Wayland, los eventos de rueda de mouse discretos entregan deltas muy reducidos
         // (~14-24 pt), lo que provoca que el desplazamiento en listas de modales (Quick Open,

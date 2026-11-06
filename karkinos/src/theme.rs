@@ -83,10 +83,11 @@ impl ThemeMode {
                 border_focus: egui::Color32::from_rgb(249, 38, 114),
                 badge_bg: egui::Color32::from_rgba_unmultiplied(255, 255, 255, 14),
                 text: egui::Color32::from_rgb(248, 248, 242),
-                text_muted: egui::Color32::from_rgb(117, 113, 94),
+                // S2 (v0.2.81): 4.57:1 sobre elevated_bg (antes 2.83).
+                text_muted: egui::Color32::from_rgb(154, 148, 124),
                 accent: egui::Color32::from_rgb(249, 38, 114),
                 gutter_bg: egui::Color32::from_rgb(28, 29, 23),
-                gutter_text: egui::Color32::from_rgb(117, 113, 94),
+                gutter_text: egui::Color32::from_rgb(154, 148, 124),
                 selection: egui::Color32::from_rgb(73, 72, 62),
                 active_line: egui::Color32::from_rgb(62, 61, 50),
                 caret: egui::Color32::from_rgb(248, 248, 240),
@@ -95,7 +96,7 @@ impl ThemeMode {
                 syntax_keyword: egui::Color32::from_rgb(249, 38, 114),
                 syntax_type: egui::Color32::from_rgb(102, 217, 239),
                 syntax_string: egui::Color32::from_rgb(230, 219, 116),
-                syntax_comment: egui::Color32::from_rgb(117, 113, 94),
+                syntax_comment: egui::Color32::from_rgb(154, 148, 124),
                 syntax_number: egui::Color32::from_rgb(174, 129, 255),
             },
             ThemeMode::Dracula => Theme {
@@ -107,10 +108,11 @@ impl ThemeMode {
                 border_focus: egui::Color32::from_rgb(255, 121, 198),
                 badge_bg: egui::Color32::from_rgba_unmultiplied(255, 255, 255, 14),
                 text: egui::Color32::from_rgb(248, 248, 242),
-                text_muted: egui::Color32::from_rgb(98, 114, 164),
+                // S2 (v0.2.81): 4.60:1 sobre elevated_bg (antes 2.62).
+                text_muted: egui::Color32::from_rgb(134, 156, 224),
                 accent: egui::Color32::from_rgb(255, 121, 198),
                 gutter_bg: egui::Color32::from_rgb(29, 30, 39),
-                gutter_text: egui::Color32::from_rgb(98, 114, 164),
+                gutter_text: egui::Color32::from_rgb(134, 156, 224),
                 selection: egui::Color32::from_rgb(68, 71, 90),
                 active_line: egui::Color32::from_rgb(52, 55, 70),
                 caret: egui::Color32::from_rgb(255, 121, 198),
@@ -119,7 +121,7 @@ impl ThemeMode {
                 syntax_keyword: egui::Color32::from_rgb(255, 121, 198),
                 syntax_type: egui::Color32::from_rgb(139, 233, 253),
                 syntax_string: egui::Color32::from_rgb(241, 250, 140),
-                syntax_comment: egui::Color32::from_rgb(98, 114, 164),
+                syntax_comment: egui::Color32::from_rgb(134, 156, 224),
                 syntax_number: egui::Color32::from_rgb(189, 147, 249),
             },
             // Paleta auténtica de Atom One Dark (#282c34, #abb2bf).
@@ -132,10 +134,11 @@ impl ThemeMode {
                 border_focus: egui::Color32::from_rgb(97, 175, 239),       // #61afef
                 badge_bg: egui::Color32::from_rgba_unmultiplied(255, 255, 255, 14),
                 text: egui::Color32::from_rgb(171, 178, 191),              // #abb2bf
-                text_muted: egui::Color32::from_rgb(92, 99, 112),          // #5c6370
+                // S2 (v0.2.81): 4.62:1 sobre elevated_bg (antes 2.06).
+                text_muted: egui::Color32::from_rgb(147, 158, 179),        // #939eb3
                 accent: egui::Color32::from_rgb(97, 175, 239),             // #61afef
                 gutter_bg: egui::Color32::from_rgb(33, 37, 43),            // #21252b
-                gutter_text: egui::Color32::from_rgb(92, 99, 112),         // #5c6370
+                gutter_text: egui::Color32::from_rgb(147, 158, 179),       // #939eb3
                 selection: egui::Color32::from_rgb(62, 68, 81),            // #3e4451
                 active_line: egui::Color32::from_rgb(44, 49, 58),          // #2c313a
                 caret: egui::Color32::from_rgb(82, 139, 255),              // #528bff
@@ -144,7 +147,7 @@ impl ThemeMode {
                 syntax_keyword: egui::Color32::from_rgb(198, 120, 221),    // #c678dd
                 syntax_type: egui::Color32::from_rgb(229, 192, 123),       // #e5c07b
                 syntax_string: egui::Color32::from_rgb(152, 195, 121),     // #98c379
-                syntax_comment: egui::Color32::from_rgb(92, 99, 112),      // #5c6370
+                syntax_comment: egui::Color32::from_rgb(147, 158, 179),    // #939eb3
                 syntax_number: egui::Color32::from_rgb(209, 154, 102),     // #d19a66
             },
         }
@@ -217,6 +220,111 @@ pub fn lerp_color(a: egui::Color32, b: egui::Color32, t: f32) -> egui::Color32 {
     )
 }
 
+/// S2 (v0.2.81): luminancia relativa WCAG 2.x de un color, con la
+/// linealización sRGB que pide la norma. Ignora el alfa.
+/// Hoy solo la usan los tests de contraste (y las mediciones del Log).
+#[allow(dead_code)]
+fn relative_luminance(color: egui::Color32) -> f32 {
+    fn channel(value: u8) -> f32 {
+        let v = value as f32 / 255.0;
+        if v <= 0.03928 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    }
+    0.2126 * channel(color.r()) + 0.7152 * channel(color.g()) + 0.0722 * channel(color.b())
+}
+
+/// S2 (v0.2.81): relación de contraste WCAG 2.x entre dos colores
+/// (de 1.0 a 21.0). Es simétrica e ignora el alfa. La usan los tests
+/// de legibilidad y las mediciones de estilo; el runtime no la necesita.
+#[allow(dead_code)]
+pub fn contrast_ratio(a: egui::Color32, b: egui::Color32) -> f32 {
+    let la = relative_luminance(a);
+    let lb = relative_luminance(b);
+    let (claro, oscuro) = if la > lb { (la, lb) } else { (lb, la) };
+    (claro + 0.05) / (oscuro + 0.05)
+}
+
+/// S2 (v0.2.81): copia la paleta del tema a los `egui::Visuals` para que
+/// menús, popups, ventanas, tooltips, botones y labels que no fijan su
+/// color usen los mismos colores que el resto de la app. Antes egui
+/// seguía su propia paleta (clara si el sistema estaba en modo claro) y
+/// el texto quedaba ilegible sobre los fondos oscuros de Karkinos.
+pub fn apply_visuals(ctx: &egui::Context, theme: &Theme) {
+    let mut visuals = egui::Visuals::dark();
+
+    // Superficies base: paneles y ventanas.
+    visuals.panel_fill = theme.surface_bg;
+    visuals.window_fill = theme.elevated_bg;
+    visuals.window_stroke = egui::Stroke::new(1.0_f32, theme.border_subtle);
+    // Fondo de los `TextEdit` y de otros widgets que necesitan
+    // distinguirse del panel.
+    visuals.extreme_bg_color = theme.bg;
+    visuals.faint_bg_color = theme.badge_bg;
+    visuals.code_bg_color = theme.badge_bg;
+    // El color de texto se resuelve por widget; nunca se fuerza uno global.
+    visuals.override_text_color = None;
+    visuals.selection.bg_fill = theme.selection;
+    visuals.selection.stroke = egui::Stroke::new(1.0_f32, theme.text);
+    visuals.hyperlink_color = theme.accent;
+
+    // Escala de superficies para los estados de los widgets: en reposo
+    // usan la elevación y en hover/activo se aclaran un poco hacia el
+    // texto del tema.
+    let hovered_bg = lerp_color(theme.elevated_bg, theme.text, 0.08);
+    let active_bg = lerp_color(theme.elevated_bg, theme.text, 0.14);
+    let borde = egui::Stroke::new(1.0_f32, theme.border_subtle);
+    let borde_foco = egui::Stroke::new(1.0_f32, theme.border_focus);
+    let texto = egui::Stroke::new(1.0_f32, theme.text);
+
+    let widgets = &mut visuals.widgets;
+    widgets.noninteractive.bg_fill = theme.surface_bg;
+    widgets.noninteractive.weak_bg_fill = theme.surface_bg;
+    widgets.noninteractive.bg_stroke = borde;
+    widgets.noninteractive.fg_stroke = texto;
+    widgets.noninteractive.rounding = egui::Rounding::same(6.0);
+
+    widgets.inactive.bg_fill = theme.elevated_bg;
+    widgets.inactive.weak_bg_fill = theme.elevated_bg;
+    widgets.inactive.bg_stroke = borde;
+    widgets.inactive.fg_stroke = texto;
+    widgets.inactive.rounding = egui::Rounding::same(6.0);
+
+    widgets.hovered.bg_fill = hovered_bg;
+    widgets.hovered.weak_bg_fill = hovered_bg;
+    widgets.hovered.bg_stroke = borde_foco;
+    widgets.hovered.fg_stroke = texto;
+    widgets.hovered.rounding = egui::Rounding::same(6.0);
+
+    widgets.active.bg_fill = active_bg;
+    widgets.active.weak_bg_fill = active_bg;
+    widgets.active.bg_stroke = borde_foco;
+    widgets.active.fg_stroke = texto;
+    widgets.active.rounding = egui::Rounding::same(6.0);
+
+    widgets.open.bg_fill = active_bg;
+    widgets.open.weak_bg_fill = active_bg;
+    widgets.open.bg_stroke = borde;
+    widgets.open.fg_stroke = texto;
+    widgets.open.rounding = egui::Rounding::same(6.0);
+
+    // UI-1 (v0.2.19): se conserva el sistema de diseño que antes fijaba
+    // `main.rs` a mano (esquinas de 6/10 px y sombra de elevación).
+    visuals.window_rounding = egui::Rounding::same(10.0);
+    visuals.window_shadow = egui::epaint::Shadow {
+        offset: egui::vec2(0.0, 8.0),
+        blur: 20.0,
+        spread: 0.0,
+        color: egui::Color32::from_black_alpha(150),
+    };
+
+    let mut style = (*ctx.style()).clone();
+    style.visuals = visuals;
+    ctx.set_style(style);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -245,12 +353,80 @@ mod tests {
         assert_eq!(ThemeMode::from_storage_str("desconocido"), ThemeMode::Dark);
     }
 
+    /// S2 (v0.2.81): la fórmula de contraste WCAG 2.x debe dar 21:1
+    /// entre negro y blanco, 1:1 con el mismo color y ser simétrica.
     #[test]
-    fn theme_palettes_valid_contrasts() {
+    fn contrast_ratio_coincide_con_wcag() {
+        let white = egui::Color32::WHITE;
+        let black = egui::Color32::BLACK;
+        assert!((contrast_ratio(black, white) - 21.0).abs() < 0.05);
+        assert!(
+            (contrast_ratio(white, black) - 21.0).abs() < 0.05,
+            "la relación es simétrica"
+        );
+
+        let mismo = egui::Color32::from_rgb(120, 80, 200);
+        assert!((contrast_ratio(mismo, mismo) - 1.0).abs() < f32::EPSILON);
+
+        let a = egui::Color32::from_rgb(30, 40, 50);
+        let b = egui::Color32::from_rgb(200, 210, 220);
+        assert!(
+            (contrast_ratio(a, b) - contrast_ratio(b, a)).abs() < f32::EPSILON,
+            "invertir los colores no cambia la relación"
+        );
+    }
+
+    /// S2 (v0.2.81): en los cuatro temas el texto principal y el
+    /// secundario se leen sobre las tres superficies de la paleta.
+    #[test]
+    fn texto_legible_en_todos_los_temas() {
         for mode in ThemeMode::ALL {
             let theme = mode.theme();
-            assert_ne!(theme.bg, theme.text, "el fondo y el texto deben contrastar");
-            assert_ne!(theme.bg, theme.gutter_text);
+            for (nombre, color) in [("text", theme.text), ("text_muted", theme.text_muted)] {
+                for (fondo, bg) in [
+                    ("bg", theme.bg),
+                    ("surface_bg", theme.surface_bg),
+                    ("elevated_bg", theme.elevated_bg),
+                ] {
+                    let ratio = contrast_ratio(color, bg);
+                    assert!(
+                        ratio >= 4.5,
+                        "{:?}: {nombre} sobre {fondo} mide {ratio:.2}, mínimo 4.5",
+                        mode
+                    );
+                }
+            }
+        }
+    }
+
+    /// S2 (v0.2.81): `apply_visuals` copia los tokens del tema a los
+    /// `Visuals` que usan menús, popups, ventanas y widgets de egui.
+    #[test]
+    fn apply_visuals_usa_los_tokens_del_tema() {
+        let ctx = egui::Context::default();
+        for mode in ThemeMode::ALL {
+            let theme = mode.theme();
+            apply_visuals(&ctx, &theme);
+
+            let style = ctx.style();
+            let visuals = &style.visuals;
+            assert_eq!(visuals.window_fill, theme.elevated_bg, "{:?}: window_fill", mode);
+            assert_eq!(visuals.panel_fill, theme.surface_bg, "{:?}: panel_fill", mode);
+            assert_eq!(
+                visuals.widgets.noninteractive.fg_stroke.color, theme.text,
+                "{:?}: el texto no interactivo usa el texto del tema",
+                mode
+            );
+            assert!(visuals.dark_mode, "{:?}: los temas son oscuros", mode);
+            let ratio = contrast_ratio(
+                visuals.widgets.inactive.fg_stroke.color,
+                visuals.widgets.inactive.bg_fill,
+            );
+            assert!(
+                ratio >= 4.5,
+                "{:?}: el texto de widgets inactivos mide {ratio:.2}, mínimo 4.5",
+                mode
+            );
         }
     }
 
@@ -312,10 +488,10 @@ mod tests {
             egui::Color32::from_rgba_unmultiplied(255, 255, 255, 14)
         );
         assert_eq!(t.text, egui::Color32::from_rgb(171, 178, 191));
-        assert_eq!(t.text_muted, egui::Color32::from_rgb(92, 99, 112));
+        assert_eq!(t.text_muted, egui::Color32::from_rgb(147, 158, 179));
         assert_eq!(t.accent, egui::Color32::from_rgb(97, 175, 239));
         assert_eq!(t.gutter_bg, egui::Color32::from_rgb(33, 37, 43));
-        assert_eq!(t.gutter_text, egui::Color32::from_rgb(92, 99, 112));
+        assert_eq!(t.gutter_text, egui::Color32::from_rgb(147, 158, 179));
         assert_eq!(t.selection, egui::Color32::from_rgb(62, 68, 81));
         assert_eq!(t.active_line, egui::Color32::from_rgb(44, 49, 58));
         assert_eq!(t.caret, egui::Color32::from_rgb(82, 139, 255));
@@ -324,7 +500,7 @@ mod tests {
         assert_eq!(t.syntax_keyword, egui::Color32::from_rgb(198, 120, 221));
         assert_eq!(t.syntax_type, egui::Color32::from_rgb(229, 192, 123));
         assert_eq!(t.syntax_string, egui::Color32::from_rgb(152, 195, 121));
-        assert_eq!(t.syntax_comment, egui::Color32::from_rgb(92, 99, 112));
+        assert_eq!(t.syntax_comment, egui::Color32::from_rgb(147, 158, 179));
         assert_eq!(t.syntax_number, egui::Color32::from_rgb(209, 154, 102));
     }
 

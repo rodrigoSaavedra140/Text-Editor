@@ -112,7 +112,14 @@ fn main() -> eframe::Result<()> {
         viewport = viewport.with_icon(icon);
     }
 
-    let options = eframe::NativeOptions { viewport, ..Default::default() };
+    // S2 (v0.2.81): Karkinos siempre es oscuro; no seguir el tema del
+    // sistema para que egui no arranque con su paleta clara.
+    let options = eframe::NativeOptions {
+        viewport,
+        follow_system_theme: false,
+        default_theme: eframe::Theme::Dark,
+        ..Default::default()
+    };
     eframe::run_native("Karkinos", options, Box::new(move |cc| {
         // Configura Geist Mono como la fuente principal para todo el texto monoespaciado (editor, terminal, logs)
         crate::fonts::install_fonts(&cc.egui_ctx);
@@ -148,26 +155,11 @@ fn main() -> eframe::Result<()> {
                 app.theme_mode = crate::theme::ThemeMode::from_storage_str(&theme_str);
             }
         }
-        // UI-1 (v0.2.19): sistema de diseño — esquinas de 6px
-        // en todos los widgets, 10px en ventanas y sombra de elevación
-        // para la jerarquía visual de las tarjetas flotantes.
-        let mut style = (*cc.egui_ctx.style()).clone();
-        for widget in [
-            &mut style.visuals.widgets.noninteractive,
-            &mut style.visuals.widgets.inactive,
-            &mut style.visuals.widgets.hovered,
-            &mut style.visuals.widgets.active,
-        ] {
-            widget.rounding = egui::Rounding::same(6.0);
-        }
-        style.visuals.window_rounding = egui::Rounding::same(10.0);
-        style.visuals.window_shadow = egui::epaint::Shadow {
-            offset: egui::vec2(0.0, 8.0),
-            blur: 20.0,
-            spread: 0.0,
-            color: egui::Color32::from_black_alpha(150),
-        };
-        cc.egui_ctx.set_style(style);
+        // S2 (v0.2.81): los widgets propios de egui (menús, popups,
+        // ventanas, botones) usan la paleta del tema activo en vez de la
+        // interna de egui. `apply_visuals` conserva además el sistema de
+        // diseño de la UI-1 (esquinas de 6/10 px y sombra de elevación).
+        crate::theme::apply_visuals(&cc.egui_ctx, &app.theme_mode.theme());
         Box::new(app)
     }))
 }

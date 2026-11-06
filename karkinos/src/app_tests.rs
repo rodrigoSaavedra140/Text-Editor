@@ -2225,6 +2225,29 @@
         assert_eq!(app.command_palette.selected, 0);
     }
 
+    /// S2 (v0.2.81): cambiar el tema desde el menú o la paleta debe
+    /// refrescar los `Visuals` de egui en el frame siguiente.
+    #[test]
+    fn cambiar_de_tema_actualiza_los_visuals() {
+        let ctx = egui::Context::default();
+        let mut app = EditorApp::default();
+
+        app.sync_theme_visuals(&ctx);
+        assert_eq!(
+            ctx.style().visuals.window_fill,
+            crate::theme::ThemeMode::Dark.theme().elevated_bg,
+            "el tema inicial se aplica a los visuals"
+        );
+
+        app.theme_mode = crate::theme::ThemeMode::Dracula;
+        app.sync_theme_visuals(&ctx);
+        assert_eq!(
+            ctx.style().visuals.window_fill,
+            crate::theme::ThemeMode::Dracula.theme().elevated_bg,
+            "el cambio de tema se refleja en los visuals"
+        );
+    }
+
     #[test]
     fn palette_ejecuta_layout_y_cierra_o_ignora_ids_desconocidos() {
         let mut app = EditorApp::default();
