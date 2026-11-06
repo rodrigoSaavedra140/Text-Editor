@@ -1917,6 +1917,11 @@ impl<V: Clone> LineLayoutCache<V> {
         }
     }
 
+    /// Vacía todas las entradas del cache (por ejemplo al cambiar tamaño de fuente, DPI o zoom).
+    pub fn clear(&mut self) {
+        self.entries.clear();
+    }
+
     /// Cantidad de entradas vivas (para diagnóstico y tests).
     #[cfg(test)]
     pub fn len(&self) -> usize {
@@ -2205,6 +2210,16 @@ mod tests {
         // Y una generación distinta vuelve a vaciar.
         cache.sync_ast(8);
         assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn line_layout_cache_clear_empties_all_entries() {
+        let mut cache = LineLayoutCache::new();
+        let key = line_layout_key("x", Language::Rust, 14.0);
+        cache.get_or_insert(key, ThemeMode::Dark, || 42);
+        assert!(!cache.is_empty());
+        cache.clear();
+        assert!(cache.is_empty(), "clear() debe vaciar todas las entradas");
     }
 
     #[test]

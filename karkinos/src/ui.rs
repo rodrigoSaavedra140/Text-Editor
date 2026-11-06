@@ -3786,15 +3786,15 @@ impl eframe::App for EditorApp {
         // (~14-24 pt), lo que provoca que el desplazamiento en listas de modales (Quick Open,
         // Command Palette, extensiones, explorador) se sienta duro, pesado y a los tirones.
         // Escalamos el delta por 2.2x y aseguramos repintado continuo mientras haya movimiento.
-        let is_scrolling = ctx.input_mut(|i| {
+        let is_scrolling_or_zooming = ctx.input_mut(|i| {
             let has_scroll = i.smooth_scroll_delta != egui::Vec2::ZERO;
             if has_scroll {
                 i.smooth_scroll_delta *= 2.2;
                 i.raw_scroll_delta *= 2.2;
             }
-            has_scroll
+            has_scroll || (i.zoom_delta() - 1.0).abs() > 0.001
         });
-        if is_scrolling {
+        if is_scrolling_or_zooming {
             ctx.request_repaint();
         }
 
@@ -4092,12 +4092,13 @@ impl eframe::App for EditorApp {
             self.close_git_diff();
         }
 
-        // S10: Ctrl+= (y Ctrl+Plus) agranda, Ctrl+- achica la fuente.
-        let (want_zoom_in, want_zoom_out) = ctx.input(|i| {
+        // S10: Ctrl+= (y Ctrl+Plus) agranda, Ctrl+- achica, Ctrl+0 restablece la fuente.
+        let (want_zoom_in, want_zoom_out, want_zoom_reset) = ctx.input(|i| {
             (
                 i.modifiers.ctrl
                     && (i.key_pressed(egui::Key::Equals) || i.key_pressed(egui::Key::Plus)),
                 i.modifiers.ctrl && i.key_pressed(egui::Key::Minus),
+                i.modifiers.ctrl && i.key_pressed(egui::Key::Num0),
             )
         });
         if want_zoom_in {
@@ -4105,6 +4106,9 @@ impl eframe::App for EditorApp {
         }
         if want_zoom_out {
             self.zoom(false);
+        }
+        if want_zoom_reset {
+            self.reset_zoom();
         }
 
         // Lo mismo si el cierre vino del botón X de la ventana o de
@@ -4634,9 +4638,19 @@ impl eframe::App for EditorApp {
                 // OJO: este mirror es solo para lo que cambió DENTRO
                 // de show() — los botones/atajos ya dejaron App nuevo
                 // mas arriba y el state ya lo tomó arriba.
-                if (self.editor_state.font_size - self.font_size).abs() > f32::EPSILON {
-                    self.font_size = self.editor_state.font_size;
-                    self.doc.status = format!("Zoom: {} px", self.editor_state.font_size);
+                let new_zoom_size = if (self.editor_state.font_size - self.font_size).abs() > f32::EPSILON {
+                    Some(self.editor_state.font_size)
+                } else if let Some(split) = self.split.as_ref() {
+                    if (split.secondary.font_size - self.font_size).abs() > f32::EPSILON {
+                        Some(split.secondary.font_size)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                if let Some(size) = new_zoom_size {
+                    self.set_font_size(size);
                 }
                 // S3: corte previo si la acción fue estructural (Enter / Paste).
                 if let Some(prev) = response.pre_break_snapshot {

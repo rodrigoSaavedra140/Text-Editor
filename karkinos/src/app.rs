@@ -728,6 +728,24 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
         category: "File",
         shortcut: None,
     },
+    PaletteCommand {
+        id: "view:zoom_in",
+        title: "View: Zoom In",
+        category: "View",
+        shortcut: Some("Ctrl++"),
+    },
+    PaletteCommand {
+        id: "view:zoom_out",
+        title: "View: Zoom Out",
+        category: "View",
+        shortcut: Some("Ctrl+-"),
+    },
+    PaletteCommand {
+        id: "view:reset_zoom",
+        title: "View: Reset Zoom",
+        category: "View",
+        shortcut: Some("Ctrl+0"),
+    },
 ];
 
 /// v0.2.42: estado de la pestaña Source Control.
@@ -2275,6 +2293,9 @@ impl EditorApp {
                     let _ = self.explorer_duplicate_item(&path);
                 }
             }
+            "view:zoom_in" => self.zoom(true),
+            "view:zoom_out" => self.zoom(false),
+            "view:reset_zoom" => self.reset_zoom(),
             _ => {}
         }
     }
@@ -3506,17 +3527,34 @@ impl EditorApp {
         self.open_path(path);
     }
 
+    /// S10: fija el tamaño de fuente acotado al rango válido (8..32 px),
+    /// sincronizando el EditorState primario, todas las pestañas y el panel secundario si existe.
+    pub fn set_font_size(&mut self, size: f32) {
+        let clamped = crate::editor_widget::clamp_font_size(size);
+        self.font_size = clamped;
+        self.editor_state.set_font_size(clamped);
+        for tab in &mut self.doc.tabs {
+            tab.editor_state.set_font_size(clamped);
+        }
+        if let Some(split) = self.split.as_mut() {
+            split.secondary.set_font_size(clamped);
+        }
+        self.doc.status = format!("Zoom: {} px", clamped.round());
+    }
+
+    /// S10: restablece el tamaño de fuente al valor por defecto (14 px).
+    pub fn reset_zoom(&mut self) {
+        self.set_font_size(crate::editor_widget::DEFAULT_FONT_SIZE);
+    }
+
     /// S10: cambia el tamaño de la fuente del editor un paso (zoom in
-    /// / out con clamp 8..32) y lo informa en la barra de estado. El
-    /// re-layout (wrap_chars, scroll, gutter) cae solo: el widget
-    /// mide el ancho/alto de glifo en cada frame con el FontId nuevo.
+    /// / out con clamp 8..32) y lo informa en la barra de estado.
     pub fn zoom(&mut self, zoom_in: bool) {
         let next = apply_zoom(self.font_size, zoom_in);
         if (next - self.font_size).abs() < f32::EPSILON {
             return; // ya en el tope: no spamear el status
         }
-        self.font_size = next;
-        self.doc.status = format!("Zoom: {} px", next.round());
+        self.set_font_size(next);
     }
 }
 
@@ -3577,6 +3615,43 @@ mod tests {
         // la fuente inválida en lugar de crashear o dibujar gigante.
         app.font_size = font_size_from_string("999.0").unwrap_or_default();
         assert!((app.font_size - ZOOM_MAX).abs() < EPS);
+    }
+
+    #[test]
+    fn set_font_size_sincroniza_editor_state_y_tabs_y_split() {
+        const EPS: f32 = 0.001;
+        let mut app = EditorApp::default();
+        app.toggle_split(SplitDirection::Vertical);
+
+        app.set_font_size(22.0);
+        assert!((app.font_size - 22.0).abs() < EPS);
+        assert!((app.editor_state.font_size - 22.0).abs() < EPS);
+        assert!(
+            (app.split.as_ref().unwrap().secondary.font_size - 22.0).abs() < EPS,
+            "el split secundario debe recibir el nuevo font_size"
+        );
+        for tab in &app.doc.tabs {
+            assert!((tab.editor_state.font_size - 22.0).abs() < EPS);
+        }
+
+        app.reset_zoom();
+        assert!((app.font_size - crate::editor_widget::DEFAULT_FONT_SIZE).abs() < EPS);
+        assert!((app.editor_state.font_size - crate::editor_widget::DEFAULT_FONT_SIZE).abs() < EPS);
+    }
+
+    #[test]
+    fn execute_palette_command_zoom_actions() {
+        let mut app = EditorApp::default();
+        let initial = app.font_size;
+
+        app.execute_palette_command("view:zoom_in");
+        assert_eq!(app.font_size, initial + 1.0);
+
+        app.execute_palette_command("view:zoom_out");
+        assert_eq!(app.font_size, initial);
+
+        app.execute_palette_command("view:reset_zoom");
+        assert_eq!(app.font_size, crate::editor_widget::DEFAULT_FONT_SIZE);
     }
 
 
@@ -5647,7 +5722,7 @@ mod tests {
         ids.sort_unstable();
         ids.dedup();
         assert_eq!(ids.len(), total, "cada id del catálogo es único");
-        assert_eq!(total, 34, "el catálogo de v0.2.56 tiene 34 comandos");
+        assert_eq!(total, 37, "el catálogo de v0.2.58 tiene 37 comandos");
 
         for expected in [
             "layout:split_vertical",
@@ -5679,6 +5754,9 @@ mod tests {
             "file:open_folder",
             "file:rename_active",
             "file:duplicate_active",
+            "view:zoom_in",
+            "view:zoom_out",
+            "view:reset_zoom",
             "git:source_control",
             "git:refresh",
             "git:stage_all",

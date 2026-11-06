@@ -106,6 +106,13 @@ fn main() -> eframe::Result<()> {
 
     let options = eframe::NativeOptions { viewport, ..Default::default() };
     eframe::run_native("Karkinos", options, Box::new(move |cc| {
+        // Desactivamos el zoom global con teclado de egui para evitar que Ctrl+=/-
+        // escale la ventana completa y corrompa el atlas de fuentes del editor.
+        // El zoom del editor se controla directamente sobre el tamaño de fuente.
+        cc.egui_ctx.options_mut(|o| {
+            o.zoom_with_keyboard = false;
+        });
+
         // S10: el zoom elegido la sesión anterior vuela al arrancar
         // desde el Storage de la app (app-storage.json). Sin Storage
         // (o valor corrupto) queda el default de 14 px.

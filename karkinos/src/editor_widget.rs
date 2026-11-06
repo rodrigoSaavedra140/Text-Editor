@@ -229,6 +229,12 @@ pub struct EditorState {
     // S2 (Roadmap v0.2.9): instante (egui time, segundos) de la última
     // interacción de teclado/mouse/botón — reinicia la fase del blink.
     pub last_activity_time: f64,
+    // Factor de escala (pixels_per_point) del frame anterior: si cambia
+    // (DPI o escala de ventana), se invalidan galleys para evitar UVs rotos.
+    pub last_pixels_per_point: f32,
+    // Puntero del atlas de texturas de epaint: si epaint recrea el atlas
+    // (por overflow o fill_ratio > 0.8), se invalidan todos los galleys cacheados.
+    pub last_texture_atlas_ptr: usize,
 }
 
 impl Default for EditorState {
@@ -271,6 +277,8 @@ impl Default for EditorState {
             layout_cache: crate::syntax::LineLayoutCache::new(),
             ast_rev: 0,
             last_activity_time: 0.0,
+            last_pixels_per_point: 0.0,
+            last_texture_atlas_ptr: 0,
         }
     }
 }
@@ -302,20 +310,24 @@ impl EditorState {
 
     /// S10: zoom in (+1px).
     pub fn zoom_in(&mut self) {
-        self.font_size = clamp_font_size(self.font_size + 1.0);
-        self.request_autoscroll();
+        self.set_font_size(self.font_size + 1.0);
     }
 
     /// S10: zoom out (-1px).
     pub fn zoom_out(&mut self) {
-        self.font_size = clamp_font_size(self.font_size - 1.0);
-        self.request_autoscroll();
+        self.set_font_size(self.font_size - 1.0);
     }
 
-    /// S10: fija el tamaño de fuente acotado al rango válido.
+    /// S10: fija el tamaño de fuente acotado al rango válido e invalida
+    /// la caché de layouts para evitar usar galleys con coordenadas de atlas desactualizadas.
     pub fn set_font_size(&mut self, size: f32) {
-        self.font_size = clamp_font_size(size);
-        self.request_autoscroll();
+        let new_size = clamp_font_size(size);
+        if (self.font_size - new_size).abs() > f32::EPSILON {
+            self.font_size = new_size;
+            self.layout_cache.clear();
+            self.hint_galleys.clear();
+            self.request_autoscroll();
+        }
     }
 }
 
@@ -1030,6 +1042,18 @@ pub fn show(
     let mut changed = false;
     let mut force_snapshot = false;
     let mut pre_break_snapshot: Option<String> = None;
+
+    // Invalida galleys si cambió pixels_per_point o si epaint recreó el atlas de texturas
+    // (por ejemplo por fill_ratio > 0.8 o overflow), evitando que UVs viejos apunten
+    // a glifos corruptos en el nuevo atlas.
+    let ppp = ui.ctx().pixels_per_point();
+    let atlas_ptr = ui.fonts(|f| std::sync::Arc::as_ptr(&f.texture_atlas()) as usize);
+    if (state.last_pixels_per_point - ppp).abs() > 0.001 || state.last_texture_atlas_ptr != atlas_ptr {
+        state.last_pixels_per_point = ppp;
+        state.last_texture_atlas_ptr = atlas_ptr;
+        state.layout_cache.clear();
+        state.hint_galleys.clear();
+    }
 
     // S10: el FontId sale del estado (zoomable), no de un literal:
     // medir char_width/row_height con este FontId hace que wrap_chars,
@@ -1824,19 +1848,32 @@ pub fn show(
         state.target_scroll = state.scroll;
     }
 
-    // --- scroll con la rueda del mouse / trackpad ---
-    // S10: con Ctrl tocando, la rueda zoomea en vez de scrollear
-    // (UN paso por evento de rueda, no por píxel de trackpad).
+    // --- scroll y zoom con la rueda del mouse / trackpad ---
+    // S10: Si hay gesto de zoom (egui-winit sintetiza Event::Zoom / i.zoom_delta())
+    // o si el usuario hace scroll con la tecla Ctrl presionada, zoomea la fuente.
     if response.hovered() {
-        let (scroll_delta, ctrl) = ui.input(|i| (i.smooth_scroll_delta, i.modifiers.ctrl));
-        if ctrl {
-            // Un notch por evento de rueda, no por píxel de trackpad.
-            if scroll_delta.y > 2.0 {
+        let (scroll_delta, raw_delta, zoom_delta, ctrl) = ui.input(|i| {
+            (
+                i.smooth_scroll_delta,
+                i.raw_scroll_delta,
+                i.zoom_delta(),
+                i.modifiers.ctrl,
+            )
+        });
+        if (zoom_delta - 1.0).abs() > 0.005 {
+            if zoom_delta > 1.005 {
                 state.zoom_in();
-            } else if scroll_delta.y < -2.0 {
+            } else if zoom_delta < 0.995 {
                 state.zoom_out();
             }
-        } else {
+        } else if ctrl && (scroll_delta.y.abs() > 0.5 || raw_delta.y.abs() > 0.5) {
+            let dy = if scroll_delta.y.abs() > 0.5 { scroll_delta.y } else { raw_delta.y };
+            if dy > 0.5 {
+                state.zoom_in();
+            } else if dy < -0.5 {
+                state.zoom_out();
+            }
+        } else if !ctrl {
             // OPT-3: la rueda mueve el destino; el render interpola.
             state.target_scroll -= scroll_delta.y;
         }
