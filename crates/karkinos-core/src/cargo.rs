@@ -361,7 +361,9 @@ impl CargoRunner {
 
                 // Wait for process exit status
                 let exit_status = {
-                    let mut lock = proc_arc.lock().unwrap();
+                    // S5: recuperamos el lock aunque el hilo de lectura
+                    // haya paniqueado con él tomado.
+                    let mut lock = proc_arc.lock().unwrap_or_else(|e| e.into_inner());
                     if let Some(ref mut child) = *lock {
                         child.wait().ok()
                     } else {

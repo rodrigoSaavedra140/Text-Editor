@@ -170,7 +170,10 @@ impl EditorApp {
             return;
         };
         let (written, total, done) = {
-            let p = progress.lock().unwrap();
+            // S5: si el hilo de guardado paniqueó con el lock tomado,
+            // el mutex queda envenenado; recuperamos el estado interno
+            // en vez de tumbar la UI.
+            let p = progress.lock().unwrap_or_else(|e| e.into_inner());
             (p.written, p.total, p.done)
         };
 

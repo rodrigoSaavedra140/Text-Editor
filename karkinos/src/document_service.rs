@@ -545,7 +545,7 @@ impl DocumentService {
         };
         let progress = Arc::clone(progress);
         let (done, error, saved_text_hash, previous_file) = {
-            let p = progress.lock().unwrap();
+            let p = progress.lock().unwrap_or_else(|e| e.into_inner());
             (
                 p.done,
                 p.error.clone(),
@@ -715,5 +715,36 @@ mod tests {
         assert!(mtime_is_stale(None, Some(t0)));
         assert!(!mtime_is_stale(None, None));
         assert!(!mtime_is_stale(Some(t0), None));
+    }
+
+    /// S5: un hilo de fondo que entra en pánico con el lock tomado no
+    /// debe tumbar la UI: `finish_save` tiene que recuperar el estado
+    /// del mutex envenenado en vez de paniquear.
+    #[test]
+    fn finish_save_no_paniquea_con_mutex_envenenado() {
+        let mut doc = DocumentService::default();
+        let hash = doc.current_text_hash();
+        let progress = Arc::new(Mutex::new(SaveProgress {
+            written: 0,
+            total: 0,
+            done: true,
+            error: None,
+            saved_text_hash: hash,
+            target: PathBuf::from("envenenado.txt"),
+            previous_file: None,
+        }));
+
+        // Envenenamos el mutex: otro hilo lo toma y paniquea.
+        let poison = Arc::clone(&progress);
+        let _ = thread::spawn(move || {
+            let _g = poison.lock().unwrap();
+            panic!("poison de prueba");
+        })
+        .join();
+
+        doc.save_progress = Some(progress);
+        // Antes de T4 esto paniqueaba en `progress.lock().unwrap()`.
+        assert!(doc.finish_save());
+        assert!(doc.save_progress.is_none());
     }
 }
