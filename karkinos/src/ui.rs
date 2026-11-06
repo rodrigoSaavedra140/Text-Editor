@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use eframe::egui;
 
 use crate::app::{picker_should_stay_open, EditorApp, PickerNewItemKind};
-use crate::title_bar::{draw_resize_handles, icon_close_button, title_bar_icon_button, TitleBarIcon};
+use crate::title_bar::{draw_resize_handles, icon_close_button, icon_collapse_button, title_bar_icon_button, TitleBarIcon};
 use crate::util::{format_size, request_close};
 use crate::LOGO_BYTES;
 
@@ -858,7 +858,7 @@ impl EditorApp {
                 if icon_close_button(ui, "Close", theme).clicked() {
                     *close_panel = true;
                 }
-                if ui.button("▾").on_hover_text("Collapse All").clicked() {
+                if icon_collapse_button(ui, "Collapse All", theme).clicked() {
                     collapse_all = true;
                 }
                 if ui.button("↻").on_hover_text("Refresh").clicked() {
@@ -881,7 +881,7 @@ impl EditorApp {
         ui.label(
             egui::RichText::new(format!("📂 {root_name}"))
                 .color(theme.text)
-                .size(12.0)
+                .size(13.5)
                 .strong(),
         );
         ui.separator();
@@ -1118,7 +1118,7 @@ impl EditorApp {
                 crate::app::FileTreeNode::Directory { name, path, children } => {
                     let is_collapsed = collapsed.contains(path);
                     let indent = depth as f32 * 14.0 + 4.0;
-                    let row_height = 22.0;
+                    let row_height = 24.0;
 
                     let (rect, response) = ui.allocate_exact_size(
                         egui::vec2(ui.available_width(), row_height),
@@ -1137,7 +1137,7 @@ impl EditorApp {
                     // v0.2.49: botón ✏ de renombrado (solo al hover). Su rect
                     // se excluye del click que pliega/despliega la carpeta.
                     let rename_rect = egui::Rect::from_min_size(
-                        egui::pos2(rect.right() - 22.0, rect.top() + 3.0),
+                        egui::pos2(rect.right() - 22.0, rect.top() + 4.0),
                         egui::vec2(18.0, 16.0),
                     );
                     let over_rename = ui
@@ -1158,7 +1158,7 @@ impl EditorApp {
                         egui::pos2(rect.left() + indent, rect.center().y),
                         egui::Align2::LEFT_CENTER,
                         label,
-                        egui::FontId::proportional(11.5),
+                        egui::FontId::proportional(13.0),
                         if hovered { theme.text } else { theme.text.gamma_multiply(0.9) },
                     );
 
@@ -1198,7 +1198,7 @@ impl EditorApp {
                             egui::pos2(empty_rect.left() + empty_indent, empty_rect.center().y),
                             egui::Align2::LEFT_CENTER,
                             "(empty)",
-                            egui::FontId::proportional(10.5),
+                            egui::FontId::proportional(11.5),
                             theme.text_muted.gamma_multiply(0.75),
                         );
                     }
@@ -1225,7 +1225,7 @@ impl EditorApp {
                 } => {
                     let indent = (depth as f32 + 1.0) * 14.0 + 4.0;
                     let is_active = active == Some(path.as_path());
-                    let row_height = 22.0;
+                    let row_height = 24.0;
 
                     let (rect, response) = ui.allocate_exact_size(
                         egui::vec2(ui.available_width(), row_height),
@@ -1250,11 +1250,11 @@ impl EditorApp {
                     // v0.2.41/0.2.49: botones sutiles al hacer hover (✏ renombrar,
                     // 🗑 borrar). Los rects se excluyen del click que abre el archivo.
                     let trash_rect = egui::Rect::from_min_size(
-                        egui::pos2(rect.right() - 22.0, rect.top() + 3.0),
+                        egui::pos2(rect.right() - 22.0, rect.top() + 4.0),
                         egui::vec2(18.0, 16.0),
                     );
                     let rename_rect = egui::Rect::from_min_size(
-                        egui::pos2(rect.right() - 44.0, rect.top() + 3.0),
+                        egui::pos2(rect.right() - 44.0, rect.top() + 4.0),
                         egui::vec2(18.0, 16.0),
                     );
                     let over_trash = ui
@@ -1275,7 +1275,7 @@ impl EditorApp {
                         egui::pos2(rect.left() + indent, rect.center().y),
                         egui::Align2::LEFT_CENTER,
                         label,
-                        egui::FontId::proportional(11.5),
+                        egui::FontId::proportional(13.0),
                         if is_active {
                             theme.accent
                         } else if hovered {

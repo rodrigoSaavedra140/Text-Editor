@@ -38,8 +38,8 @@ pub fn smooth_scroll_step(scroll: f32, target: f32) -> (f32, bool) {
 }
 
 /// S11: Parámetros del cursor smear (animación fluida con estela deformable).
-pub const SMEAR_HEAD_EASING: f32 = 0.55;
-pub const SMEAR_TAIL_EASING: f32 = 0.28;
+pub const SMEAR_HEAD_EASING: f32 = 0.72;
+pub const SMEAR_TAIL_EASING: f32 = 0.42;
 pub const SMEAR_MAX_DISTANCE: f32 = 300.0;
 
 /// Paso de interpolación para el cursor smear: acerca `current` hacia `target`.

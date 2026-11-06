@@ -89,6 +89,49 @@ pub fn icon_close_button(
     response.on_hover_text(hover_text)
 }
 
+/// Dibuja un botón compacto de colapso con trazo vectorial: triángulo con una raya horizontal (estilo VS Code collapse-all).
+pub fn icon_collapse_button(
+    ui: &mut egui::Ui,
+    hover_text: &str,
+    theme: &crate::theme::Theme,
+) -> egui::Response {
+    let size = egui::vec2(18.0, 18.0);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    if response.hovered() {
+        ui.painter().rect_filled(rect, egui::Rounding::same(3.0), theme.badge_bg);
+    }
+    let color = if response.hovered() {
+        theme.text
+    } else {
+        theme.text_muted
+    };
+    let center = rect.center();
+    let stroke = egui::Stroke::new(1.4_f32, color);
+
+    // Raya horizontal superior
+    ui.painter().line_segment(
+        [center + egui::vec2(-5.0, -3.5), center + egui::vec2(5.0, -3.5)],
+        stroke,
+    );
+
+    // Triángulo que apunta hacia abajo
+    let tri_top_y = center.y - 0.5;
+    let tri_bottom_y = center.y + 4.5;
+    let tri_half_w = 4.0;
+    let points = vec![
+        egui::pos2(center.x - tri_half_w, tri_top_y),
+        egui::pos2(center.x + tri_half_w, tri_top_y),
+        egui::pos2(center.x, tri_bottom_y),
+    ];
+    ui.painter().add(egui::Shape::convex_polygon(
+        points,
+        color,
+        egui::Stroke::NONE,
+    ));
+
+    response.on_hover_text(hover_text)
+}
+
 /// Bordes invisibles en los 4 lados + 4 esquinas de la ventana, para
 /// poder seguir redimensionando arrastrando el borde con el mouse
 /// ahora que le sacamos la decoración nativa (que era la que hacía
