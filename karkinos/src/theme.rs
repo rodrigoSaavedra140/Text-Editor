@@ -206,9 +206,34 @@ pub fn modal_card_frame(theme: &Theme) -> egui::Frame {
         })
 }
 
+/// Interpola linealmente entre dos colores en el espacio sRGB/RGBA con alfa pre-multiplicado.
+pub fn lerp_color(a: egui::Color32, b: egui::Color32, t: f32) -> egui::Color32 {
+    let t = t.clamp(0.0, 1.0);
+    egui::Color32::from_rgba_premultiplied(
+        (a.r() as f32 + (b.r() as f32 - a.r() as f32) * t).round() as u8,
+        (a.g() as f32 + (b.g() as f32 - a.g() as f32) * t).round() as u8,
+        (a.b() as f32 + (b.b() as f32 - a.b() as f32) * t).round() as u8,
+        (a.a() as f32 + (b.a() as f32 - a.a() as f32) * t).round() as u8,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lerp_color_interpolates_properly() {
+        let c1 = egui::Color32::from_rgba_premultiplied(100, 50, 200, 100);
+        let c2 = egui::Color32::from_rgba_premultiplied(200, 150, 100, 200);
+        assert_eq!(lerp_color(c1, c2, 0.0), c1);
+        assert_eq!(lerp_color(c1, c2, 1.0), c2);
+        assert_eq!(
+            lerp_color(c1, c2, 0.5),
+            egui::Color32::from_rgba_premultiplied(150, 100, 150, 150)
+        );
+        assert_eq!(lerp_color(c1, c2, -1.0), c1);
+        assert_eq!(lerp_color(c1, c2, 2.0), c2);
+    }
 
     #[test]
     fn theme_mode_roundtrip_storage() {

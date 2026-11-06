@@ -73,14 +73,15 @@ pub fn icon_close_button(
 ) -> egui::Response {
     let size = egui::vec2(18.0, 18.0);
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
-    if response.hovered() {
-        ui.painter().rect_filled(rect, egui::Rounding::same(3.0), theme.badge_bg);
+    let hover_t = ui.ctx().animate_bool_with_time(response.id, response.hovered(), 0.12);
+    if hover_t > 0.001 {
+        ui.painter().rect_filled(rect, egui::Rounding::same(3.0), theme.badge_bg.gamma_multiply(hover_t));
     }
-    let color = if response.hovered() {
-        egui::Color32::from_rgb(248, 81, 73)
-    } else {
-        theme.text_muted
-    };
+    let color = crate::theme::lerp_color(
+        theme.text_muted,
+        egui::Color32::from_rgb(248, 81, 73),
+        hover_t,
+    );
     let center = rect.center();
     let h = 4.0;
     let stroke = egui::Stroke::new(1.2_f32, color);
@@ -97,14 +98,11 @@ pub fn icon_collapse_button(
 ) -> egui::Response {
     let size = egui::vec2(18.0, 18.0);
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
-    if response.hovered() {
-        ui.painter().rect_filled(rect, egui::Rounding::same(3.0), theme.badge_bg);
+    let hover_t = ui.ctx().animate_bool_with_time(response.id, response.hovered(), 0.12);
+    if hover_t > 0.001 {
+        ui.painter().rect_filled(rect, egui::Rounding::same(3.0), theme.badge_bg.gamma_multiply(hover_t));
     }
-    let color = if response.hovered() {
-        theme.text
-    } else {
-        theme.text_muted
-    };
+    let color = crate::theme::lerp_color(theme.text_muted, theme.text, hover_t);
     let center = rect.center();
     let stroke = egui::Stroke::new(1.4_f32, color);
 

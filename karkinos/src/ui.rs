@@ -681,11 +681,14 @@ impl EditorApp {
                     let tool = |ui: &mut egui::Ui, icon: &str, active: bool| -> egui::Response {
                         let (rect, response) =
                             ui.allocate_exact_size(egui::vec2(36.0, 36.0), egui::Sense::click());
-                        if response.hovered() {
+                        let hover_t = ui
+                            .ctx()
+                            .animate_bool_with_time(response.id, response.hovered(), 0.15);
+                        if hover_t > 0.001 {
                             ui.painter().rect_filled(
                                 rect,
                                 egui::Rounding::same(6.0),
-                                theme.badge_bg,
+                                theme.badge_bg.gamma_multiply(hover_t),
                             );
                         }
                         if active {
@@ -695,12 +698,17 @@ impl EditorApp {
                             );
                             ui.painter().rect_filled(bar, 0.0, theme.accent);
                         }
+                        let text_color = if active {
+                            theme.text
+                        } else {
+                            crate::theme::lerp_color(theme.text_muted, theme.text, hover_t)
+                        };
                         ui.painter().text(
                             rect.center(),
                             egui::Align2::CENTER_CENTER,
                             icon,
                             egui::FontId::proportional(18.0),
-                            if active { theme.text } else { theme.text_muted },
+                            text_color,
                         );
                         response
                     };
@@ -1125,12 +1133,15 @@ impl EditorApp {
                         egui::Sense::click(),
                     );
 
-                    let hovered = response.hovered();
-                    if hovered {
+                    let row_id = ui.id().with(("explorer_dir_row", path));
+                    let hover_t = ui
+                        .ctx()
+                        .animate_bool_with_time(row_id, response.hovered(), 0.12);
+                    if hover_t > 0.001 {
                         ui.painter().rect_filled(
                             rect,
                             egui::Rounding::same(4.0),
-                            theme.active_line.gamma_multiply(2.5),
+                            theme.active_line.gamma_multiply(2.5 * hover_t),
                         );
                     }
 
@@ -1154,24 +1165,30 @@ impl EditorApp {
                     let icon_folder = if is_collapsed || is_empty { "📁" } else { "📂" };
                     let label = format!("{icon_chevron} {icon_folder} {name}");
 
+                    let text_color = crate::theme::lerp_color(
+                        theme.text.gamma_multiply(0.9),
+                        theme.text,
+                        hover_t,
+                    );
                     ui.painter().text(
                         egui::pos2(rect.left() + indent, rect.center().y),
                         egui::Align2::LEFT_CENTER,
                         label,
                         egui::FontId::proportional(13.0),
-                        if hovered { theme.text } else { theme.text.gamma_multiply(0.9) },
+                        text_color,
                     );
 
                     response.on_hover_cursor(egui::CursorIcon::PointingHand);
 
                     // v0.2.49: botón ✏ de renombrado de carpeta al hover.
-                    if hovered {
+                    if hover_t > 0.02 {
+                        let btn_color = theme.text_muted.gamma_multiply(hover_t);
                         ui.painter().text(
                             rename_rect.center(),
                             egui::Align2::CENTER_CENTER,
                             "✏",
                             egui::FontId::proportional(10.0),
-                            theme.text_muted,
+                            btn_color,
                         );
                         let rename = ui.interact(
                             rename_rect,
@@ -1232,18 +1249,21 @@ impl EditorApp {
                         egui::Sense::click(),
                     );
 
-                    let hovered = response.hovered();
+                    let row_id = ui.id().with(("explorer_file_row", path));
+                    let hover_t = ui
+                        .ctx()
+                        .animate_bool_with_time(row_id, response.hovered(), 0.12);
                     if is_active {
                         ui.painter().rect_filled(
                             rect,
                             egui::Rounding::same(4.0),
                             theme.accent.gamma_multiply(0.2),
                         );
-                    } else if hovered {
+                    } else if hover_t > 0.001 {
                         ui.painter().rect_filled(
                             rect,
                             egui::Rounding::same(4.0),
-                            theme.active_line.gamma_multiply(1.8),
+                            theme.active_line.gamma_multiply(1.8 * hover_t),
                         );
                     }
 
@@ -1271,29 +1291,29 @@ impl EditorApp {
                     let icon = explorer_file_icon(extension);
                     let label = format!("{icon} {name}");
 
+                    let text_color = if is_active {
+                        theme.accent
+                    } else {
+                        crate::theme::lerp_color(theme.text_muted, theme.text, hover_t)
+                    };
                     ui.painter().text(
                         egui::pos2(rect.left() + indent, rect.center().y),
                         egui::Align2::LEFT_CENTER,
                         label,
                         egui::FontId::proportional(13.0),
-                        if is_active {
-                            theme.accent
-                        } else if hovered {
-                            theme.text
-                        } else {
-                            theme.text_muted
-                        },
+                        text_color,
                     );
 
                     response.on_hover_cursor(egui::CursorIcon::PointingHand);
 
-                    if hovered {
+                    if hover_t > 0.02 {
+                        let btn_color = theme.text_muted.gamma_multiply(hover_t);
                         ui.painter().text(
                             rename_rect.center(),
                             egui::Align2::CENTER_CENTER,
                             "✏",
                             egui::FontId::proportional(10.0),
-                            theme.text_muted,
+                            btn_color,
                         );
                         let rename = ui.interact(
                             rename_rect,
@@ -1312,7 +1332,7 @@ impl EditorApp {
                             egui::Align2::CENTER_CENTER,
                             "🗑",
                             egui::FontId::proportional(10.0),
-                            theme.text_muted,
+                            btn_color,
                         );
                         let trash = ui.interact(
                             trash_rect,
