@@ -14,7 +14,7 @@
 # El `pkgver` de abajo es solo una referencia local: el release manda.
 
 pkgname=karkinos-bin
-pkgver=0.2.84
+pkgver=0.2.85
 pkgrel=1
 pkgdesc="Lightweight, ultra-fast native Rust IDE (prebuilt binary)"
 url="https://github.com/rodrigoSaavedra140/Text-Editor"
