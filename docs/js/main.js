@@ -57,11 +57,13 @@ function switchScreenshot(index) {
 }
 
 /**
- * Copy the cargo install command to the clipboard
+ * Copy the text of a command element to the clipboard and show feedback on its label
+ * @param {string} elementId  id of the element holding the command text
+ * @param {string} labelId    id of the label inside the copy button
  */
-function copyCargoCommand() {
-  const commandElem = document.getElementById('cargo-command');
-  const copyTextElem = document.getElementById('copy-text');
+function copyCommand(elementId, labelId) {
+  const commandElem = document.getElementById(elementId);
+  const copyTextElem = document.getElementById(labelId);
   if (!commandElem || !copyTextElem) return;
 
   const textToCopy = commandElem.innerText || commandElem.textContent;
@@ -75,6 +77,13 @@ function copyCargoCommand() {
   } else {
     fallbackCopy(textToCopy, copyTextElem);
   }
+}
+
+/**
+ * Copy the hero "Cargo install" command (inline onclick handler)
+ */
+function copyCargoCommand() {
+  copyCommand('cargo-command', 'copy-text');
 }
 
 /**
@@ -116,4 +125,5 @@ function showCopySuccess(elem) {
 
 // Global exposure for inline onclick handlers
 window.switchScreenshot = switchScreenshot;
+window.copyCommand = copyCommand;
 window.copyCargoCommand = copyCargoCommand;

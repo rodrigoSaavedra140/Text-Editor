@@ -825,3 +825,60 @@ section {
     word-break: break-all;
   }
 }
+
+/* ==========================================================================
+   Update Instructions (inside the Download section)
+   ========================================================================== */
+.update-block {
+  max-width: 1140px;
+  margin: 56px auto 0 auto;
+}
+
+.update-title {
+  font-size: 1.6rem;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+
+.update-subtitle {
+  font-size: 1rem;
+  color: var(--text-secondary);
+  margin-bottom: 28px;
+}
+
+.update-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 28px;
+}
+
+.update-command {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  margin-top: auto;
+  font-size: 0.85rem;
+  overflow-x: auto;
+}
+
+.update-command code {
+  color: var(--accent-green);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.update-note {
+  margin-top: 24px;
+  font-size: 0.9rem;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.update-note code {
+  color: var(--text-secondary);
+}
