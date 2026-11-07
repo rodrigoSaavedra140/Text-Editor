@@ -848,7 +848,8 @@ section {
 
 .update-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  /* One command card: cap its width so it does not stretch across the block. */
+  grid-template-columns: minmax(0, 640px);
   gap: 28px;
 }
 
