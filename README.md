@@ -71,6 +71,36 @@ cargo build --release
 
 The resulting executable will be located at `target/release/karkinos`.
 
+## 🐧 Install on Arch Linux (AUR)
+
+Karkinos is packaged on the AUR as `karkinos-bin`: it installs the prebuilt Linux binary from the latest GitHub release, so a system update also updates Karkinos.
+
+```bash
+yay -S karkinos-bin      # or: paru -S karkinos-bin
+```
+
+The package `provides` and `conflicts` with `karkinos`, so it replaces a previous source build instead of living next to it. Once installed, `yay -Syu` / `paru -Syu` keeps it up to date with the rest of the system. When Karkinos was installed this way, its in-app update button does not replace `/usr/bin/karkinos`; it runs `yay -S karkinos-bin` (or `paru -S karkinos-bin`) in the integrated terminal.
+
+### Maintaining `karkinos-bin`
+
+Publishing is automatic. The `aur` job in `.github/workflows/release.yml` (`scripts/release-workflow.yml` is the same file) takes `packaging/aur/karkinos-bin/PKGBUILD`, sets `pkgver` from the tag, replaces `sha256sums` with the SHA-256 of the four release files, regenerates `.SRCINFO` with `makepkg --printsrcinfo` and pushes both to `ssh://aur@aur.archlinux.org/karkinos-bin.git`. It only runs when the `AUR_SSH_PRIVATE_KEY` secret exists; without it the job is skipped and the release still publishes.
+
+In the repository the PKGBUILD is a template: `pkgver` is a local reference and `sha256sums` is `('SKIP' 'SKIP' 'SKIP' 'SKIP')` because the checksums can only be computed from the published assets. Never publish that `SKIP` version; the workflow always fills it in. To inspect the current metadata locally: `cd packaging/aur/karkinos-bin && makepkg --printsrcinfo`.
+
+One-time setup, for the maintainer:
+
+1. **Create the AUR account** at <https://aur.archlinux.org/register/>.
+2. **Create a key pair used only by CI** (no passphrase, because the runner cannot type one):
+   ```bash
+   ssh-keygen -t ed25519 -C "karkinos release" -f ~/.ssh/karkinos_aur -N ""
+   ```
+3. **Register the public key**: AUR → *My Account* → *SSH Public Key*, paste the whole content of `~/.ssh/karkinos_aur.pub` and save. (An account can hold several keys, so this does not break your personal one.)
+4. **Create the `karkinos-bin` package** once, if it does not exist yet: either push the first `PKGBUILD` + `.SRCINFO` yourself to `ssh://aur@aur.archlinux.org/karkinos-bin.git` (the `aur` job does exactly that on the first release), or upload a `PKGBUILD` at <https://aur.archlinux.org/submit/>. After the first push the workflow keeps it updated.
+5. **Add the repository secret**: GitHub → *Settings* → *Secrets and variables* → *Actions* → *New repository secret*, name `AUR_SSH_PRIVATE_KEY`, value = the complete content of the private key file `~/.ssh/karkinos_aur`, including the `-----BEGIN` and `-----END` lines.
+6. **Tag a release** (`git tag vX.Y.Z && git push origin vX.Y.Z`) and check that the *Publish karkinos-bin to the AUR* job is green.
+
+Never commit the private key. The workflow passes it through an environment variable (never interpolated into a script, so it cannot leak into the log), writes it to a `0600` file inside the ephemeral runner and deletes that file when the step ends.
+
 ## ⌨️ Main Keyboard Shortcuts
 
 ### Files and Tabs

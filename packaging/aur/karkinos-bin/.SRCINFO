@@ -1,0 +1,22 @@
+pkgbase = karkinos-bin
+	pkgdesc = Lightweight, ultra-fast native Rust IDE (prebuilt binary)
+	pkgver = 0.2.84
+	pkgrel = 1
+	url = https://github.com/rodrigoSaavedra140/Text-Editor
+	arch = x86_64
+	license = BSL-1.1
+	depends = gcc-libs
+	provides = karkinos
+	conflicts = karkinos
+	options = !strip
+	options = !debug
+	source = karkinos-linux-x86_64.tar.gz::https://github.com/rodrigoSaavedra140/Text-Editor/releases/download/v0.2.84/karkinos-linux-x86_64.tar.gz
+	source = karkinos.desktop::https://raw.githubusercontent.com/rodrigoSaavedra140/Text-Editor/v0.2.84/assets/karkinos.desktop
+	source = karkinos.png::https://raw.githubusercontent.com/rodrigoSaavedra140/Text-Editor/v0.2.84/assets/karkinos.png
+	source = LICENSE::https://raw.githubusercontent.com/rodrigoSaavedra140/Text-Editor/v0.2.84/LICENSE
+	sha256sums = SKIP
+	sha256sums = SKIP
+	sha256sums = SKIP
+	sha256sums = SKIP
+
+pkgname = karkinos-bin

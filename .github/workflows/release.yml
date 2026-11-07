@@ -132,3 +132,136 @@ jobs:
           gh release upload "$GITHUB_REF_NAME" assets/SHA256SUMS \
             --clobber \
             --repo "$GITHUB_REPOSITORY"
+
+  # Publicación del paquete AUR `karkinos-bin` (spec S4): así `yay -Syu` /
+  # `paru -Syu` actualizan Karkinos junto con el resto del sistema.
+  #
+  # `secrets` no se puede usar en el `if` de un job, así que este job chico
+  # traduce la presencia de `AUR_SSH_PRIVATE_KEY` a un output y el job `aur`
+  # compara ese valor. Sin el secret, `aur` queda SKIPPED (no falla) y el
+  # release se publica igual: la primera publicación necesita el secret a mano.
+  aur-gate:
+    name: Check AUR credentials
+    needs: checksums
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    outputs:
+      enabled: ${{ steps.check.outputs.enabled }}
+    steps:
+      # El secret se pasa por `env`, nunca interpolado en el script, para que
+      # no pueda aparecer en el log.
+      - name: Detect AUR_SSH_PRIVATE_KEY
+        id: check
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: |
+          if [ -n "${AUR_SSH_PRIVATE_KEY}" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "AUR_SSH_PRIVATE_KEY is not set: skipping the AUR publish." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  aur:
+    name: Publish karkinos-bin to the AUR
+    needs: [checksums, aur-gate]
+    if: needs.aur-gate.outputs.enabled == 'true'
+    runs-on: ubuntu-latest
+    # `makepkg` (el generador de .SRCINFO) solo existe en Arch: el job corre
+    # dentro de un contenedor Arch en vez de reimplementar el formato a mano.
+    container: archlinux:latest
+    env:
+      PKGNAME: karkinos-bin
+    steps:
+      - name: Install packaging tools
+        run: pacman -Syu --noconfirm --needed git openssh curl
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Los mismos 4 archivos que declara `source` en el PKGBUILD, para que
+      # los sha256sums que se publican sean los de esos archivos exactos.
+      - name: Download release files
+        run: |
+          set -euo pipefail
+          repo="$GITHUB_REPOSITORY"
+          tag="$GITHUB_REF_NAME"
+          mkdir -p assets
+          curl -fsSL -o assets/karkinos-linux-x86_64.tar.gz \
+            "https://github.com/${repo}/releases/download/${tag}/karkinos-linux-x86_64.tar.gz"
+          curl -fsSL -o assets/karkinos.desktop \
+            "https://raw.githubusercontent.com/${repo}/${tag}/assets/karkinos.desktop"
+          curl -fsSL -o assets/karkinos.png \
+            "https://raw.githubusercontent.com/${repo}/${tag}/assets/karkinos.png"
+          curl -fsSL -o assets/LICENSE \
+            "https://raw.githubusercontent.com/${repo}/${tag}/LICENSE"
+          ls -l assets
+
+      # La plantilla del repositorio lleva `pkgver` de referencia y
+      # `sha256sums=('SKIP' ...)`; acá se reemplazan por el tag y los hashes
+      # reales de los archivos descargados, en el orden de `source`.
+      - name: Fill pkgver and sha256sums into the PKGBUILD
+        run: |
+          set -euo pipefail
+          pkgver="${GITHUB_REF_NAME#v}"
+          pkgbuild="packaging/aur/${PKGNAME}/PKGBUILD"
+          mapfile -t sums < <(
+            cd assets
+            sha256sum karkinos-linux-x86_64.tar.gz karkinos.desktop karkinos.png LICENSE | awk '{ print $1 }'
+          )
+          if [ "${#sums[@]}" -ne 4 ]; then
+            echo "expected 4 checksums, got ${#sums[@]}" >&2
+            exit 1
+          fi
+          sed -i \
+            -e "s|^pkgver=.*|pkgver=${pkgver}|" \
+            -e "s|^pkgrel=.*|pkgrel=1|" \
+            -e "s|^sha256sums=.*|sha256sums=('${sums[0]}' '${sums[1]}' '${sums[2]}' '${sums[3]}')|" \
+            "$pkgbuild"
+          grep -E '^(pkgver|pkgrel|sha256sums)=' "$pkgbuild"
+
+      # makepkg se niega a correr como root: el .SRCINFO se genera como un
+      # usuario sin privilegios del contenedor.
+      - name: Generate .SRCINFO
+        run: |
+          set -euo pipefail
+          pkgdir="$(pwd)/packaging/aur/${PKGNAME}"
+          id -u builder >/dev/null 2>&1 || useradd --create-home builder
+          chown -R builder "$pkgdir"
+          runuser -u builder -- bash -c "cd '$pkgdir' && makepkg --printsrcinfo" > "$pkgdir/.SRCINFO"
+          cat "$pkgdir/.SRCINFO"
+
+      # La clave SSH vive solo en el runner efímero: se escribe con umask 077,
+      # nunca entra al repositorio ni al log, y se borra al terminar el paso.
+      - name: Publish to the AUR
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          pkgver="${GITHUB_REF_NAME#v}"
+          workdir="$(mktemp -d)"
+          install -d -m 700 "$HOME/.ssh"
+          ( umask 077 && printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > "$HOME/.ssh/aur" )
+          ssh-keyscan -H aur.archlinux.org >> "$HOME/.ssh/known_hosts" 2>/dev/null
+          trap 'rm -rf "$workdir"; rm -f "$HOME/.ssh/aur"' EXIT
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/aur -o IdentitiesOnly=yes"
+          # Primera publicación: si el paquete todavía no existe en la AUR el
+          # clone falla, así que se arranca un repo vacío y el push lo crea.
+          if ! git clone --quiet "ssh://aur@aur.archlinux.org/${PKGNAME}.git" "$workdir/aur"; then
+            echo "AUR repo ${PKGNAME} does not exist yet: creating it with the first push" >&2
+            git init --quiet "$workdir/aur"
+            git -C "$workdir/aur" symbolic-ref HEAD refs/heads/master
+            git -C "$workdir/aur" remote add origin "ssh://aur@aur.archlinux.org/${PKGNAME}.git"
+          fi
+          cp "packaging/aur/${PKGNAME}/PKGBUILD" "packaging/aur/${PKGNAME}/.SRCINFO" "$workdir/aur/"
+          cd "$workdir/aur"
+          git config user.name "${GITHUB_ACTOR}"
+          git config user.email "${GITHUB_ACTOR}@users.noreply.github.com"
+          git add PKGBUILD .SRCINFO
+          if git diff --cached --quiet; then
+            echo "AUR already up to date for v${pkgver}"
+          else
+            git commit --quiet -m "Update to ${pkgver}"
+            git push --quiet origin HEAD:master
+            echo "Published ${PKGNAME} ${pkgver} to the AUR"
+          fi

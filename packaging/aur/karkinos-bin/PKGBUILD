@@ -1,0 +1,50 @@
+# Maintainer: Rodrigo Saavedra <hugorodrigo.saavedradiaz@gmail.com>
+#
+# Paquete AUR `karkinos-bin`: instala el binario ya compilado del release de
+# GitHub, así `yay -Syu` / `paru -Syu` actualizan Karkinos junto con el resto
+# del sistema (spec S4). A diferencia de `scripts/PKGBUILD` (que compila desde
+# el checkout), este paquete no necesita cargo ni el código fuente.
+#
+# Este archivo es la plantilla que el job `aur` de
+# .github/workflows/release.yml publica en la AUR en cada tag `v*`. En ese
+# momento reescribe `pkgver` con el tag, `pkgrel` con 1 y la línea
+# `sha256sums` con los SHA-256 reales de los 4 archivos descargados.
+# Por eso acá los sums valen SKIP: en el repositorio no se pueden calcular sin
+# descargar los assets del release, y nunca se publican SKIP en la AUR.
+# El `pkgver` de abajo es solo una referencia local: el release manda.
+
+pkgname=karkinos-bin
+pkgver=0.2.84
+pkgrel=1
+pkgdesc="Lightweight, ultra-fast native Rust IDE (prebuilt binary)"
+url="https://github.com/rodrigoSaavedra140/Text-Editor"
+arch=('x86_64')
+license=('BSL-1.1')
+depends=('gcc-libs')
+provides=('karkinos')
+conflicts=('karkinos')
+# El binario viene compilado del release: no lo re-empaquetamos ni lo
+# despojamos para que quede idéntico al que publica el proyecto.
+options=('!strip' '!debug')
+
+_release_url="https://github.com/rodrigoSaavedra140/Text-Editor/releases/download/v${pkgver}"
+_raw_url="https://raw.githubusercontent.com/rodrigoSaavedra140/Text-Editor/v${pkgver}"
+
+source=(
+  "karkinos-linux-x86_64.tar.gz::${_release_url}/karkinos-linux-x86_64.tar.gz"
+  "karkinos.desktop::${_raw_url}/assets/karkinos.desktop"
+  "karkinos.png::${_raw_url}/assets/karkinos.png"
+  "LICENSE::${_raw_url}/LICENSE"
+)
+
+# CI reemplaza esta línea entera (ver comentario de arriba).
+sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP')
+
+package() {
+  # Mismas rutas que scripts/PKGBUILD para que `yay -S karkinos-bin` deje los
+  # mismos archivos que una instalación desde el código fuente.
+  install -Dm755 "${srcdir}/karkinos" "$pkgdir/usr/bin/karkinos"
+  install -Dm644 "${srcdir}/karkinos.desktop" "$pkgdir/usr/share/applications/karkinos.desktop"
+  install -Dm644 "${srcdir}/karkinos.png" "$pkgdir/usr/share/icons/hicolor/256x256/apps/karkinos.png"
+  install -Dm644 "${srcdir}/LICENSE" "$pkgdir/usr/share/licenses/${pkgname}/LICENSE"
+}
